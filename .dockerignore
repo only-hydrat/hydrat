@@ -1,0 +1,10 @@
+.git
+.env
+.codex
+.worktrees
+.code-review-graph
+config/wireguard/wg0.conf
+data
+docs/
+.github/
+*.md

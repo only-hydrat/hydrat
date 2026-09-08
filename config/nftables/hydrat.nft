@@ -1,0 +1,31 @@
+add table inet hydrat
+delete table inet hydrat
+table inet hydrat {
+  chain dns_redirect {
+    type nat hook prerouting priority dstnat; policy accept;
+    iifname "wg0" udp dport 53 redirect to :53
+    iifname "wg0" tcp dport 53 redirect to :53
+    iifname "wg0" ip daddr 10.44.0.1 tcp dport 8080 redirect to :80
+  }
+
+  chain prerouting {
+    type filter hook prerouting priority mangle; policy accept;
+    iifname "wg0" ip daddr 10.44.0.1 tcp dport { 80, 8080 } accept
+    iifname "wg0" udp dport 53 accept
+    iifname "wg0" tcp dport 53 accept
+    iifname "wg0" ip daddr 10.44.0.1 drop
+    iifname "wg0" meta l4proto { tcp, udp } tproxy ip to 127.0.0.1:12345 meta mark set 1 accept
+    iifname "wg0" drop
+  }
+
+  chain output {
+    type route hook output priority mangle; policy accept;
+    meta mark 2 accept
+  }
+
+  chain forward {
+    type filter hook forward priority filter; policy accept;
+    iifname "wg0" meta nfproto ipv6 drop
+    oifname "wg0" meta nfproto ipv6 drop
+  }
+}

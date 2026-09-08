@@ -1,0 +1,30 @@
+# Local secrets and generated runtime state.
+.env
+.env.pre-ssd-*
+config/wireguard/wg0.conf
+data/
+data.hdd-backup-*/
+
+# Local developer tooling.
+.codex
+.worktrees/
+.code-review-graph/
+
+# Go test/build artifacts.
+*.test
+coverage.out
+
+# AI and planning artifacts
+.superpowers/
+docs/superpowers/
+.claude/
+.cursor/
+.omc/
+
+# OS & IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~

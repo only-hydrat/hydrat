@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Hydrat Control</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+  <script defer src="/assets/app.js"></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="#overview" aria-label="Hydrat Control">
+        <span class="brand-mark">H</span>
+        <span><strong>Hydrat</strong><small>Route control</small></span>
+      </a>
+      <nav aria-label="Разделы">
+        <button class="nav-item active" data-nav="overview"><span>Обзор</span></button>
+        <button class="nav-item" data-nav="clients"><span>Клиенты</span></button>
+        <button class="nav-item" data-nav="sources"><span>Источники</span></button>
+        <button class="nav-item" data-nav="candidates"><span>Кандидаты</span></button>
+        <button class="nav-item" data-nav="system"><span>Система</span></button>
+      </nav>
+      <div class="sidebar-foot">
+        <span class="health-dot"></span>
+        <span><strong>Fail closed</strong><small>.ru идёт напрямую</small></span>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">CONTROL PLANE</p>
+          <h1 id="page-title">Обзор</h1>
+        </div>
+        <form id="auth-form" class="auth-box">
+          <label for="admin-password">Пароль администратора</label>
+          <input id="admin-password" type="password" autocomplete="current-password" placeholder="Введите пароль">
+          <button class="button primary" id="admin-load" type="submit">Подключиться</button>
+        </form>
+      </header>
+
+      <div id="message" class="toast" role="status" aria-live="polite"></div>
+
+      <section class="view active" data-view="overview">
+        <div class="hero">
+          <div>
+            <p class="eyebrow">ADAPTIVE ROUTING</p>
+            <h2>Лучший маршрут — без ручных переподключений</h2>
+            <p>Hydrat отдельно оценивает TCP и UDP, держит рабочий пул и переключает hard-failure через приоритетный dataplane.</p>
+          </div>
+          <div class="self-card">
+            <span class="badge neutral">Моё подключение</span>
+            <strong id="status">Определяем WireGuard-клиента…</strong>
+            <button id="reassign" class="button ghost" type="button">Выбрать другой маршрут</button>
+          </div>
+        </div>
+        <div class="stats" id="overview-stats">
+          <article><span>VLESS working</span><strong data-stat="vless-working">—</strong><small>проверенные кандидаты</small></article>
+          <article><span>VLESS domains</span><strong data-stat="vless-domains">—</strong><small>независимые доступные группы</small></article>
+          <article><span>Tor candidates</span><strong data-stat="tor-candidates">—</strong><small>в рабочем пуле</small></article>
+          <article><span>Warm Tor</span><strong data-stat="tor-warm">—</strong><small>готовые профили</small></article>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><div><p class="eyebrow">PIPELINE</p><h3>Состояние отбора</h3></div></div>
+          <div id="status-breakdown" class="status-grid empty">Подключитесь как администратор</div>
+        </div>
+      </section>
+
+      <section class="view" data-view="clients">
+        <div class="panel">
+          <div class="panel-head">
+            <div><p class="eyebrow">WIREGUARD</p><h2>Клиенты</h2><p>Конфиг и QR доступны сразу после создания.</p></div>
+            <form id="client-form" class="inline-form">
+              <input id="client-name" aria-label="Имя клиента" placeholder="Например, Pixel 9" required>
+              <button id="client-create" class="button primary" type="submit">Создать</button>
+            </form>
+          </div>
+          <div id="admin-clients" class="data-list empty">Нет данных</div>
+        </div>
+      </section>
+
+      <section class="view" data-view="sources">
+        <div class="split">
+          <div class="panel">
+            <div class="panel-head"><div><p class="eyebrow">IMPORT</p><h2>Добавить источники</h2></div></div>
+            <label for="source-input">VLESS, URL подписки или Tor bridge</label>
+            <textarea id="source-input" placeholder="VLESS URI&#10;proxy-source URL подписки&#10;Bridge obfs4 …"></textarea>
+            <div class="button-row">
+              <button id="source-preview" class="button ghost" type="button">Проверить</button>
+              <button id="source-import" class="button primary" type="button">Импортировать</button>
+            </div>
+            <pre id="source-result" class="preview-box">Результат preview появится здесь.</pre>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><div><p class="eyebrow">INVENTORY</p><h2>Источники</h2></div></div>
+            <div id="admin-sources" class="data-list empty">Нет данных</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" data-view="candidates">
+        <div class="panel">
+          <div class="panel-head">
+            <div><p class="eyebrow">TOURNAMENT</p><h2>Кандидаты</h2><p>Health, score, streak и ban window без раскрытия payload.</p></div>
+            <div class="filters">
+              <select id="candidate-filter" aria-label="Статус">
+                <option value="">Все статусы</option>
+                <option value="qualified">Qualified</option>
+                <option value="preflight">Preflight</option>
+                <option value="banned">Banned</option>
+                <option value="unknown">Unknown</option>
+                <option value="draining">Draining</option>
+              </select>
+              <select id="candidate-kind" aria-label="Протокол">
+                <option value="">VLESS и Tor</option>
+                <option value="vless">VLESS</option>
+                <option value="tor_bridge">Tor bridge</option>
+              </select>
+              <input id="candidate-search" aria-label="Поиск кандидата" placeholder="Поиск">
+            </div>
+          </div>
+          <div id="admin-candidates" class="data-list empty">Нет данных</div>
+          <div class="pager"><span id="candidate-total">0 кандидатов</span><button id="candidate-more" class="button ghost" type="button">Показать ещё</button></div>
+        </div>
+      </section>
+
+      <section class="view" data-view="system">
+        <div class="split">
+          <div class="panel">
+            <div class="panel-head"><div><p class="eyebrow">RUNTIME</p><h2>Система</h2></div></div>
+            <dl id="system-details" class="details"><dt>Статус</dt><dd>Нет данных</dd></dl>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><div><p class="eyebrow">TOR</p><h2>Warm / explorer</h2></div><button id="profile-explore" class="button ghost" type="button">Следующий explorer</button></div>
+            <div id="admin-profiles" class="data-list empty">Нет данных</div>
+          </div>
+        </div>
+        <div class="panel" style="margin-top: 24px;">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">ROUTING &amp; GEO-DATA</p>
+              <h2>Маршрутизация и GeoIP</h2>
+            </div>
+            <div class="button-row">
+              <button id="routing-update-geo" class="button ghost" type="button">Обновить GeoIP сейчас</button>
+              <button id="routing-open-dialog" class="button primary" type="button">Настроить правила</button>
+            </div>
+          </div>
+          <dl id="routing-details" class="details">
+            <dt>Прямые суффиксы</dt><dd id="routing-suffixes">—</dd>
+            <dt>Прямые домены</dt><dd id="routing-domains">—</dd>
+            <dt>Статус GeoIP</dt><dd id="routing-geoip-status">—</dd>
+            <dt>Статус GeoSite</dt><dd id="routing-geosite-status">—</dd>
+            <dt>Автообновление</dt><dd id="routing-autoupdate">—</dd>
+            <dt>Выход через РФ</dt><dd id="routing-ru-egress">—</dd>
+            <dt>GeoIP URL</dt><dd id="routing-geoip-url" class="probe-runtime">—</dd>
+            <dt>GeoSite URL</dt><dd id="routing-geosite-url" class="probe-runtime">—</dd>
+            <dt>Интервал</dt><dd id="routing-interval">—</dd>
+          </dl>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="artifact-dialog">
+    <div class="dialog-head"><h2 id="artifact-title">Подключение</h2><button id="artifact-close" class="icon-button" aria-label="Закрыть">×</button></div>
+    <img id="artifact-qr" alt="QR-код WireGuard">
+    <pre id="artifact-config"></pre>
+    <div class="button-row"><button id="artifact-copy" class="button ghost">Копировать</button><button id="artifact-download" class="button primary">Скачать .conf</button></div>
+  </dialog>
+
+  <dialog id="routing-dialog">
+    <div class="dialog-head">
+      <h2>Настройка маршрутизации и GeoIP</h2>
+      <button id="routing-close" class="icon-button" aria-label="Закрыть">×</button>
+    </div>
+    <form id="routing-form" style="display:flex; flex-direction:column; gap:16px; margin-top:16px;">
+      <div>
+        <label for="input-routing-suffixes">Прямые доменные суффиксы (через запятую или пробел)</label>
+        <input id="input-routing-suffixes" type="text" class="input" placeholder=".ru, .su, .xn--p1ai" required>
+      </div>
+      <div>
+        <label for="input-routing-domains">Прямые домены (через запятую или пробел)</label>
+        <input id="input-routing-domains" type="text" class="input" placeholder="thecode.media, habr.com">
+      </div>
+      <div style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
+        <label style="display:flex; align-items:center; gap:8px; margin:0; cursor:pointer;">
+          <input id="input-routing-geo-enabled" type="checkbox">
+          <span>Включить правила GeoIP / GeoSite</span>
+        </label>
+        <label style="display:flex; align-items:center; gap:8px; margin:0; cursor:pointer;">
+          <input id="input-routing-geo-autoupdate" type="checkbox">
+          <span>Автоматическое обновление</span>
+        </label>
+        <label style="display:flex; align-items:center; gap:8px; margin:0; cursor:pointer;">
+          <input id="input-routing-disallow-ru" type="checkbox">
+          <span>Запретить выход через серверы в РФ (Egress Protection)</span>
+        </label>
+      </div>
+      <div>
+        <label for="input-routing-geoip-url">Ссылка на geoip.dat (GeoIP URL)</label>
+        <input id="input-routing-geoip-url" type="url" class="input" placeholder="runetfreedom/russia-blocked-geoip/release/geoip.dat" required>
+      </div>
+      <div>
+        <label for="input-routing-geosite-url">Ссылка на geosite.dat (GeoSite URL)</label>
+        <input id="input-routing-geosite-url" type="url" class="input" placeholder="runetfreedom/russia-blocked-geosite/release/geosite.dat" required>
+      </div>
+      <div>
+        <label for="input-routing-interval">Интервал обновления (например, 24h, 12h)</label>
+        <input id="input-routing-interval" type="text" class="input" placeholder="24h" value="24h" required>
+      </div>
+      <div class="button-row" style="justify-content:flex-end; margin-top:8px;">
+        <button id="routing-cancel" class="button ghost" type="button">Отмена</button>
+        <button id="routing-submit" class="button primary" type="submit">Сохранить правила</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

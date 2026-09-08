@@ -1,0 +1,104 @@
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hydrat:latest
+    restart: unless-stopped
+    init: true
+    command: ["agent"]
+    # Встроенная ротация структурированных логов в ${DATA_DIR}/logs (HYDRAT_LOG_RETENTION=72h)
+    # предотвращает переполнение диска хоста журналом Docker (driver: none)
+    logging:
+      driver: none
+    cap_add: ["NET_ADMIN", "NET_RAW"]
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    sysctls:
+      net.ipv4.ip_forward: "1"
+    ports:
+      - "${WIREGUARD_PORT:-51820}:51820/udp"
+    environment:
+      HYDRAT_CONFIG: /etc/hydrat/config.yml
+      HYDRAT_LOG_DIR: /data/logs
+      HYDRAT_LOG_RETENTION: "72h"
+      HYDRAT_SOCKET_GID: "10001"
+      WIREGUARD_ENDPOINT: "${WIREGUARD_ENDPOINT:?WIREGUARD_ENDPOINT is required}"
+      HYDRAT_HWID: "${HYDRAT_HWID:-}"
+      XRAY_LOCATION_ASSET: "/data/geo"
+    volumes:
+      - ${DATA_DIR:-./data}:/data
+      - hydrat-run:/run/hydrat
+      - /etc/machine-id:/etc/machine-id:ro
+      - ./config/config.yml:/etc/hydrat/config.yml:ro
+    networks:
+      - control
+      - egress
+    mem_limit: 1024m
+    cpus: 1.5
+    pids_limit: 384
+    ulimits:
+      nofile: {soft: 4096, hard: 8192}
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--unix-socket", "/run/hydrat/agent.sock", "http://localhost/v1/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+
+  controller:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hydrat:latest
+    restart: unless-stopped
+    init: true
+    user: "10001:10001"
+    command: ["controller"]
+    ports:
+      - "${PORTAL_PORT:-8088}:8080"
+    # Встроенная ротация структурированных логов в ${DATA_DIR}/logs (HYDRAT_LOG_RETENTION=72h)
+    # предотвращает переполнение диска хоста журналом Docker (driver: none)
+    logging:
+      driver: none
+    depends_on:
+      gateway:
+        condition: service_healthy
+    environment:
+      HYDRAT_CONFIG: /etc/hydrat/config.yml
+      HYDRAT_LOG_DIR: /data/logs
+      HYDRAT_LOG_RETENTION: "72h"
+      HYDRAT_ADMIN_PASSWORD: "${HYDRAT_ADMIN_PASSWORD:?HYDRAT_ADMIN_PASSWORD is required}"
+      HYDRAT_HWID: "${HYDRAT_HWID:-}"
+      XRAY_LOCATION_ASSET: "/data/geo"
+    volumes:
+      - ${DATA_DIR:-./data}:/data
+      - hydrat-run:/run/hydrat
+      - /etc/machine-id:/etc/machine-id:ro
+      - ./config/config.yml:/etc/hydrat/config.yml:ro
+    networks:
+      - control
+      - egress
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    mem_limit: 512m
+    cpus: 0.5
+    pids_limit: 128
+    ulimits:
+      nofile: {soft: 2048, hard: 4096}
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/api/health"]
+      interval: 15s
+      timeout: 3s
+      retries: 6
+
+volumes:
+  hydrat-run:
+
+networks:
+  control:
+    internal: true
+  egress:

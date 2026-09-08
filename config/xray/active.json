@@ -1,0 +1,85 @@
+{
+  "log": {"access": "none", "loglevel": "warning"},
+  "api": {
+    "tag": "api",
+    "services": ["HandlerService", "RoutingService"]
+  },
+  "policy": {
+    "levels": {
+      "0": {
+        "handshake": 4,
+        "connIdle": 30,
+        "uplinkOnly": 0,
+        "downlinkOnly": 0
+      }
+    }
+  },
+  "inbounds": [
+    {
+      "tag": "api",
+      "listen": "127.0.0.1",
+      "port": 10087,
+      "protocol": "dokodemo-door",
+      "settings": {"address": "127.0.0.1"}
+    }
+    ,{"tag": "probe-slot-0", "listen": "127.0.0.1", "port": 12080, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-1", "listen": "127.0.0.1", "port": 12081, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-2", "listen": "127.0.0.1", "port": 12082, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-3", "listen": "127.0.0.1", "port": 12083, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-4", "listen": "127.0.0.1", "port": 12084, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-5", "listen": "127.0.0.1", "port": 12085, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-6", "listen": "127.0.0.1", "port": 12086, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-7", "listen": "127.0.0.1", "port": 12087, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-8", "listen": "127.0.0.1", "port": 12088, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-9", "listen": "127.0.0.1", "port": 12089, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-10", "listen": "127.0.0.1", "port": 12090, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-11", "listen": "127.0.0.1", "port": 12091, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-12", "listen": "127.0.0.1", "port": 12092, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-13", "listen": "127.0.0.1", "port": 12093, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-14", "listen": "127.0.0.1", "port": 12094, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-15", "listen": "127.0.0.1", "port": 12095, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-16", "listen": "127.0.0.1", "port": 12096, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-17", "listen": "127.0.0.1", "port": 12097, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-18", "listen": "127.0.0.1", "port": 12098, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-19", "listen": "127.0.0.1", "port": 12099, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-20", "listen": "127.0.0.1", "port": 12100, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-21", "listen": "127.0.0.1", "port": 12101, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-22", "listen": "127.0.0.1", "port": 12102, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-23", "listen": "127.0.0.1", "port": 12103, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-24", "listen": "127.0.0.1", "port": 12104, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-25", "listen": "127.0.0.1", "port": 12105, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-26", "listen": "127.0.0.1", "port": 12106, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-27", "listen": "127.0.0.1", "port": 12107, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-28", "listen": "127.0.0.1", "port": 12108, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-29", "listen": "127.0.0.1", "port": 12109, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-30", "listen": "127.0.0.1", "port": 12110, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-31", "listen": "127.0.0.1", "port": 12111, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-32", "listen": "127.0.0.1", "port": 12112, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-33", "listen": "127.0.0.1", "port": 12113, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-34", "listen": "127.0.0.1", "port": 12114, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-35", "listen": "127.0.0.1", "port": 12115, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-36", "listen": "127.0.0.1", "port": 12116, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-37", "listen": "127.0.0.1", "port": 12117, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-38", "listen": "127.0.0.1", "port": 12118, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-39", "listen": "127.0.0.1", "port": 12119, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-40", "listen": "127.0.0.1", "port": 12120, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-41", "listen": "127.0.0.1", "port": 12121, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-42", "listen": "127.0.0.1", "port": 12122, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-43", "listen": "127.0.0.1", "port": 12123, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-44", "listen": "127.0.0.1", "port": 12124, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-45", "listen": "127.0.0.1", "port": 12125, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-46", "listen": "127.0.0.1", "port": 12126, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+    ,{"tag": "probe-slot-47", "listen": "127.0.0.1", "port": 12127, "protocol": "socks", "settings": {"auth": "noauth", "udp": true}}
+  ],
+  "outbounds": [
+    {"tag": "api", "protocol": "freedom", "settings": {}},
+    {"tag": "block", "protocol": "blackhole", "settings": {"response": {"type": "none"}}}
+  ],
+  "routing": {
+    "domainStrategy": "AsIs",
+    "rules": [
+      {"type": "field", "ruleTag": "active-api", "inboundTag": ["api"], "outboundTag": "api"},
+      {"type": "field", "ruleTag": "active-initial-block", "network": "tcp,udp", "outboundTag": "block"}
+    ]
+  }
+}

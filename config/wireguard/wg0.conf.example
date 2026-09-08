@@ -1,0 +1,8 @@
+[Interface]
+Address = 10.44.0.1/24
+ListenPort = 51820
+SaveConfig = false
+
+# Replace this placeholder with a real WireGuard private key before use.
+# Example: wg genkey
+PrivateKey = REPLACE_WITH_BASE64_PRIVATE_KEY

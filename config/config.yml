@@ -1,0 +1,129 @@
+portal:
+  bind: 0.0.0.0:8080
+  gateway_bind: 10.44.0.1:80
+  controller_url: http://controller:8080
+  internal_token_path: /run/hydrat/portal.token
+
+paths:
+  database: /data/controller/hydrat.db
+  master_key: /data/controller/secrets/master.key
+  agent_socket: /run/hydrat/agent.sock
+  applied_plan: /data/agent/applied-plan.json
+  nft_config: /etc/hydrat/nftables.nft
+
+wireguard:
+  interface: wg0
+  config: /data/wireguard/wg0.conf
+  endpoint: ""
+  network: 10.44.0.0/24
+  listen_port: 51820
+  dns: 10.44.0.1
+  mtu: 1420
+
+xray:
+  binary: /usr/local/bin/xray
+  api_address: 127.0.0.1:10085
+  probe_api_address: 127.0.0.1:10086
+  probe_socks_port_base: 11080
+  active_api_address: 127.0.0.1:10087
+  active_socks_port_base: 12080
+  dns_resolver: 1.1.1.1
+  dns_resolvers: [1.1.1.1, 9.9.9.9, 8.8.8.8]
+  main_config: /etc/hydrat/xray-main.json
+  probe_config: /etc/hydrat/xray-probe.json
+  active_config: /etc/hydrat/xray-active.json
+
+inventory:
+  max_candidates: 10000
+  working_pool_size: 200
+  retirement_grace: 15m
+  retired_retention: 1m
+
+probes:
+  fast_workers: 8
+  full_workers: 4
+  active_workers: 32
+  active_route_limit: 16
+  active_overlap: 2
+  fast_deadline: 6s
+  full_deadline: 20s
+  tor_fast_deadline: 5m
+  tor_full_deadline: 6m
+  active_interval: 2s
+  active_deadline: 1900ms
+  active_response_slack: 75ms
+  active_proof_grace: 15s
+  gate_endpoints:
+    youtube: "https://www.youtube.com/generate_204"
+    chatgpt: "https://chatgpt.com/"
+    openai: "https://api.openai.com/v1/models"
+    telegram: "https://web.telegram.org/"
+    instagram: "https://www.instagram.com/"
+
+probe_runtime:
+  max_probes: 250
+  max_rss_mib: 256
+  max_fds: 2048
+  drain_timeout: 25s
+  stop_timeout: 5s
+  readiness_timeout: 60s
+  cleanup_timeout: 3s
+
+qoe:
+  enabled: true
+  active_interval: 15s
+  idle_interval: 5m
+  degraded_interval: 1m
+  deadline: 10s
+  workers: 4
+  standby_candidates: 3
+  sample_bytes: 65536
+  window_size: 5
+  bad_samples: 3
+  recovery_good_samples: 4
+  availability_window: 20
+  availability_failures: 2
+  initial_ttfb_limit: 3s
+  ttfb_floor: 1500ms
+  ttfb_multiplier: 2.5
+  initial_throughput_mbps: 0.256
+  throughput_ratio: 0.35
+  alternative_speedup: 1.3
+  retention: 168h
+
+tournament:
+  reset_window: 5h
+  promotion_ratio: 0.15
+
+tor:
+  warm_profiles: 3
+  explorer_profiles: 1
+  binary: /usr/bin/tor
+  lyrebird_binary: /usr/local/bin/lyrebird
+  data_dir: /data/tor/profiles
+  socks_port_base: 19050
+  probe_socks_port_base: 19150
+
+  probe_data_dir: /data/tor/probe-profiles
+routing:
+  fail_policy: closed
+  direct_suffixes: [".ru", ".su", ".xn--p1ai"]
+  direct_domains: ["thecode.media", "habr.com"]
+  # Запрет выхода через ноды в РФ (исключает их из квалификации во избежание утечки заблокированного трафика)
+  disallow_ru_egress: true
+  geo_rules:
+    enabled: true
+    auto_update: true
+    geoip_url: "https://raw.githubusercontent.com/runetfreedom/russia-blocked-geoip/release/geoip.dat"
+    geosite_url: "https://raw.githubusercontent.com/runetfreedom/russia-blocked-geosite/release/geosite.dat"
+    update_interval: 24h
+controller:
+  cycle_seconds: 30
+  source_refresh_seconds: 3600
+  probe_seconds: 300
+  hard_failover_budget: 800ms
+  placement_preempt_timeout: 100ms
+
+scheduler:
+  improve_ratio: 0.30
+  max_moves: 1

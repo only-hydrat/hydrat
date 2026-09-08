@@ -1,0 +1,53 @@
+{
+  "log": {"access": "none", "loglevel": "warning"},
+  "api": {
+    "tag": "api",
+    "listen": "127.0.0.1:10085",
+    "services": ["HandlerService", "RoutingService", "StatsService"]
+  },
+  "stats": {},
+  "policy": {
+    "system": {"statsInboundUplink": true, "statsInboundDownlink": true}
+  },
+  "inbounds": [
+    {
+      "tag": "tproxy-in",
+      "listen": "127.0.0.1",
+      "port": 12345,
+      "protocol": "dokodemo-door",
+      "settings": {"network": "tcp,udp", "followRedirect": true},
+      "sniffing": {
+        "enabled": true,
+        "destOverride": ["http", "tls", "quic"],
+        "routeOnly": true
+      },
+      "streamSettings": {"sockopt": {"tproxy": "tproxy"}}
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "block",
+      "protocol": "blackhole",
+      "settings": {"response": {"type": "none"}}
+    },
+    {
+      "tag": "api",
+      "protocol": "blackhole",
+      "settings": {"response": {"type": "none"}}
+    },
+    {
+      "tag": "direct",
+      "protocol": "freedom",
+      "settings": {"domainStrategy": "UseIPv4"},
+      "streamSettings": {"sockopt": {"mark": 2}}
+    }
+  ],
+  "routing": {
+    "domainStrategy": "AsIs",
+    "rules": [
+      {"type": "field", "ruleTag": "hydrat-api", "inboundTag": ["api"], "outboundTag": "api"},
+      {"type": "field", "ruleTag": "hydrat-direct-ru", "domain": ["regexp:.*\\.ru$"], "outboundTag": "direct"},
+      {"type": "field", "ruleTag": "hydrat-fail-closed", "network": "tcp,udp", "outboundTag": "block"}
+    ]
+  }
+}
