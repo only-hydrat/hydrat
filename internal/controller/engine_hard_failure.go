@@ -33,7 +33,7 @@ func (engine *Engine) hardFailureCycle(
 	if engine.store == nil || engine.agent == nil {
 		return errors.New("controller engine requires store and agent")
 	}
-	state, err := engine.settlePendingAppliedPlan(ctx, profileFence)
+	state, err := engine.settlePendingAppliedPlan(ctx, now, profiles, profileFence)
 	if err != nil {
 		return err
 	}
@@ -42,6 +42,8 @@ func (engine *Engine) hardFailureCycle(
 	}
 	mustSupersedePending := state.DesiredGeneration > state.AppliedGeneration ||
 		state.InvalidatedGeneration != 0
+	includeStaleHardFailures := state.DesiredGeneration > state.AppliedGeneration &&
+		state.DesiredReason == string(PlacementHardFailure)
 	plan, _, err := decodePersistedPlan(
 		"applied", state.AppliedGeneration, state.AppliedPlan,
 	)
@@ -50,7 +52,7 @@ func (engine *Engine) hardFailureCycle(
 	}
 	legacyAppliedCapacity := activeCriticalPlanCandidateCount(plan)
 	candidateStates, candidateSnapshot, err := engine.hardFailureCandidateStates(
-		ctx, now, plan, profiles,
+		ctx, now, plan, profiles, includeStaleHardFailures,
 	)
 	if err != nil {
 		return err
@@ -452,6 +454,8 @@ func semanticJSONEqual(left, right []byte) bool {
 
 func (engine *Engine) settlePendingAppliedPlan(
 	ctx context.Context,
+	now time.Time,
+	profiles ProfileProvider,
 	profileFence *planProfileFence,
 ) (store.PlanState, error) {
 	state, err := engine.store.LoadPlanState(ctx)
@@ -479,6 +483,15 @@ func (engine *Engine) settlePendingAppliedPlan(
 		); err != nil {
 			return store.PlanState{}, err
 		}
+		current, err := engine.pendingHardPlanPrimariesCurrent(
+			ctx, now, desired, profiles,
+		)
+		if err != nil {
+			return store.PlanState{}, err
+		}
+		if !current {
+			return state, nil
+		}
 		release, err := acquireTorPlanFence(desired, profileFence)
 		if err != nil {
 			return store.PlanState{}, err
@@ -496,6 +509,54 @@ func (engine *Engine) settlePendingAppliedPlan(
 		}
 	}
 	return state, nil
+}
+
+func (engine *Engine) pendingHardPlanPrimariesCurrent(
+	ctx context.Context,
+	now time.Time,
+	plan dataplane.DesiredPlan,
+	profiles ProfileProvider,
+) (bool, error) {
+	referenced := make(map[string]bool)
+	for _, route := range plan.Clients {
+		for _, handler := range []string{route.TCPOutbound, route.UDPOutbound} {
+			if candidateID := candidateIDFromHandler(handler, route.ClientID); candidateID != "" {
+				referenced[candidateID] = true
+			}
+		}
+	}
+	ids := make([]string, 0, len(referenced))
+	for candidateID := range referenced {
+		ids = append(ids, candidateID)
+	}
+	snapshot, err := engine.loadRouteCandidateSnapshotWithProfiles(
+		ctx, now, ids, referenced, profiles,
+	)
+	if err != nil {
+		return false, err
+	}
+	for _, route := range plan.Clients {
+		tcpID := candidateIDFromHandler(route.TCPOutbound, route.ClientID)
+		if tcpID != "" {
+			candidate, exists := snapshot.allByID[tcpID]
+			health, healthy := snapshot.healthByID[tcpID]
+			if !exists || !healthy || !health.Available ||
+				!candidate.TCPQualified || candidate.CircuitOpen {
+				return false, nil
+			}
+		}
+		udpID := candidateIDFromHandler(route.UDPOutbound, route.ClientID)
+		if udpID != "" {
+			candidate, exists := snapshot.allByID[udpID]
+			health, healthy := snapshot.healthByID[udpID]
+			if !exists || !healthy || !health.Available ||
+				candidate.Protocol != scheduler.ProtocolVLESS ||
+				!candidate.UDPQualified || candidate.CircuitOpen {
+				return false, nil
+			}
+		}
+	}
+	return true, nil
 }
 
 func rewritePlanDNS(
@@ -606,6 +667,7 @@ func (engine *Engine) hardFailureCandidateStates(
 	now time.Time,
 	plan dataplane.DesiredPlan,
 	profiles ProfileProvider,
+	includeStale bool,
 ) (map[string]hardFailureCandidateState, routeCandidateSnapshot, error) {
 	references := uniqueCandidateReferences(plan.Outbounds)
 	snapshot, err := engine.loadRouteCandidateSnapshotWithProfiles(
@@ -619,7 +681,8 @@ func (engine *Engine) hardFailureCandidateStates(
 		health := snapshot.healthByID[candidateID]
 		result[candidateID] = hardFailureCandidateState{
 			hardFailed: health.ActiveCurrent &&
-				engine.activeHardFailureObservationFresh(now, health.ActiveObservedAt) &&
+				((includeStale && !health.Available) ||
+					engine.activeHardFailureObservationFresh(now, health.ActiveObservedAt)) &&
 				health.ActiveHardFailure,
 			candidate: candidate,
 		}

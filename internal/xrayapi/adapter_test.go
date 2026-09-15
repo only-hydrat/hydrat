@@ -31,7 +31,7 @@ func TestAdapterUsesXrayHandlerAndRoutingAPIsWithoutRestart(t *testing.T) {
 
 	wantArgs := [][]string{
 		{"api", "ado", "--server=127.0.0.1:10085"},
-		{"api", "adrules", "--server=127.0.0.1:10085"},
+		{"api", "adrules", "--timeout=20", "--server=127.0.0.1:10085"},
 		{"api", "rmo", "--server=127.0.0.1:10085", "candidate-a"},
 	}
 	if !reflect.DeepEqual(runner.args, wantArgs) {
@@ -459,7 +459,7 @@ func TestAdapterSwitchesAffectedClientsWithOneCompleteRuleReplacement(t *testing
 		t.Fatalf("adrules calls=%d want=1", len(runner.stdin))
 	}
 	for index, args := range runner.args {
-		if !reflect.DeepEqual(args, []string{"api", "adrules", "--server=127.0.0.1:10085"}) {
+		if !reflect.DeepEqual(args, []string{"api", "adrules", "--timeout=20", "--server=127.0.0.1:10085"}) {
 			t.Fatalf("call %d args=%v", index, args)
 		}
 	}
@@ -473,6 +473,23 @@ func TestAdapterSwitchesAffectedClientsWithOneCompleteRuleReplacement(t *testing
 	assertRuleOutbound(t, final, "hydrat-client-bob-tcp", "stable")
 	assertRuleOutbound(t, final, "hydrat-client-bob-udp", "stable")
 	assertRuleOutbound(t, final, "hydrat-fail-closed", "block")
+}
+
+func TestAdapterRouteReplacementAllowsLoadedXrayToFinish(t *testing.T) {
+	runner := &recordingRunner{}
+	adapter := NewAdapter("xray", "127.0.0.1:10085", "9.9.9.9", runner)
+	route := dataplane.ClientRoute{
+		ClientID: "alice", SourceCIDR: "10.44.0.2/32",
+		TCPOutbound: "route", UDPOutbound: "route",
+	}
+
+	if err := adapter.ReplaceRoutesStaged(context.Background(), nil, []dataplane.ClientRoute{route}, []dataplane.ClientRoute{route}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"api", "adrules", "--timeout=20", "--server=127.0.0.1:10085"}
+	if !reflect.DeepEqual(runner.args[0], want) {
+		t.Fatalf("adrules args=%v want=%v", runner.args[0], want)
+	}
 }
 
 func TestAdapterReturnsUnknownFinalOutcomeAfterOneCall(t *testing.T) {

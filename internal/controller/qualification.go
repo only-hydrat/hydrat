@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"sort"
 	"time"
 
 	"github.com/only-hydrat/hydrat/internal/agentapi"
@@ -55,9 +56,9 @@ type QualificationService struct {
 	TorQualificationBudget time.Duration
 	// TorMutationTimeout bounds each working-pool/profile reconciliation. Zero
 	// is unlimited.
-	TorMutationTimeout time.Duration
-	Promotions         chan<- struct{}
-	DisallowRUEgress   bool
+	TorMutationTimeout       time.Duration
+	Promotions               chan<- struct{}
+	DisallowRUEgress         bool
 	beforeWorkingPoolList    func(attempt int)
 	beforeWorkingPoolReplace func(attempt int)
 	beforeWorkingPoolPayload func(attempt, index int, candidate store.Candidate)
@@ -373,25 +374,133 @@ func (service QualificationService) runAgent(ctx context.Context, now time.Time)
 	return runConcurrentQualificationLanes(
 		ctx,
 		func(laneCtx context.Context) error {
-			fastJobs, err := service.discoveryJobs(
-				laneCtx, vlessCandidates, now, tournament.ProbeFast,
-			)
-			if err != nil {
-				return err
-			}
-			if err := service.runProbeJobs(
-				laneCtx, now, fastJobs, tournament.ProbeFast, service.FastWorkers,
-			); err != nil {
-				return err
-			}
 			fullJobs, err := service.discoveryJobs(
 				laneCtx, vlessCandidates, now, tournament.ProbeFull,
 			)
 			if err != nil {
 				return err
 			}
+			healthRows, err := service.Store.ListCandidateHealth(laneCtx)
+			if err != nil {
+				return err
+			}
+			udpQualified := make(map[string]bool, len(healthRows))
+			healthByID := make(map[string]store.CandidateHealth, len(healthRows))
+			cachedTCP := make(map[string]bool, len(healthRows))
+			for _, row := range healthRows {
+				udpQualified[row.CandidateID] = row.UDPQualified
+				healthByID[row.CandidateID] = row
+			}
+			probeStates, err := service.Store.ListCandidateProbeStates(laneCtx)
+			if err != nil {
+				return err
+			}
+			for _, state := range probeStates {
+				if state.Status == store.CandidateUnknown || state.Status == store.CandidatePreflight {
+					row := healthByID[state.CandidateID]
+					cachedTCP[state.CandidateID] = row.Available && row.TCPQualified
+				}
+			}
+			promotionJobs := make([]qualificationJob, 0, len(fullJobs))
+			attemptedPromotions := make(map[string]struct{})
+			for _, job := range fullJobs {
+				if job.priority == tournament.PriorityOneSuccess ||
+					udpQualified[job.candidate.ID] || cachedTCP[job.candidate.ID] {
+					job.retryInfrastructure = udpQualified[job.candidate.ID] || cachedTCP[job.candidate.ID]
+					promotionJobs = append(promotionJobs, job)
+					attemptedPromotions[job.candidate.Fingerprint] = struct{}{}
+				}
+			}
+			sort.SliceStable(promotionJobs, func(i, j int) bool {
+				return udpQualified[promotionJobs[i].candidate.ID] &&
+					!udpQualified[promotionJobs[j].candidate.ID]
+			})
 			if err := service.runProbeJobs(
-				laneCtx, now, fullJobs, tournament.ProbeFull, service.FullWorkers,
+				laneCtx, now, promotionJobs, tournament.ProbeFull, service.FullWorkers,
+			); err != nil {
+				return err
+			}
+			confirmationJobs, err := service.discoveryJobs(
+				laneCtx, vlessCandidates, now, tournament.ProbeFull,
+			)
+			if err != nil {
+				return err
+			}
+			confirmations := confirmationJobs[:0]
+			for _, job := range confirmationJobs {
+				_, attempted := attemptedPromotions[job.candidate.Fingerprint]
+				if attempted && job.priority == tournament.PriorityOneSuccess {
+					confirmations = append(confirmations, job)
+				}
+			}
+			if err := service.runProbeJobs(
+				laneCtx, now, confirmations, tournament.ProbeFull, service.FullWorkers,
+			); err != nil {
+				return err
+			}
+			fastJobs, err := service.discoveryJobs(
+				laneCtx, vlessCandidates, now, tournament.ProbeFast,
+			)
+			if err != nil {
+				return err
+			}
+			udpRecoveryFast := make([]qualificationJob, 0)
+			remainingFast := make([]qualificationJob, 0, len(fastJobs))
+			udpRecovery := make(map[string]struct{})
+			for _, job := range fastJobs {
+				if udpQualified[job.candidate.ID] {
+					job.retryInfrastructure = true
+					udpRecoveryFast = append(udpRecoveryFast, job)
+					udpRecovery[job.candidate.Fingerprint] = struct{}{}
+					attemptedPromotions[job.candidate.Fingerprint] = struct{}{}
+				} else {
+					remainingFast = append(remainingFast, job)
+				}
+			}
+			if err := service.runProbeJobs(
+				laneCtx, now, udpRecoveryFast, tournament.ProbeFast, service.FastWorkers,
+			); err != nil {
+				return err
+			}
+			for confirmation := 0; confirmation < 2; confirmation++ {
+				recoveryJobs, err := service.discoveryJobs(
+					laneCtx, vlessCandidates, now, tournament.ProbeFull,
+				)
+				if err != nil {
+					return err
+				}
+				recovery := recoveryJobs[:0]
+				for _, job := range recoveryJobs {
+					_, attempted := udpRecovery[job.candidate.Fingerprint]
+					if attempted && (confirmation == 0 || job.priority == tournament.PriorityOneSuccess) {
+						recovery = append(recovery, job)
+					}
+				}
+				if err := service.runProbeJobs(
+					laneCtx, now, recovery, tournament.ProbeFull, service.FullWorkers,
+				); err != nil {
+					return err
+				}
+			}
+			if err := service.runProbeJobs(
+				laneCtx, now, remainingFast, tournament.ProbeFast, service.FastWorkers,
+			); err != nil {
+				return err
+			}
+			fullJobs, err = service.discoveryJobs(
+				laneCtx, vlessCandidates, now, tournament.ProbeFull,
+			)
+			if err != nil {
+				return err
+			}
+			remaining := fullJobs[:0]
+			for _, job := range fullJobs {
+				if _, attempted := attemptedPromotions[job.candidate.Fingerprint]; !attempted {
+					remaining = append(remaining, job)
+				}
+			}
+			if err := service.runProbeJobs(
+				laneCtx, now, remaining, tournament.ProbeFull, service.FullWorkers,
 			); err != nil {
 				return err
 			}
@@ -431,4 +540,3 @@ func runConcurrentQualificationLanes(
 	}
 	return errors.Join(found...)
 }
-

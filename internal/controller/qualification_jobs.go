@@ -14,10 +14,11 @@ import (
 )
 
 type qualificationJob struct {
-	candidate   store.Candidate
-	payload     string
-	reservation store.ObservationReservation
-	priority    tournament.Priority
+	candidate           store.Candidate
+	payload             string
+	reservation         store.ObservationReservation
+	priority            tournament.Priority
+	retryInfrastructure bool
 }
 
 type qualificationResult struct {
@@ -246,7 +247,18 @@ func (service QualificationService) runProbeJobs(
 		go func() {
 			defer workers.Done()
 			for job := range jobs {
-				results <- service.executeProbe(ctx, job, stage)
+				result := service.executeProbe(ctx, job, stage)
+				if job.retryInfrastructure &&
+					(result.err != nil || result.response.FailureClass == agentapi.FailureInfrastructure) {
+					timer := time.NewTimer(time.Second)
+					select {
+					case <-timer.C:
+						result = service.executeProbe(ctx, job, stage)
+					case <-ctx.Done():
+						timer.Stop()
+					}
+				}
+				results <- result
 			}
 		}()
 	}

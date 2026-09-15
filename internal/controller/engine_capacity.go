@@ -25,6 +25,16 @@ func (engine *Engine) NormalizeActiveCriticalRoutes(
 	if err != nil {
 		return err
 	}
+	if state.DesiredGeneration > state.AppliedGeneration &&
+		state.DesiredReason == string(PlacementHardFailure) {
+		if err := engine.CycleForReason(ctx, now, PlacementHardFailure); err != nil {
+			return err
+		}
+	}
+	state, err = engine.store.LoadPlanState(ctx)
+	if err != nil {
+		return err
+	}
 	desired, _, hasDesired, err := validatePersistedPlanState(state)
 	if err != nil {
 		return err
@@ -85,7 +95,6 @@ func (engine *Engine) ActiveCardinalityReady(ctx context.Context, _ time.Time) e
 	}
 }
 
-
 const (
 	// A full greedy/search slice can evaluate the 200-candidate pool once for
 	// each of the 16 active-critical slots (plus its baseline evaluation). Keep
@@ -110,7 +119,6 @@ func isActiveCriticalCoverageError(err error) bool {
 	var coverageErr *ActiveCriticalCoveragePlanError
 	return errors.As(err, &coverageErr)
 }
-
 
 func (err *ActiveCriticalCoveragePlanError) Error() string {
 	detail := "no feasible cover"
@@ -341,6 +349,13 @@ func (engine *Engine) scheduleCandidatesForCycle(
 			(len(full.witnessIDs) > 0 && len(full.witnessIDs) <= limit)) {
 		return candidates, nil
 	}
+	if incumbent, found, incumbentErr := incumbentPlusReserveCoverage(
+		ctx, now, placement, clients, candidates, required, limit, evaluate,
+	); incumbentErr != nil {
+		return nil, incumbentErr
+	} else if found {
+		return incumbent, nil
+	}
 	if cached, found, cacheErr := engine.cachedBootstrapCoverageCandidates(
 		now, placement, clients, candidates,
 	); cacheErr != nil {
@@ -392,6 +407,85 @@ func (engine *Engine) scheduleCandidatesForCycle(
 	return engine.cappedScheduleCandidatesWithFull(
 		ctx, now, placement, clients, candidates, &full,
 	)
+}
+
+func incumbentPlusReserveCoverage(
+	ctx context.Context,
+	now time.Time,
+	placement *scheduler.Scheduler,
+	clients []scheduler.Client,
+	candidates []scheduler.Candidate,
+	required []string,
+	limit int,
+	evaluate func(
+		context.Context, time.Time, *scheduler.Scheduler,
+		[]scheduler.Client, []scheduler.Candidate, []string,
+	) (criticalCoverageEvaluation, error),
+) ([]scheduler.Candidate, bool, error) {
+	sliceCtx, cancel := context.WithTimeout(ctx, activeCriticalCoverageWallBudget)
+	defer cancel()
+	budget := newCriticalCoverageBudget(limit)
+	evaluatePool := func(pool []scheduler.Candidate) (criticalCoverageEvaluation, error) {
+		return budget.evaluate(
+			sliceCtx, pool,
+			func(evalCtx context.Context, pool []scheduler.Candidate) (criticalCoverageEvaluation, error) {
+				return evaluate(evalCtx, now, placement, clients, pool, required)
+			},
+		)
+	}
+	incumbentIDs := make(map[string]bool)
+	for _, client := range clients {
+		for _, candidateID := range []string{client.Assignment.TCP, client.Assignment.UDP} {
+			if candidateID != "" {
+				incumbentIDs[candidateID] = true
+			}
+		}
+	}
+	ordered := orderCriticalCoverageCandidates(clients, candidates)
+	incumbent := make([]scheduler.Candidate, 0, len(incumbentIDs)+1)
+	for _, candidate := range ordered {
+		if incumbentIDs[candidate.ID] {
+			incumbent = append(incumbent, candidate)
+		}
+	}
+	if len(incumbent) == 0 || len(incumbent) >= limit {
+		return nil, false, nil
+	}
+	covered, err := evaluatePool(incumbent)
+	if err != nil {
+		return nil, false, coverageSliceError(ctx, budget, err, true)
+	}
+	if coverageComplete(covered, required) {
+		return incumbent, true, nil
+	}
+	for len(incumbent) < limit {
+		bestGain, bestIndex := len(covered.satisfied), -1
+		var best criticalCoverageEvaluation
+		for index, candidate := range ordered {
+			if incumbentIDs[candidate.ID] {
+				continue
+			}
+			trial := append(append([]scheduler.Candidate(nil), incumbent...), candidate)
+			evaluation, evaluateErr := evaluatePool(trial)
+			if evaluateErr != nil {
+				return nil, false, coverageSliceError(ctx, budget, evaluateErr, true)
+			}
+			if coverageComplete(evaluation, required) {
+				return trial, true, nil
+			}
+			if len(evaluation.satisfied) > bestGain {
+				bestGain, bestIndex, best = len(evaluation.satisfied), index, evaluation
+			}
+		}
+		if bestIndex < 0 {
+			return nil, false, nil
+		}
+		candidate := ordered[bestIndex]
+		incumbent = append(incumbent, candidate)
+		incumbentIDs[candidate.ID] = true
+		covered = best
+	}
+	return nil, false, nil
 }
 
 // resumeScheduleCoverageSession gives an existing retained search its next
@@ -491,11 +585,130 @@ func (engine *Engine) cappedProspectiveScheduleCandidates(
 	if evaluate == nil {
 		evaluate = evaluateProspectiveCriticalCoverage
 	}
+	if cached, found, err := engine.cachedBootstrapCoverageCandidates(
+		now, placement, clients, candidates,
+	); err != nil {
+		return nil, err
+	} else if found {
+		required := criticalCoverageRequirements(clients)
+		covered, evaluateErr := evaluate(
+			ctx, now, placement, clients, cached, required,
+		)
+		if evaluateErr != nil {
+			return nil, evaluateErr
+		}
+		if coverageComplete(covered, required) {
+			return cached, nil
+		}
+		resetCriticalCoverageSession(
+			&engine.bootstrapCoverageMu, &engine.bootstrapCoverageSearch,
+		)
+	}
+	required := criticalCoverageRequirements(clients)
+	preferred := orderCriticalCoverageCandidates(clients, candidates)
+	if len(preferred) > engine.activeCriticalRouteLimit {
+		preferred = preferred[:engine.activeCriticalRouteLimit]
+	}
+	preferredCtx, cancelPreferred := context.WithTimeout(ctx, activeCriticalCoverageWallBudget)
+	preferredCoverage, preferredErr := evaluate(
+		preferredCtx, now, placement, clients, preferred, required,
+	)
+	cancelPreferred()
+	if preferredErr != nil {
+		if errors.Is(preferredErr, context.DeadlineExceeded) && ctx.Err() == nil {
+			return nil, (&criticalCoverageBudget{limit: engine.activeCriticalRouteLimit}).exhaustedError(nil)
+		}
+		return nil, preferredErr
+	}
+	if coverageComplete(preferredCoverage, required) {
+		witnessIDs := make(map[string]bool, len(preferredCoverage.witnessIDs))
+		for _, candidateID := range preferredCoverage.witnessIDs {
+			witnessIDs[candidateID] = true
+		}
+		witness := make([]scheduler.Candidate, 0, len(witnessIDs))
+		for _, candidate := range preferred {
+			if witnessIDs[candidate.ID] {
+				witness = append(witness, candidate)
+			}
+		}
+		if len(witness) > 0 && len(witness) == len(witnessIDs) {
+			witnessCtx, cancelWitness := context.WithTimeout(ctx, activeCriticalCoverageWallBudget)
+			witnessCoverage, witnessErr := evaluate(
+				witnessCtx, now, placement, clients, witness, required,
+			)
+			cancelWitness()
+			if witnessErr == nil && coverageComplete(witnessCoverage, required) {
+				preferred = witness
+			}
+		}
+		if err := engine.retainProspectiveCoverage(
+			now, placement, clients, candidates, preferred,
+		); err != nil {
+			return nil, err
+		}
+		return preferred, nil
+	}
+	if incumbent, found, err := incumbentPlusReserveCoverage(
+		ctx, now, placement, clients, candidates, required,
+		engine.activeCriticalRouteLimit, evaluate,
+	); err != nil {
+		return nil, err
+	} else if found {
+		if err := engine.retainProspectiveCoverage(
+			now, placement, clients, candidates, incumbent,
+		); err != nil {
+			return nil, err
+		}
+		return incumbent, nil
+	}
 	return engine.cappedCriticalCandidates(
 		ctx, now, placement, clients, candidates,
 		&engine.bootstrapCoverageMu, &engine.bootstrapCoverageSearch,
 		evaluate, true, false, nil,
 	)
+}
+
+func (engine *Engine) retainProspectiveCoverage(
+	now time.Time,
+	placement *scheduler.Scheduler,
+	clients []scheduler.Client,
+	candidates []scheduler.Candidate,
+	covered []scheduler.Candidate,
+) error {
+	key, err := criticalCoveragePlanningKeyWithProofMode(
+		now, placement, clients, candidates,
+		engine.activeCriticalRouteLimit, false,
+	)
+	if err != nil {
+		return err
+	}
+	retainCompletedCoverage(
+		&engine.bootstrapCoverageMu, &engine.bootstrapCoverageSearch,
+		key, covered,
+	)
+	return nil
+}
+
+func retainCompletedCoverage(
+	mu *sync.Mutex,
+	search **criticalCoverageSession,
+	key string,
+	candidates []scheduler.Candidate,
+) {
+	mu.Lock()
+	defer mu.Unlock()
+	if *search != nil {
+		(*search).stop(true)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	completedIDs := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		completedIDs = append(completedIDs, candidate.ID)
+	}
+	*search = &criticalCoverageSession{
+		key: key, completed: true, completedIDs: completedIDs,
+		ctx: ctx, cancel: cancel,
+	}
 }
 
 func resetCriticalCoverageSession(
@@ -668,6 +881,35 @@ func (engine *Engine) cappedCriticalCandidates(
 		}
 	}
 	session := *coverageSearch
+	revalidate := func(found []scheduler.Candidate) ([]scheduler.Candidate, error) {
+		byID := make(map[string]scheduler.Candidate, len(candidates))
+		for _, candidate := range candidates {
+			byID[candidate.ID] = candidate
+		}
+		current := make([]scheduler.Candidate, 0, len(found))
+		for _, candidate := range found {
+			fresh, exists := byID[candidate.ID]
+			if !exists {
+				return nil, errors.New("completed critical coverage candidate is missing")
+			}
+			current = append(current, fresh)
+		}
+		required := session.required
+		if len(required) == 0 {
+			required = criticalCoverageRequirements(clients)
+		}
+		covered, err := evaluate(ctx, now, placement, clients, current, required)
+		if err != nil {
+			return nil, err
+		}
+		if coverageComplete(covered, required) {
+			return current, nil
+		}
+		return nil, &ActiveCriticalCoveragePlanError{
+			Limit: limit, Unsatisfied: missingCoverage(covered, required),
+			SearchExhausted: true, Evaluations: 1,
+		}
+	}
 	if session.completed {
 		byID := make(map[string]scheduler.Candidate, len(candidates))
 		for _, candidate := range candidates {
@@ -682,6 +924,12 @@ func (engine *Engine) cappedCriticalCandidates(
 				return nil, errors.New("cached critical coverage candidate is missing")
 			}
 			result = append(result, candidate)
+		}
+		result, err := revalidate(result)
+		if err != nil {
+			session.stop(true)
+			*coverageSearch = nil
+			return nil, err
 		}
 		return result, nil
 	}
@@ -706,6 +954,12 @@ func (engine *Engine) cappedCriticalCandidates(
 	}
 	if complete {
 		if found != nil {
+			found, err = revalidate(found)
+			if err != nil {
+				session.stop(true)
+				*coverageSearch = nil
+				return nil, err
+			}
 			if retainCompleted {
 				session.stop(true)
 				session.completed = true
@@ -854,7 +1108,6 @@ func resumeCriticalCoveragePlanner(
 		}
 	}
 }
-
 
 // CapacityReady validates the applied failover surface without mutating the
 // scheduler or publishing a new plan. Fresh evidence remains protected by the

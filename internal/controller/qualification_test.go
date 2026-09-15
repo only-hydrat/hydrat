@@ -493,6 +493,206 @@ func (agent *countingQualificationAgent) ProbeFull(
 	return agentapi.ProbeResponse{CandidateID: request.CandidateID}, nil
 }
 
+type orderedQualificationAgent struct {
+	probes                 []string
+	fullInfrastructureOnce map[string]bool
+}
+
+func (agent *orderedQualificationAgent) ProbeFast(
+	_ context.Context,
+	request agentapi.ProbeRequest,
+) (agentapi.ProbeResponse, error) {
+	agent.probes = append(agent.probes, "fast:"+request.CandidateID)
+	return agentapi.ProbeResponse{CandidateID: request.CandidateID, Success: true}, nil
+}
+
+func (agent *orderedQualificationAgent) ProbeFull(
+	_ context.Context,
+	request agentapi.ProbeRequest,
+) (agentapi.ProbeResponse, error) {
+	agent.probes = append(agent.probes, "full:"+request.CandidateID)
+	if agent.fullInfrastructureOnce[request.CandidateID] {
+		delete(agent.fullInfrastructureOnce, request.CandidateID)
+		return agentapi.ProbeResponse{
+			CandidateID:  request.CandidateID,
+			FailureClass: agentapi.FailureInfrastructure,
+		}, nil
+	}
+	return agentapi.ProbeResponse{
+		CandidateID: request.CandidateID,
+		Success:     true,
+		Evaluation: health.Evaluation{
+			Score: 90, TCPQualified: true, UDPQualified: true,
+		},
+	}, nil
+}
+
+func TestQualificationPromotesOneSuccessBeforeFastDiscovery(t *testing.T) {
+	database, candidates := qualificationStore(t, []store.CandidateInput{
+		{
+			Kind: sources.KindVLESS, Label: "a-udp-recheck", Fingerprint: "a-udp-recheck",
+			Payload: "vless://a-udp-recheck@example.net:443?security=tls",
+		},
+		{
+			Kind: sources.KindVLESS, Label: "a-one-success", Fingerprint: "a-one-success",
+			Payload: "vless://a-one-success@example.net:443?security=tls",
+		},
+		{
+			Kind: sources.KindVLESS, Label: "z-udp-one-success", Fingerprint: "z-udp-one-success",
+			Payload: "vless://z-udp-one-success@example.net:443?security=tls",
+		},
+		{
+			Kind: sources.KindVLESS, Label: "unseen", Fingerprint: "unseen",
+			Payload: "vless://unseen@example.net:443?security=tls",
+		},
+	})
+	now := time.Unix(1_800_000_000, 0)
+	seedVLESSFullProbeState(t, database, map[string]store.Candidate{
+		"a-one-success":     candidates["a-one-success"],
+		"z-udp-one-success": candidates["z-udp-one-success"],
+	}, now, true)
+	seedVLESSFullProbeState(t, database, map[string]store.Candidate{
+		"a-udp-recheck": candidates["a-udp-recheck"],
+	}, now, true)
+	seedVLESSFullProbeState(t, database, map[string]store.Candidate{
+		"a-udp-recheck": candidates["a-udp-recheck"],
+	}, now.Add(time.Second), false)
+	if err := database.SaveCandidateHealth(context.Background(), store.CandidateHealth{
+		CandidateID: candidates["z-udp-one-success"].ID,
+		Available:   true, TCPQualified: true, UDPQualified: true, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SaveCandidateHealth(context.Background(), store.CandidateHealth{
+		CandidateID: candidates["a-udp-recheck"].ID,
+		Available:   true, TCPQualified: true, UDPQualified: true, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	agent := &orderedQualificationAgent{}
+	service := QualificationService{
+		Store: database, Agent: agent, ResetWindow: 5 * time.Hour,
+		FastWorkers: 1, FullWorkers: 1,
+	}
+	if err := service.runAgent(context.Background(), now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	wantFirst := "full:" + candidates["z-udp-one-success"].ID
+	if len(agent.probes) == 0 || agent.probes[0] != wantFirst {
+		t.Fatalf("probe order=%v, want %q first", agent.probes, wantFirst)
+	}
+	wantSecond := "full:" + candidates["a-udp-recheck"].ID
+	if len(agent.probes) < 2 || agent.probes[1] != wantSecond {
+		t.Fatalf("probe order=%v, want %q second", agent.probes, wantSecond)
+	}
+	confirmations := 0
+	for _, probe := range agent.probes {
+		if probe == "fast:"+candidates["unseen"].ID {
+			break
+		}
+		if probe == wantSecond {
+			confirmations++
+		}
+	}
+	if confirmations != 2 {
+		t.Fatalf("probe order=%v, UDP recheck confirmations=%d want 2 before fast",
+			agent.probes, confirmations)
+	}
+}
+
+func TestQualificationRecoversCachedUDPBeforeOrdinaryFastDiscovery(t *testing.T) {
+	database, candidates := qualificationStore(t, []store.CandidateInput{
+		{
+			Kind: sources.KindVLESS, Label: "a-regular", Fingerprint: "a-regular",
+			Payload: "vless://a-regular@example.net:443?security=tls",
+		},
+		{
+			Kind: sources.KindVLESS, Label: "z-udp-recovery", Fingerprint: "z-udp-recovery",
+			Payload: "vless://z-udp-recovery@example.net:443?security=tls",
+		},
+	})
+	now := time.Unix(1_800_000_000, 0)
+	if err := database.SaveCandidateHealth(context.Background(), store.CandidateHealth{
+		CandidateID: candidates["z-udp-recovery"].ID,
+		Available:   true, TCPQualified: true, UDPQualified: true, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, transition := range []store.ProbeTransition{
+		{
+			Fingerprint: candidates["z-udp-recovery"].Fingerprint,
+			CandidateID: candidates["z-udp-recovery"].ID,
+			SourceID:    candidates["z-udp-recovery"].SourceID,
+			Success:     true, At: now.Add(-2 * time.Minute),
+		},
+		{
+			Fingerprint: candidates["z-udp-recovery"].Fingerprint,
+			CandidateID: candidates["z-udp-recovery"].ID,
+			SourceID:    candidates["z-udp-recovery"].SourceID,
+			Full:        true, Success: false, ErrorCode: "full_probe_failed", At: now,
+		},
+	} {
+		if _, err := database.RecordCandidateProbe(context.Background(), transition); err != nil {
+			t.Fatal(err)
+		}
+	}
+	udpID := candidates["z-udp-recovery"].ID
+	agent := &orderedQualificationAgent{
+		fullInfrastructureOnce: map[string]bool{udpID: true},
+	}
+	service := QualificationService{
+		Store: database, Agent: agent, ResetWindow: 5 * time.Hour,
+		FastWorkers: 1, FullWorkers: 1,
+	}
+	if err := service.runAgent(context.Background(), now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"full:" + udpID, "full:" + udpID, "full:" + udpID}
+	if len(agent.probes) < len(want) || !reflect.DeepEqual(agent.probes[:len(want)], want) {
+		t.Fatalf("probe order=%v want prefix=%v", agent.probes, want)
+	}
+}
+
+func TestQualificationRecoversCachedTCPBeforeOrdinaryDiscovery(t *testing.T) {
+	database, candidates := qualificationStore(t, []store.CandidateInput{
+		{
+			Kind: sources.KindVLESS, Label: "cached", Fingerprint: "cached",
+			Payload: "vless://cached@example.net:443?security=tls",
+		},
+		{
+			Kind: sources.KindVLESS, Label: "unseen", Fingerprint: "unseen",
+			Payload: "vless://unseen@example.net:443?security=tls",
+		},
+	})
+	now := time.Unix(1_800_000_000, 0)
+	cached := candidates["cached"]
+	if _, err := database.RecordCandidateProbe(context.Background(), store.ProbeTransition{
+		Fingerprint: cached.Fingerprint, CandidateID: cached.ID,
+		SourceID: cached.SourceID, Success: true, At: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SaveCandidateHealth(context.Background(), store.CandidateHealth{
+		CandidateID: cached.ID, Available: true, TCPQualified: true, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	agent := &orderedQualificationAgent{
+		fullInfrastructureOnce: map[string]bool{cached.ID: true},
+	}
+	service := QualificationService{
+		Store: database, Agent: agent, ResetWindow: 5 * time.Hour,
+		FastWorkers: 1, FullWorkers: 1,
+	}
+	if err := service.runAgent(context.Background(), now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"full:" + cached.ID, "full:" + cached.ID, "full:" + cached.ID}
+	if len(agent.probes) < len(want) || !reflect.DeepEqual(agent.probes[:len(want)], want) {
+		t.Fatalf("probe order=%v want prefix=%v", agent.probes, want)
+	}
+}
+
 type reservationInspectingQualificationAgent struct {
 	database  *store.Store
 	candidate store.Candidate

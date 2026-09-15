@@ -388,9 +388,6 @@ func (runtime Runtime) Start(ctx context.Context) error {
 		workers.Add(1)
 		go func() {
 			defer workers.Done()
-			if !waitForOrdinary() {
-				return
-			}
 			interval := positiveInterval(runtime.QoEInterval, 15*time.Second)
 			timer := time.NewTimer(interval)
 			defer timer.Stop()
@@ -853,4 +850,3 @@ func (runtime Runtime) Start(ctx context.Context) error {
 		return err
 	}
 }
-

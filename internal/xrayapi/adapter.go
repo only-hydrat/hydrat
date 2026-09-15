@@ -283,7 +283,7 @@ func (adapter *Adapter) ReplaceRoutes(ctx context.Context, routes []dataplane.Cl
 	if err != nil {
 		return err
 	}
-	return adapter.run(ctx, body, "api", "adrules", "--server="+adapter.server)
+	return adapter.run(ctx, body, "api", "adrules", "--timeout=20", "--server="+adapter.server)
 }
 
 func (adapter *Adapter) ReplaceRoutesStaged(
@@ -310,7 +310,7 @@ func (adapter *Adapter) ReplaceRoutesStaged(
 			return nil
 		}
 	}
-	if err := adapter.run(ctx, final, "api", "adrules", "--server="+adapter.server); err != nil {
+	if err := adapter.run(ctx, final, "api", "adrules", "--timeout=20", "--server="+adapter.server); err != nil {
 		return fmt.Errorf("install final routing rules: %w", err)
 	}
 	return nil

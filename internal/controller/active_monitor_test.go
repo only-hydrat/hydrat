@@ -128,7 +128,7 @@ func TestActiveMonitorProductionConfirmsHardFailureInsideOneProbeCycle(t *testin
 	}
 }
 
-func TestActiveMonitorRequiresTwoRoutedDNSFailures(t *testing.T) {
+func TestActiveMonitorRoutedDNSFailuresDoNotQuarantineLiveRoute(t *testing.T) {
 	database, _ := activeMonitorStore(t)
 	candidate := mustActiveMonitorCandidate(t, database)
 	base := time.Unix(1_900_000_000, 0)
@@ -155,8 +155,8 @@ func TestActiveMonitorRequiresTwoRoutedDNSFailures(t *testing.T) {
 	if err := monitor.Run(context.Background(), base.Add(3*time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if row := mustCandidateHealth(t, database)[0]; row.Available || !row.ActiveHardFailure {
-		t.Fatalf("two routed DNS failures did not quarantine route: %+v", row)
+	if row := mustCandidateHealth(t, database)[0]; !row.Available || row.ActiveHardFailure {
+		t.Fatalf("DNS-only failures quarantined live route: %+v", row)
 	}
 }
 

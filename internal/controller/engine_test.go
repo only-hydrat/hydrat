@@ -1674,8 +1674,8 @@ func TestEngineActiveCriticalCoverageExtendsFullPoolWitnessBeforeRestartingGreed
 	if !reflect.DeepEqual(ids, []string{"route-198", "route-199", "route-000"}) {
 		t.Fatalf("witness extension pool=%v", ids)
 	}
-	if evaluations != 3 {
-		t.Fatalf("witness extension evaluations=%d want 3", evaluations)
+	if evaluations != 4 {
+		t.Fatalf("witness extension evaluations=%d want 4 including final revalidation", evaluations)
 	}
 }
 
@@ -1719,6 +1719,162 @@ func TestEngineCycleKeepsFullCandidatePoolWhenScheduledWitnessFitsLimit(t *testi
 	}
 	if evaluations != 1 {
 		t.Fatalf("cycle full-pool evaluations=%d want 1", evaluations)
+	}
+}
+
+func TestEngineCycleUsesIncumbentPlusReserveBeforeBoundedSearch(t *testing.T) {
+	now := time.Unix(1_900_000_000, 0)
+	candidates := make([]scheduler.Candidate, 200)
+	for index := range candidates {
+		candidates[index].ID = fmt.Sprintf("route-%03d", index)
+	}
+	clients := []scheduler.Client{{
+		ID: "alice", Assignment: scheduler.Assignment{
+			TCP: "route-199", UDP: "route-199",
+		},
+	}}
+	placement := scheduler.New(scheduler.PolicyDefaults())
+	engine := NewEngine(nil, nil, nil, nil, nil, WithActiveCriticalRouteLimit(16))
+	required := criticalCoverageRequirements(clients)
+	complete := func() criticalCoverageEvaluation {
+		satisfied := make(map[string]bool, len(required))
+		for _, requirement := range required {
+			satisfied[requirement] = true
+		}
+		return criticalCoverageEvaluation{satisfied: satisfied}
+	}
+	engine.coverageEvaluate = func(
+		_ context.Context, _ time.Time, _ *scheduler.Scheduler,
+		_ []scheduler.Client, pool []scheduler.Candidate, _ []string,
+	) (criticalCoverageEvaluation, error) {
+		present := make(map[string]bool, len(pool))
+		for _, candidate := range pool {
+			present[candidate.ID] = true
+		}
+		if present["route-199"] && present["route-000"] && len(pool) <= 16 {
+			return complete(), nil
+		}
+		return criticalCoverageEvaluation{satisfied: map[string]bool{
+			"alice:tcp:primary": true,
+			"alice:udp:primary": true,
+		}}, nil
+	}
+	engine.bootstrapCoverageEvaluate = func(
+		_ context.Context, _ time.Time, _ *scheduler.Scheduler,
+		_ []scheduler.Client, pool []scheduler.Candidate, _ []string,
+	) (criticalCoverageEvaluation, error) {
+		if len(pool) == len(candidates) {
+			result := complete()
+			result.witnessIDs = []string{"route-001", "route-002"}
+			return result, nil
+		}
+		return complete(), nil
+	}
+
+	pool, err := engine.scheduleCandidatesForCycle(
+		context.Background(), now, placement, clients, candidates,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []string{pool[0].ID, pool[1].ID}; !slices.Equal(got, []string{"route-199", "route-000"}) {
+		t.Fatalf("coverage pool=%v want incumbent plus reserve", got)
+	}
+}
+
+func TestProspectiveCoverageUsesIncumbentPlusReserveBeforeBoundedSearch(t *testing.T) {
+	now := time.Unix(1_900_000_000, 0)
+	candidates := make([]scheduler.Candidate, 200)
+	for index := range candidates {
+		candidates[index].ID = fmt.Sprintf("route-%03d", index)
+	}
+	clients := []scheduler.Client{{
+		ID: "alice", Assignment: scheduler.Assignment{
+			TCP: "route-199", UDP: "route-199",
+		},
+	}}
+	engine := NewEngine(nil, nil, nil, nil, nil, WithActiveCriticalRouteLimit(16))
+	required := criticalCoverageRequirements(clients)
+	calls := 0
+	engine.bootstrapCoverageEvaluate = func(
+		_ context.Context, _ time.Time, _ *scheduler.Scheduler,
+		_ []scheduler.Client, pool []scheduler.Candidate, _ []string,
+	) (criticalCoverageEvaluation, error) {
+		calls++
+		if calls > 205 {
+			return criticalCoverageEvaluation{}, errors.New("test planning budget exhausted")
+		}
+		present := make(map[string]bool, len(pool))
+		for _, candidate := range pool {
+			present[candidate.ID] = true
+		}
+		satisfied := map[string]bool{
+			"alice:tcp:primary": true,
+			"alice:udp:primary": true,
+		}
+		if present["route-199"] && present["route-000"] {
+			satisfied["alice:tcp:reserve"] = true
+		}
+		if present["route-199"] && present["route-000"] && present["route-001"] && len(pool) <= 16 {
+			for _, requirement := range required {
+				satisfied[requirement] = true
+			}
+		}
+		return criticalCoverageEvaluation{satisfied: satisfied}, nil
+	}
+
+	pool, err := engine.cappedProspectiveScheduleCandidates(
+		context.Background(), now, scheduler.New(scheduler.PolicyDefaults()), clients, candidates,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := []string{pool[0].ID, pool[1].ID, pool[2].ID}; !slices.Equal(got, []string{"route-199", "route-000", "route-001"}) {
+		t.Fatalf("prospective pool=%v want incumbent plus reserves", got)
+	}
+}
+
+func TestProspectiveCoverageUsesPreferredBoundedPoolBeforeSubsetSearch(t *testing.T) {
+	now := time.Unix(1_900_000_000, 0)
+	candidates := make([]scheduler.Candidate, 200)
+	for index := range candidates {
+		candidates[index] = scheduler.Candidate{
+			ID: fmt.Sprintf("route-%03d", index), Protocol: scheduler.ProtocolVLESS,
+			TCPQualified: true, UDPQualified: true,
+		}
+	}
+	clients := []scheduler.Client{{ID: "alice"}}
+	engine := NewEngine(nil, nil, nil, nil, nil, WithActiveCriticalRouteLimit(16))
+	required := criticalCoverageRequirements(clients)
+	calls := 0
+	engine.bootstrapCoverageEvaluate = func(
+		_ context.Context, _ time.Time, _ *scheduler.Scheduler,
+		_ []scheduler.Client, pool []scheduler.Candidate, _ []string,
+	) (criticalCoverageEvaluation, error) {
+		calls++
+		if calls > 2 {
+			return criticalCoverageEvaluation{}, errors.New("subset search started")
+		}
+		if len(pool) != 16 && len(pool) != 2 {
+			return criticalCoverageEvaluation{satisfied: map[string]bool{}}, nil
+		}
+		satisfied := make(map[string]bool, len(required))
+		for _, requirement := range required {
+			satisfied[requirement] = true
+		}
+		return criticalCoverageEvaluation{
+			satisfied: satisfied, witnessIDs: []string{"route-000", "route-001"},
+		}, nil
+	}
+
+	pool, err := engine.cappedProspectiveScheduleCandidates(
+		context.Background(), now, scheduler.New(scheduler.PolicyDefaults()), clients, candidates,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pool) != 2 {
+		t.Fatalf("preferred prospective witness=%d want 2", len(pool))
 	}
 }
 
@@ -2238,7 +2394,43 @@ func TestCappedCoverageResumesPastFirstSliceWithoutEvaluationReplay(t *testing.T
 	}
 }
 
-func TestCappedCoverageInvalidatesFrontierWhenEvidenceChanges(t *testing.T) {
+func TestCappedCoverageRetainsFrontierWhenRankingChanges(t *testing.T) {
+	candidates := make([]scheduler.Candidate, 200)
+	for index := range candidates {
+		candidates[index].ID = fmt.Sprintf("candidate-%03d", index)
+	}
+	candidates[0].QoEStatus = qoe.StatusHealthy
+	candidates[0].QoEFresh = true
+	candidates[0].QoEEffective = time.Second
+	engine := NewEngine(nil, nil, nil, scheduler.New(scheduler.PolicyDefaults()), nil,
+		WithActiveCriticalRouteLimit(2),
+	)
+	fullEvaluations := 0
+	engine.coverageEvaluate = func(
+		_ context.Context, _ time.Time, _ *scheduler.Scheduler,
+		_ []scheduler.Client, pool []scheduler.Candidate, _ []string,
+	) (criticalCoverageEvaluation, error) {
+		if len(pool) == len(candidates) {
+			fullEvaluations++
+			return criticalCoverageEvaluation{satisfied: map[string]bool{"required": true}}, nil
+		}
+		return criticalCoverageEvaluation{satisfied: map[string]bool{}}, nil
+	}
+	now := time.Unix(1_900_000_000, 0)
+	placement := scheduler.New(scheduler.PolicyDefaults())
+	_, _ = engine.cappedScheduleCandidates(context.Background(), now, placement, nil, candidates)
+	if engine.coverageSearch == nil || fullEvaluations != 1 {
+		t.Fatalf("initial frontier=%v full evaluations=%d", engine.coverageSearch, fullEvaluations)
+	}
+	candidates[0].Score = 1
+	candidates[0].QoEEffective = 2 * time.Second
+	_, _ = engine.cappedScheduleCandidates(context.Background(), now, placement, nil, candidates)
+	if fullEvaluations != 1 {
+		t.Fatalf("score-only change replayed full evaluation; calls=%d", fullEvaluations)
+	}
+}
+
+func TestCappedCoverageRetainsFrontierWhenUnselectedSafetyEvidenceChanges(t *testing.T) {
 	candidates := make([]scheduler.Candidate, 200)
 	for index := range candidates {
 		candidates[index].ID = fmt.Sprintf("candidate-%03d", index)
@@ -2263,10 +2455,51 @@ func TestCappedCoverageInvalidatesFrontierWhenEvidenceChanges(t *testing.T) {
 	if engine.coverageSearch == nil || fullEvaluations != 1 {
 		t.Fatalf("initial frontier=%v full evaluations=%d", engine.coverageSearch, fullEvaluations)
 	}
-	candidates[0].Score = 1
+	candidates[0].TCPQualified = true
 	_, _ = engine.cappedScheduleCandidates(context.Background(), now, placement, nil, candidates)
-	if fullEvaluations != 2 {
-		t.Fatalf("changed evidence resumed stale frontier; full evaluations=%d", fullEvaluations)
+	if fullEvaluations != 1 {
+		t.Fatalf("unselected safety churn replayed full evaluation; calls=%d", fullEvaluations)
+	}
+}
+
+func TestResumeScheduleCoverageSessionRejectsCompletedFrontierWithoutCurrentCoverage(t *testing.T) {
+	now := time.Unix(1_900_000_000, 0)
+	clients := []scheduler.Client{{ID: "alice"}}
+	candidates := []scheduler.Candidate{
+		{ID: "candidate-a", Protocol: scheduler.ProtocolVLESS},
+		{ID: "candidate-b", Protocol: scheduler.ProtocolVLESS},
+		{ID: "candidate-c", Protocol: scheduler.ProtocolVLESS},
+	}
+	placement := scheduler.New(scheduler.PolicyDefaults())
+	engine := NewEngine(nil, nil, nil, placement, nil, WithActiveCriticalRouteLimit(2))
+	key, err := criticalCoveragePlanningKey(now, placement, clients, candidates, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionCtx, cancelSession := context.WithCancel(context.Background())
+	t.Cleanup(cancelSession)
+	engine.coverageSearch = &criticalCoverageSession{
+		key: key, completed: true, completedIDs: []string{"candidate-a", "candidate-b"},
+		ctx: sessionCtx, cancel: cancelSession,
+	}
+	evaluations := 0
+	engine.coverageEvaluate = func(
+		_ context.Context, _ time.Time, _ *scheduler.Scheduler,
+		_ []scheduler.Client, _ []scheduler.Candidate, _ []string,
+	) (criticalCoverageEvaluation, error) {
+		evaluations++
+		return criticalCoverageEvaluation{satisfied: map[string]bool{}}, nil
+	}
+
+	found, resumed, err := engine.resumeScheduleCoverageSession(
+		context.Background(), now, placement, clients, candidates, engine.coverageEvaluate,
+	)
+	var coverageErr *ActiveCriticalCoveragePlanError
+	if !resumed || !errors.As(err, &coverageErr) || found != nil {
+		t.Fatalf("found=%v resumed=%t err=%v", found, resumed, err)
+	}
+	if evaluations != 1 {
+		t.Fatalf("current snapshot evaluations=%d want 1", evaluations)
 	}
 }
 
@@ -2543,7 +2776,7 @@ func TestCappedCoverageFingerprintInvalidationCancelsAndJoinsOldTask(t *testing.
 	default:
 		t.Fatal("old fingerprint task did not start")
 	}
-	candidates[0].Score = 1
+	candidates[0].FailureDomain = "changed-domain"
 	found, err := engine.cappedScheduleCandidates(
 		context.Background(), now, placement, nil, candidates,
 	)
@@ -2661,7 +2894,7 @@ func TestCriticalCoveragePlanningKeyUsesOnlyBucketedClientSemantics(t *testing.T
 	}
 }
 
-func TestCriticalCoveragePlanningKeyInvalidatesOnlySchedulerVisibleChanges(t *testing.T) {
+func TestCriticalCoveragePlanningKeyInvalidatesOnlyStructuralChanges(t *testing.T) {
 	now := time.Unix(1_900_000_000, 0)
 	placement := scheduler.New(scheduler.PolicyDefaults())
 	clients := []scheduler.Client{{ID: "alice", Assignment: scheduler.Assignment{TCP: "route", UDP: "route"}}}
@@ -2678,14 +2911,6 @@ func TestCriticalCoveragePlanningKeyInvalidatesOnlySchedulerVisibleChanges(t *te
 		name   string
 		mutate func([]scheduler.Client, []scheduler.Candidate) ([]scheduler.Client, []scheduler.Candidate)
 	}{
-		{name: "active proof", mutate: func(c []scheduler.Client, p []scheduler.Candidate) ([]scheduler.Client, []scheduler.Candidate) {
-			p[0].ActiveFresh = false
-			return c, p
-		}},
-		{name: "eligibility", mutate: func(c []scheduler.Client, p []scheduler.Candidate) ([]scheduler.Client, []scheduler.Candidate) {
-			p[0].UDPQualified = false
-			return c, p
-		}},
 		{name: "domain", mutate: func(c []scheduler.Client, p []scheduler.Candidate) ([]scheduler.Client, []scheduler.Candidate) {
 			p[0].FailureDomain = "domain-b"
 			return c, p
@@ -2709,9 +2934,27 @@ func TestCriticalCoveragePlanningKeyInvalidatesOnlySchedulerVisibleChanges(t *te
 				t.Fatal(keyErr)
 			}
 			if key == base {
-				t.Fatalf("scheduler-visible %s change retained key", test.name)
+				t.Fatalf("structural %s change retained key", test.name)
 			}
 		})
+	}
+
+	changed := append([]scheduler.Candidate(nil), candidates...)
+	changed[0].TCPQualified = false
+	changed[0].UDPQualified = false
+	changed[0].ReserveEligible = false
+	changed[0].ActiveEligible = false
+	changed[0].ActiveFresh = false
+	changed[0].CircuitOpen = true
+	changed[0].Retiring = true
+	changed[0].QoEStatus = qoe.StatusDegraded
+	changed[0].QoEFresh = false
+	equivalent, err := criticalCoveragePlanningKey(now, placement, clients, changed, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if equivalent != base {
+		t.Fatal("mutable candidate evidence changed planning key")
 	}
 }
 
@@ -3173,7 +3416,7 @@ func TestEngineLegacyOverlimitActiveTargetsRejectImpossibleProspectiveCover(t *t
 	}
 }
 
-func TestProspectiveCoverageCachesCompletedIDsUntilSemanticKeyOrCardinalityChanges(
+func TestProspectiveCoverageCachesCompletedIDsAndRevalidatesEvidenceOrCardinalityChanges(
 	t *testing.T,
 ) {
 	now := time.Unix(1_900_000_000, 0)
@@ -3245,10 +3488,11 @@ func TestProspectiveCoverageCachesCompletedIDsUntilSemanticKeyOrCardinalityChang
 	}
 	if cached, err := engine.cappedProspectiveScheduleCandidates(
 		context.Background(), now.Add(100*time.Millisecond), placement, clients, proofOnly,
-	); err != nil || len(cached) != len(cover) || calls.Load() != completedCalls {
-		t.Fatalf("proof-only cache result=%d calls=%d/%d err=%v",
-			len(cached), calls.Load(), completedCalls, err)
+	); err != nil || len(cached) != len(cover) || calls.Load() != completedCalls+1 {
+		t.Fatalf("proof-only cache revalidation result=%d calls=%d/%d err=%v",
+			len(cached), calls.Load(), completedCalls+1, err)
 	}
+	completedCalls = calls.Load()
 	var exactCalls atomic.Int32
 	engine.coverageEvaluate = func(
 		context.Context, time.Time, *scheduler.Scheduler,
@@ -3273,14 +3517,22 @@ func TestProspectiveCoverageCachesCompletedIDsUntilSemanticKeyOrCardinalityChang
 	engine.coverageEvaluate = nil
 
 	changed := append([]scheduler.Candidate(nil), proofOnly...)
-	changed[len(changed)-1].ReserveEligible = false
+	covered := make(map[string]bool, len(cover))
+	for _, candidate := range cover {
+		covered[candidate.ID] = true
+	}
+	for index := range changed {
+		if covered[changed[index].ID] {
+			changed[index].ReserveEligible = false
+		}
+	}
 	if _, err := engine.cappedProspectiveScheduleCandidates(
 		context.Background(), now.Add(100*time.Millisecond), placement, clients, changed,
 	); err != nil && !errors.Is(err, ErrActiveCriticalCoverageExceeded) {
 		t.Fatal(err)
 	}
 	if calls.Load() == completedCalls {
-		t.Fatal("semantic eligibility change reused stale completed cover")
+		t.Fatal("degraded completed cover was not revalidated")
 	}
 	afterEligibilityChange := calls.Load()
 	if _, err := engine.cappedProspectiveScheduleCandidates(
@@ -3638,6 +3890,121 @@ func TestEngineHardFailureRetryReassertsItsOwnPendingGeneration(t *testing.T) {
 	if settled.DesiredGeneration != 2 || settled.AppliedGeneration != 2 ||
 		settled.DesiredReason != string(PlacementHardFailure) {
 		t.Fatalf("settled hard state=%+v", settled)
+	}
+}
+
+func TestEngineHardFailureDoesNotApplyPendingPlanWhosePrimaryFailed(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(1_900_000_000, 0)
+	database, candidates := newEngineQoEFixture(t, now, []engineQoECandidateSpec{
+		{name: "primary", kind: sources.KindVLESS, score: 100, tcp: true, udp: true, failureDomain: "domain-a"},
+		{name: "reserve", kind: sources.KindVLESS, score: 90, tcp: true, udp: true, failureDomain: "domain-b"},
+		{name: "fallback", kind: sources.KindVLESS, score: 80, tcp: true, failureDomain: "domain-c"},
+	})
+	qualifyEngineReserveCandidates(t, database, now, candidates)
+	putEngineQoEClient(
+		t, database, "alice", "10.44.0.2/32", now, false,
+		candidates["primary"].ID, candidates["primary"].ID,
+	)
+	agent := &engineAgent{}
+	engine := NewEngine(
+		database, agent, nil, scheduler.New(scheduler.PolicyDefaults()),
+		[]byte("secret"), WithQoEEnabled(false), WithActiveProbeInterval(time.Minute),
+	)
+	if err := engine.Cycle(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	markHardFailed := func(candidate store.Candidate, at time.Time) {
+		t.Helper()
+		reservation, err := database.ReserveCandidateObservation(
+			ctx, candidate, store.ObservationActive,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, commit, err := database.CommitCandidateActiveHardFailureObservation(
+			ctx, candidate, reservation, at,
+		); err != nil || !commit.Accepted {
+			t.Fatalf("hard failure commit=%+v err=%v", commit, err)
+		}
+	}
+	markHardFailed(candidates["primary"], now.Add(time.Second))
+	agent.applyErr = errors.New("hard apply response lost")
+	if err := engine.CycleForReason(
+		ctx, now.Add(2*time.Second), PlacementHardFailure,
+	); err == nil {
+		t.Fatal("hard apply fault did not leave a pending generation")
+	}
+	pendingRoute := agent.plans[len(agent.plans)-1].Clients[0]
+	pendingPrimaryID := candidateIDFromHandler(pendingRoute.TCPOutbound, "alice")
+	markHardFailed(engineCandidateByID(t, candidates, pendingPrimaryID), now.Add(3*time.Second))
+	agent.applyErr = nil
+	if err := engine.CycleForReason(
+		ctx, now.Add(3*time.Minute), PlacementHardFailure,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if got := enginePlanGenerations(agent.plans); !reflect.DeepEqual(got, []int64{1, 2, 3}) {
+		t.Fatalf("stale pending generation reached gateway: %v", got)
+	}
+	finalRoute := agent.plans[len(agent.plans)-1].Clients[0]
+	if got := candidateIDFromHandler(finalRoute.TCPOutbound, "alice"); got != candidates["fallback"].ID {
+		t.Fatalf("stale applied TCP primary was not replaced: %s", got)
+	}
+	if got := candidateIDFromHandler(finalRoute.UDPOutbound, "alice"); got != candidates["primary"].ID {
+		t.Fatalf("UDP without a replacement did not keep last-known-good: %s", got)
+	}
+}
+
+func TestEngineStartupNormalizationSettlesSafePendingHardPlanWithoutReserve(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(1_900_000_000, 0)
+	database, candidates := newEngineQoEFixture(t, now, []engineQoECandidateSpec{
+		{name: "primary", kind: sources.KindVLESS, score: 100, tcp: true, udp: true, failureDomain: "domain-a"},
+		{name: "reserve", kind: sources.KindVLESS, score: 90, tcp: true, udp: true, failureDomain: "domain-b"},
+	})
+	qualifyEngineReserveCandidates(t, database, now, candidates)
+	putEngineQoEClient(
+		t, database, "alice", "10.44.0.2/32", now, false,
+		candidates["primary"].ID, candidates["primary"].ID,
+	)
+	agent := &engineAgent{}
+	engine := NewEngine(
+		database, agent, nil, scheduler.New(scheduler.PolicyDefaults()),
+		[]byte("secret"), WithQoEEnabled(false), WithActiveProbeInterval(time.Minute),
+		WithActiveCriticalRouteLimit(16),
+	)
+	if err := engine.Cycle(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	reservation, err := database.ReserveCandidateObservation(
+		ctx, candidates["primary"], store.ObservationActive,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, commit, err := database.CommitCandidateActiveHardFailureObservation(
+		ctx, candidates["primary"], reservation, now.Add(time.Second),
+	); err != nil || !commit.Accepted {
+		t.Fatalf("hard failure commit=%+v err=%v", commit, err)
+	}
+	agent.applyErr = errors.New("hard apply response lost")
+	if err := engine.CycleForReason(
+		ctx, now.Add(2*time.Second), PlacementHardFailure,
+	); err == nil {
+		t.Fatal("hard apply fault did not leave a pending generation")
+	}
+	agent.applyErr = nil
+	err = engine.NormalizeActiveCriticalRoutes(ctx, now.Add(3*time.Second))
+	if !isActiveCriticalCoverageError(err) {
+		t.Fatalf("normalization error=%v want missing reserve coverage", err)
+	}
+	state, loadErr := database.LoadPlanState(ctx)
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if state.DesiredGeneration != 2 || state.AppliedGeneration != 2 {
+		t.Fatalf("safe pending hard plan remained stranded: %+v", state)
 	}
 }
 

@@ -273,13 +273,6 @@ func criticalCoveragePlanningKeyWithProofMode(
 
 type criticalCoverageCandidateKey struct {
 	ID, RouteKey, ProfileID, Protocol, FailureDomain string
-	Score                                            float64
-	TCPQualified, UDPQualified                       bool
-	ReserveEligible, ActiveEligible, ActiveFresh     bool
-	Warm, Retiring, CircuitOpen                      bool
-	QoEStatus                                        string
-	QoEEffective                                     int64
-	QoEFresh                                         bool
 }
 
 func normalizeCriticalCoverageCandidate(
@@ -290,27 +283,12 @@ func normalizeCriticalCoverageCandidate(
 
 func normalizeCriticalCoverageCandidateWithProofMode(
 	candidate scheduler.Candidate,
-	includeActiveProof bool,
+	_ bool,
 ) criticalCoverageCandidateKey {
-	key := criticalCoverageCandidateKey{
+	return criticalCoverageCandidateKey{
 		ID: candidate.ID, RouteKey: candidate.RouteKey, ProfileID: candidate.ProfileID,
 		Protocol: string(candidate.Protocol), FailureDomain: candidate.FailureDomain,
-		Score: candidate.Score, TCPQualified: candidate.TCPQualified,
-		UDPQualified:    candidate.Protocol == scheduler.ProtocolVLESS && candidate.UDPQualified,
-		ReserveEligible: candidate.ReserveEligible,
-		Warm:            candidate.Protocol == scheduler.ProtocolTor && candidate.Warm,
-		Retiring:        candidate.Retiring, CircuitOpen: candidate.CircuitOpen,
-		QoEStatus: string(candidate.QoEStatus),
 	}
-	if includeActiveProof && candidate.ReserveEligible {
-		key.ActiveEligible = candidate.ActiveEligible
-		key.ActiveFresh = candidate.ActiveFresh
-	}
-	if candidate.QoEStatus == "healthy" || candidate.QoEStatus == "degraded" {
-		key.QoEEffective = int64(candidate.QoEEffective)
-		key.QoEFresh = candidate.QoEFresh
-	}
-	return key
 }
 
 func disjointCoverageLowerBound(

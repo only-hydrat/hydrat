@@ -3719,6 +3719,40 @@ placementLoop:
 	waitRuntimeDone(t, done)
 }
 
+func TestRuntimeQoERunsWhileCapacityRecoveryIsPending(t *testing.T) {
+	coverageErr := &ActiveCriticalCoveragePlanError{
+		Limit: 16, Unsatisfied: []string{"alice:udp:reserve"}, SearchExhausted: true,
+	}
+	started := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	runtime := Runtime{
+		StartupNormalize: func(context.Context, time.Time) error { return coverageErr },
+		RecoveryReady:    func(context.Context, time.Time) error { return coverageErr },
+		CapacityReady:    func(context.Context, time.Time) error { return coverageErr },
+		QoE: func(context.Context, time.Time) error {
+			close(started)
+			return nil
+		},
+		QoEInterval:                5 * time.Millisecond,
+		NormalizationRetryInterval: time.Hour,
+		SourceRefreshInterval:      time.Hour, QualificationInterval: time.Hour,
+		PlacementInterval: time.Hour, ActiveInterval: time.Hour,
+	}
+	done := make(chan error, 1)
+	go func() { done <- runtime.Start(ctx) }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		cancel()
+		<-done
+		t.Fatal("QoE recovery waited for capacity readiness")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRuntimeQoESkipsOverdueTickAndUsesFreshTimestamp(t *testing.T) {
 	const interval = 40 * time.Millisecond
 	type invocation struct {

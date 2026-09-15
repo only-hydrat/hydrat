@@ -8,8 +8,8 @@ import (
 
 	"github.com/only-hydrat/hydrat/internal/health"
 	"github.com/only-hydrat/hydrat/internal/qoe"
-	"github.com/only-hydrat/hydrat/internal/sources"
 	"github.com/only-hydrat/hydrat/internal/qualifier"
+	"github.com/only-hydrat/hydrat/internal/sources"
 	"github.com/only-hydrat/hydrat/internal/store"
 )
 
@@ -115,9 +115,6 @@ func (monitor *ActiveMonitor) applyReservedObservations(
 			(proofFreshAfter.IsZero() ||
 				!row.ActiveObservedAt.Before(proofFreshAfter))
 		dnsHardFailure := monitor.observeAvailabilityLocked(candidateID, reserved)
-		if dnsHardFailure {
-			reserved.observation = health.Observation{}
-		}
 		completeFailure := !reserved.observation.PrimaryOK &&
 			!reserved.observation.ConfirmationOK
 		if completeFailure && !monitor.ConfirmCompleteFailureInCycle &&
