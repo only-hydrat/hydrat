@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>Русский</strong> · <a href="SECURITY.en.md">English</a> · <a href="SECURITY.zh-CN.md">简体中文</a>
+  <strong>Русский</strong> · <a href="docs/en/SECURITY.md">English</a> · <a href="docs/zh-CN/SECURITY.md">简体中文</a>
 </p>
 
 # Политика безопасности (Security Policy)

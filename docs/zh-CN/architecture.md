@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="architecture.md">Русский</a> · <a href="architecture.en.md">English</a> · <strong>简体中文</strong>
+  <a href="../architecture.md">Русский</a> · <a href="../en/architecture.md">English</a> · <strong>简体中文</strong>
 </p>
 
 # Hydrat 架构

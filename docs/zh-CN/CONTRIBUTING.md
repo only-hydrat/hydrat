@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="CONTRIBUTING.md">Русский</a> · <a href="CONTRIBUTING.en.md">English</a> · <strong>简体中文</strong>
+  <a href="../../CONTRIBUTING.md">Русский</a> · <a href="../en/CONTRIBUTING.md">English</a> · <strong>简体中文</strong>
 </p>
 
 # 参与 Hydrat 开发

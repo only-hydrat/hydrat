@@ -1,15 +1,15 @@
 <p align="center">
-  <a href="README.md">Русский</a> · <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
+  <a href="../../README.md">Русский</a> · <strong>English</strong> · <a href="../zh-CN/README.md">简体中文</a>
 </p>
 
 <p align="center">
-  <img src="assets/logo.png" alt="Hydrat Logo" width="680" />
+  <img src="../../assets/logo.png" alt="Hydrat Logo" width="680" />
 </p>
 <p align="center">
   <a href="https://golang.org"><img src="https://img.shields.io/github/go-mod/go-version/only-hydrat/hydrat?style=flat-square" alt="Go Version" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square" alt="License: MIT" /></a>
+  <a href="../../LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square" alt="License: MIT" /></a>
   <a href="https://github.com/only-hydrat/hydrat/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/only-hydrat/hydrat/ci.yml?branch=main&label=CI&style=flat-square" alt="CI Status" /></a>
-  <a href="docker-compose.yml"><img src="https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white&style=flat-square" alt="Docker" /></a>
+  <a href="../../docker-compose.yml"><img src="https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white&style=flat-square" alt="Docker" /></a>
 </p>
 
 <p align="center">
@@ -93,28 +93,28 @@ The administration portal is available inside the VPN at `http://10.44.0.1/`. On
 Statistics for active VLESS servers, available failure domains, ready Tor profiles, and the selection pipeline:
 
 <p align="center">
-  <img src="assets/dashboard.png" alt="Hydrat dashboard" width="900" />
+  <img src="../../assets/dashboard.png" alt="Hydrat dashboard" width="900" />
 </p>
 
 ### 2. Client management
 Create client profiles, inspect assigned TCP/UDP routes, and generate configuration files and QR codes for mobile devices:
 
 <p align="center">
-  <img src="assets/clients.png" alt="WireGuard client management" width="900" />
+  <img src="../../assets/clients.png" alt="WireGuard client management" width="900" />
 </p>
 
 ### 3. Sources and subscriptions
 Add VLESS, Tor, Happ, v2rayN, and Clash YAML subscriptions, preview valid candidates, and refresh them manually or automatically:
 
 <p align="center">
-  <img src="assets/sources.png" alt="Source management" width="900" />
+  <img src="../../assets/sources.png" alt="Source management" width="900" />
 </p>
 
 ### 4. Candidate tournament table
 Inspect server test results, quality scores, success streaks, QoE state, TTFB, and throughput:
 
 <p align="center">
-  <img src="assets/candidates.png" alt="Candidates and tournament table" width="900" />
+  <img src="../../assets/candidates.png" alt="Candidates and tournament table" width="900" />
 </p>
 
 ---
@@ -276,17 +276,17 @@ sudo tail -F "${DATA_DIR:-./data}/logs/gateway/gateway-current.log" \
 
 - **No default secrets:** the repository contains no preconfigured keys or passwords. Strong values are generated on first start.
 - **Restricted permissions:** private-key configurations use mode `0600`. The controller container uses `no-new-privileges: true` and `read_only: true`.
-- Backup and recovery procedures are documented in [`docs/operations.en.md`](docs/operations.en.md).
-- See [`SECURITY.en.md`](SECURITY.en.md) for architecture protections and responsible vulnerability disclosure.
+- Backup and recovery procedures are documented in [`operations.md`](operations.md).
+- See [`SECURITY.md`](SECURITY.md) for architecture protections and responsible vulnerability disclosure.
 
 ---
 
 ## Contributing
 
-Contributions are welcome. Read [`CONTRIBUTING.en.md`](CONTRIBUTING.en.md) and the [`CODE_OF_CONDUCT.en.md`](CODE_OF_CONDUCT.en.md) before submitting changes.
+Contributions are welcome. Read [`CONTRIBUTING.md`](CONTRIBUTING.md) and the [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) before submitting changes.
 
 ---
 
 ## License
 
-Distributed under the MIT License. See [`LICENSE`](LICENSE).
+Distributed under the MIT License. See [`LICENSE`](../../LICENSE).

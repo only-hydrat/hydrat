@@ -1,5 +1,5 @@
 <p align="center">
-  <strong>Русский</strong> · <a href="operations.en.md">English</a> · <a href="operations.zh-CN.md">简体中文</a>
+  <strong>Русский</strong> · <a href="en/operations.md">English</a> · <a href="zh-CN/operations.md">简体中文</a>
 </p>
 
 # Эксплуатация в production

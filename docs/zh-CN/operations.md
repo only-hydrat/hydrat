@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="operations.md">Русский</a> · <a href="operations.en.md">English</a> · <strong>简体中文</strong>
+  <a href="../operations.md">Русский</a> · <a href="../en/operations.md">English</a> · <strong>简体中文</strong>
 </p>
 
 # 生产环境运维

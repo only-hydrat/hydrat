@@ -1,15 +1,15 @@
 <p align="center">
-  <a href="README.md">Русский</a> · <a href="README.en.md">English</a> · <strong>简体中文</strong>
+  <a href="../../README.md">Русский</a> · <a href="../en/README.md">English</a> · <strong>简体中文</strong>
 </p>
 
 <p align="center">
-  <img src="assets/logo.png" alt="Hydrat 标志" width="680" />
+  <img src="../../assets/logo.png" alt="Hydrat 标志" width="680" />
 </p>
 <p align="center">
   <a href="https://golang.org"><img src="https://img.shields.io/github/go-mod/go-version/only-hydrat/hydrat?style=flat-square" alt="Go 版本" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square" alt="许可证：MIT" /></a>
+  <a href="../../LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square" alt="许可证：MIT" /></a>
   <a href="https://github.com/only-hydrat/hydrat/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/only-hydrat/hydrat/ci.yml?branch=main&label=CI&style=flat-square" alt="CI 状态" /></a>
-  <a href="docker-compose.yml"><img src="https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white&style=flat-square" alt="Docker" /></a>
+  <a href="../../docker-compose.yml"><img src="https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white&style=flat-square" alt="Docker" /></a>
 </p>
 
 <p align="center">
@@ -93,28 +93,28 @@
 展示活跃 VLESS 服务器、可用故障域、就绪 Tor 配置以及筛选流水线状态：
 
 <p align="center">
-  <img src="assets/dashboard.png" alt="Hydrat 仪表盘" width="900" />
+  <img src="../../assets/dashboard.png" alt="Hydrat 仪表盘" width="900" />
 </p>
 
 ### 2. 客户端管理
 一键创建客户端配置，查看已分配的 TCP/UDP 路由，并为移动设备生成配置文件和二维码：
 
 <p align="center">
-  <img src="assets/clients.png" alt="WireGuard 客户端管理" width="900" />
+  <img src="../../assets/clients.png" alt="WireGuard 客户端管理" width="900" />
 </p>
 
 ### 3. 来源与订阅
 添加 VLESS、Tor、Happ、v2rayN 或 Clash YAML 订阅，预览有效候选节点，并手动或自动刷新：
 
 <p align="center">
-  <img src="assets/sources.png" alt="来源管理" width="900" />
+  <img src="../../assets/sources.png" alt="来源管理" width="900" />
 </p>
 
 ### 4. 候选节点锦标赛表
 查看服务器测试结果、质量评分、连续成功次数、QoE 状态、TTFB 和吞吐量：
 
 <p align="center">
-  <img src="assets/candidates.png" alt="候选节点与锦标赛表" width="900" />
+  <img src="../../assets/candidates.png" alt="候选节点与锦标赛表" width="900" />
 </p>
 
 ---
@@ -276,17 +276,17 @@ sudo tail -F "${DATA_DIR:-./data}/logs/gateway/gateway-current.log" \
 
 - **无默认密钥：**仓库不包含预设密钥或密码；首次启动时会生成高强度值。
 - **受限权限：**含私钥的配置使用 `0600` 权限。Controller 容器启用 `no-new-privileges: true` 和 `read_only: true`。
-- 备份与恢复流程见 [`docs/operations.zh-CN.md`](docs/operations.zh-CN.md)。
-- 架构保护与负责任的漏洞披露流程见 [`SECURITY.zh-CN.md`](SECURITY.zh-CN.md)。
+- 备份与恢复流程见 [`operations.md`](operations.md)。
+- 架构保护与负责任的漏洞披露流程见 [`SECURITY.md`](SECURITY.md)。
 
 ---
 
 ## 参与贡献
 
-欢迎参与项目。提交更改前请阅读 [`CONTRIBUTING.zh-CN.md`](CONTRIBUTING.zh-CN.md) 和 [`CODE_OF_CONDUCT.zh-CN.md`](CODE_OF_CONDUCT.zh-CN.md)。
+欢迎参与项目。提交更改前请阅读 [`CONTRIBUTING.md`](CONTRIBUTING.md) 和 [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md)。
 
 ---
 
 ## 许可证
 
-本项目采用 MIT 许可证发布。详情见 [`LICENSE`](LICENSE)。
+本项目采用 MIT 许可证发布。详情见 [`LICENSE`](../../LICENSE)。

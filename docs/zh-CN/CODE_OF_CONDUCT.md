@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="CODE_OF_CONDUCT.md">Русский</a> · <a href="CODE_OF_CONDUCT.en.md">English</a> · <strong>简体中文</strong>
+  <a href="../../CODE_OF_CONDUCT.md">Русский</a> · <a href="../en/CODE_OF_CONDUCT.md">English</a> · <strong>简体中文</strong>
 </p>
 
 # Contributor Covenant 行为准则

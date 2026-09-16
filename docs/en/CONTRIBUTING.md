@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="CONTRIBUTING.md">Русский</a> · <strong>English</strong> · <a href="CONTRIBUTING.zh-CN.md">简体中文</a>
+  <a href="../../CONTRIBUTING.md">Русский</a> · <strong>English</strong> · <a href="../zh-CN/CONTRIBUTING.md">简体中文</a>
 </p>
 
 # Contributing to Hydrat
