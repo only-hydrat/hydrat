@@ -1,3 +1,7 @@
+<p align="right">
+  <strong>Русский</strong> · <a href="CONTRIBUTING.en.md">English</a> · <a href="CONTRIBUTING.zh-CN.md">简体中文</a>
+</p>
+
 # Участие в разработке Hydrat (Contributing)
 
 Мы рады вкладу сообщества в развитие Hydrat! Пожалуйста, ознакомьтесь с данным руководством перед отправкой изменений.

@@ -1,3 +1,7 @@
+<p align="right">
+  <strong>Русский</strong> · <a href="SECURITY.en.md">English</a> · <a href="SECURITY.zh-CN.md">简体中文</a>
+</p>
+
 # Политика безопасности (Security Policy)
 
 Команда Hydrat уделяет повышенное внимание безопасности сетевого шлюза, защите конфиденциальности пользователей и изоляции трафика.

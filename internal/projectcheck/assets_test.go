@@ -198,7 +198,7 @@ func TestDeploymentRequiresInContainerReadinessAfterComposeHealth(t *testing.T) 
 		"ROLLBACK_IMAGE", "BACKUP_PATH", "APPLIED_PLAN_BACKUP_PATH",
 		"FAILED_APPLIED_PLAN_PATH", "PREVIOUS_CONFIG_SHA256",
 		"sha256sum",
-		"image, embedded configuration, database, and applied plan",
+		"Принятый runtime состоит из image, встроенной конфигурации,",
 	} {
 		if !strings.Contains(operations, required) {
 			t.Errorf("operations deploy/rollback gate missing %q", required)
@@ -1203,7 +1203,7 @@ func TestProductionEnvironmentAndComposeContract(t *testing.T) {
 		`sudo tail -n 100 "${DATA_DIR:-./data}/logs/gateway/gateway-current.log" \`,
 		`  "${DATA_DIR:-./data}/logs/controller/controller-current.log"`,
 		`sudo tail -F "${DATA_DIR:-./data}/logs/gateway/gateway-current.log" \`,
-		"Retained logs require root or sudo access.",
+		"Для чтения сохранённых журналов требуются права root или sudo.",
 		"gateway и controller используют изолированные",
 	} {
 		if !strings.Contains(readme, expected) {

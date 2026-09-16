@@ -1,8 +1,12 @@
-# Production operations
+<p align="right">
+  <strong>Русский</strong> · <a href="operations.en.md">English</a> · <a href="operations.zh-CN.md">简体中文</a>
+</p>
 
-## Effective capacity
+# Эксплуатация в production
 
-`GET /api/admin/system` separates inventory from usable route diversity:
+## Эффективная ёмкость
+
+`GET /api/admin/system` разделяет размер inventory и реально доступное разнообразие маршрутов:
 
 ```json
 {
@@ -41,20 +45,20 @@
 }
 ```
 
-`working_pool_by_kind` counts current pool members. Effective VLESS capacity
-counts only closed failure domains with an available working candidate.
-Effective Tor capacity counts non-retiring `warm` profiles. Candidate payloads,
-raw endpoints, failure-domain inputs and Tor SOCKS addresses are not returned
-by this summary.
+`working_pool_by_kind` считает текущих участников пула. Эффективная ёмкость
+VLESS учитывает только закрытые failure domain с доступным рабочим кандидатом.
+Эффективная ёмкость Tor учитывает `warm`-профили, не находящиеся в retirement.
+Этот summary не возвращает payload кандидатов, исходные endpoint, входы
+failure domain и SOCKS-адреса Tor.
 `recent_migrations` содержит до 20 последних успешно применённых изменений
 assignment. Событие создаётся атомарно вместе с applied generation; причины:
 `hard_failure`, `quality_30_percent`, `capacity` и `manual`.
 
-Production acceptance requires at least one effective VLESS failure domain
-with TCP and UDP plus at least one warm Tor profile with TCP. Inventory or a
-large raw working-pool count alone is not sufficient.
+Для приёмки production нужен минимум один эффективный failure domain VLESS с
+TCP и UDP и минимум один warm-профиль Tor с TCP. Одного inventory или большого
+исходного значения working pool недостаточно.
 
-## Routing-state foundation
+## Основа состояния маршрутизации
 
 В текущей state foundation SQLite хранит независимые allocated/applied clocks
 для fast, full и active observations, `failure_generation`, lifecycle
@@ -235,64 +239,64 @@ production audit намеренно не создаёт искусственны
 отсутствие строк `draining` или `retired` является допустимым результатом, а
 forced transition покрывается store/controller tests.
 
-## Probe runtimes
+## Среды выполнения probe
 
-The agent owns separate background qualification and active-critical Xray
-processes. The main-Xray process that serves WireGuard clients is outside both
-lifecycles. Background Xray recycles after 250 completed probes. Active Xray
-keeps bounded, warmed candidate-to-slot mappings and does not recycle by probe
-count; resource, cleanup, readiness and child-exit guards remain active.
+Agent владеет отдельными Xray-процессами для background qualification и
+active-critical. Main Xray, обслуживающий клиентов WireGuard, не входит ни в
+один из этих lifecycle. Background Xray пересоздаётся после 250 завершённых
+probe. Active Xray хранит bounded прогретые сопоставления candidate-to-slot и
+не пересоздаётся по счётчику probe; ограничения ресурсов, cleanup, readiness и
+child-exit продолжают действовать.
 
-Fixed production limits:
+Фиксированные production-лимиты:
 
-| Limit | Value |
+| Лимит | Значение |
 | --- | ---: |
-| Background probes per epoch | 250 |
-| Active probes per epoch | unlimited by count |
+| Background probe за epoch | 250 |
+| Active probe за epoch | без ограничения по количеству |
 | Probe RSS | 256 MiB |
 | Probe file descriptors | 512 |
-| Drain timeout | 25 seconds |
-| Stop timeout | 5 seconds |
-| Readiness timeout | 60 seconds |
-| Cleanup timeout | 3 seconds |
+| Drain timeout | 25 секунд |
+| Stop timeout | 5 секунд |
+| Readiness timeout | 60 секунд |
+| Cleanup timeout | 3 секунды |
 
-A recycle closes admission, drains or cancels old leases, stops only the
-affected child, starts a replacement, waits for API readiness, increments the
-epoch and resets probe control state. Mutations carrying an older epoch fail
-closed. Expected safe recycle reasons are `probe_limit` for background only,
-plus `rss_limit`, `fd_limit`, `readiness_failure`, `child_exit` and
-`cleanup_failure` for either runtime.
+Recycle закрывает admission, дожидается или отменяет старые lease, останавливает
+только затронутый дочерний процесс, запускает замену, ждёт готовности API,
+увеличивает epoch и сбрасывает состояние управления probe. Изменения со старым
+epoch завершаются fail-closed. Ожидаемые безопасные причины recycle:
+`probe_limit` только для background, а также `rss_limit`, `fd_limit`,
+`readiness_failure`, `child_exit` и `cleanup_failure` для обеих сред.
 
-The first target snapshot is planned synchronously before readiness. Every
-later active cycle probes the last valid snapshot immediately while one bounded
-450 ms refresh prepares the next snapshot in parallel. A failed refresh keeps
-the last valid snapshot. Snapshots are fenced by applied generation; a changed
-primary or reserve is promoted to the critical lane from the committed
-assignments on the next tick even while a full refresh is still running. Two
-overlapping generations and 32 worker slots cover up to 16 critical routes
-without dropping a 2-second tick. Each cycle already performs two independent
-HTTP checks; routed DNS requires two consecutive active cycles. The bounded
-worst-case DNS pipeline envelope is two 2-second scheduling intervals +
-1900 ms server deadline + 75 ms response slack + 1 second planning +
-800 ms hard placement = 7775 ms. A complete two-endpoint HTTP failure needs
-only one scheduling interval and is bounded by 5775 ms. Repeated
-VLESS observations reuse a warmed slot; payload change, eviction or Xray epoch
-change is the only reason to configure that slot again.
+Первый snapshot целей планируется синхронно до readiness. Каждый следующий
+active-цикл немедленно проверяет последний валидный snapshot, а один bounded
+refresh на 450 ms параллельно готовит следующий. Ошибка refresh сохраняет
+последний валидный snapshot. Snapshot защищены applied generation; изменившийся
+primary или reserve на следующем tick переводится из committed assignments в
+critical lane, даже если полный refresh ещё выполняется. Два перекрывающихся
+generation и 32 worker slot покрывают до 16 critical routes без пропуска
+двухсекундного tick. Каждый цикл уже выполняет две независимые HTTP-проверки;
+routed DNS требует двух последовательных active-циклов. Худший bounded pipeline
+DNS: два интервала планирования по 2 секунды + server deadline 1900 ms + response
+slack 75 ms + planning 1 секунда + hard placement 800 ms = 7775 ms. Полный
+двухendpointный HTTP failure требует одного интервала и ограничен 5775 ms.
+Повторные VLESS observation используют прогретый slot; повторная конфигурация
+нужна только при изменении payload, eviction или epoch Xray.
 
-An expired hard-placement deadline latches readiness red and schedules bounded
-startup normalization without terminating the controller. A permanent apply
-invariant failure or a lower-priority placement that ignores cancellation is
-still fatal because continuing would allow unsafe concurrent mutations.
+Истёкший hard-placement deadline фиксирует readiness в красном состоянии и
+планирует bounded startup normalization, не завершая controller. Постоянное
+нарушение apply invariant или низкоприоритетный placement, игнорирующий отмену,
+остаётся fatal: продолжение допустило бы небезопасные конкурентные изменения.
 
-Inspect the agent directly:
+Прямая проверка agent:
 
 ```bash
 docker compose exec gateway sh -c \
   'curl --fail --silent --unix-socket /run/hydrat/agent.sock http://localhost/v1/health'
 ```
 
-Inspect the operator projection through the admin API from the WireGuard
-network. Legacy CLI authentication uses the custom password header:
+Проверка operator projection через admin API из сети WireGuard. Legacy CLI
+authentication использует специальный заголовок пароля:
 
 ```bash
 curl --fail --silent \
@@ -300,47 +304,47 @@ curl --fail --silent \
   http://10.44.0.1/api/admin/system
 ```
 
-For interactive use, `POST /api/admin/session` exchanges that header for an
-in-memory Bearer session; later requests use `Authorization: Bearer <token>`.
-The browser holds no password after login, and sessions end on logout, controller
-restart, 30 minutes idle, or eight hours absolute lifetime.
+Для интерактивной работы `POST /api/admin/session` обменивает этот заголовок на
+Bearer-сессию в памяти; дальнейшие запросы используют
+`Authorization: Bearer <token>`. После входа браузер не хранит пароль. Сессия
+завершается при logout, restart controller, 30 минутах простоя или после восьми
+часов абсолютного времени жизни.
 
-Do not paste either response into public reports without checking it for
-deployment-specific identifiers.
+Не вставляйте ответы в публичные отчёты без проверки deployment-specific ID.
 
-## VLESS failure-domain recovery
+## Восстановление failure domain VLESS
 
-Hydrat derives opaque route and failure-domain identities from normalized VLESS
-configuration. Three distinct hard failures in one domain during five minutes
-open its circuit for 10 minutes. Placement excludes the whole open domain.
-Qualification probes one deterministic current canary; a successful full probe
-closes the circuit, while a failed canary extends it.
+Hydrat выводит непрозрачные identity маршрута и failure domain из нормализованной
+конфигурации VLESS. Три разных hard failure в одном domain за пять минут
+открывают circuit на 10 минут. Placement исключает весь открытый domain.
+Qualification проверяет один детерминированно выбранный текущий canary:
+успешный full probe закрывает circuit, неуспешный продлевает его.
 
-The failure event, candidate health and probe state are committed atomically.
-Delayed events older than a later success are ignored, and a failure wins an
-equal-second timestamp tie. This prevents out-of-order active checks from
-reopening or closing a recovered domain incorrectly.
+Failure event, health кандидата и probe state коммитятся атомарно. Запоздавшие
+события старше последующего success игнорируются; при одинаковой секунде
+timestamp побеждает failure. Это не позволяет out-of-order active-проверкам
+ошибочно открыть или закрыть восстановленный domain.
 
-## Diagnostic retention
+## Хранение диагностических данных
 
-Application logs are UTC-hourly segments under `${DATA_DIR}/logs`. Closed
-segments whose complete interval ended at or before `now-72h` are removed at
-startup and once per minute. Docker logging is disabled to avoid a second
-unbounded copy.
+Журналы приложения хранятся часовыми UTC-сегментами в `${DATA_DIR}/logs`.
+Закрытые сегменты, полный интервал которых завершился не позднее `now-72h`,
+удаляются при запуске и затем раз в минуту. Docker logging отключён, чтобы не
+создавать вторую неограниченную копию.
 
-SQLite `events` and `probe_samples` use a stricter record-level rule:
+SQLite `events` и `probe_samples` используют более строгое правило для записей:
 
 ```text
 delete where created_at <= now UTC - 72 hours
 ```
 
-The controller performs this maintenance before its initial source refresh and
-then every minute. It deletes each table in indexed transactional batches of
-1000 until fewer than 1000 eligible rows remain. Errors are logged and retried
-on the next minute. Durable state, QoE history and failure-domain state are
-outside this prune.
+Controller выполняет maintenance до первого refresh источников, а затем каждую
+минуту. Каждая таблица очищается индексированными транзакционными batch по 1000
+строк, пока подходящих строк не останется меньше 1000. Ошибки журналируются и
+повторяются через минуту. Durable state, история QoE и состояние failure domain
+этим prune не затрагиваются.
 
-Useful checks:
+Полезные проверки:
 
 ```bash
 docker compose exec controller sh -c '
@@ -353,10 +357,11 @@ docker compose exec gateway sh -c '
 '
 ```
 
-## Release and rollback
+## Выпуск и откат
 
-Перед deployment сохраните exact prior image и создайте key-aware DB backup.
-Accepted runtime — это image, embedded configuration, database, and applied plan.
+Перед deployment сохраните точный предыдущий image и создайте backup БД с
+проверкой ключа. Принятый runtime состоит из image, встроенной конфигурации,
+database и applied plan.
 Значения `ROLLBACK_IMAGE`, `PREVIOUS_IMAGE_ID`, `PREVIOUS_CONFIG_SHA256`,
 `BACKUP_PATH`, `APPLIED_PLAN_BACKUP_PATH` и `FAILED_APPLIED_PLAN_PATH` запишите
 в release log: они нужны для rollback. `/etc/hydrat/config.yml` запечён в image;
@@ -446,34 +451,34 @@ backup immutable/read-only, выполняет SQLite `quick_check`, прове�
 
 После backup validation:
 
-1. Record current Git commit, both container image IDs, restart/OOM counters
-   and desired/applied generation.
-2. Build the exact pushed `main` commit; do not build an uncommitted checkout.
-3. Recreate **both** `gateway` and `controller` from that same image through
-   the mandatory readiness gate:
+1. Запишите текущий Git commit, ID image обоих контейнеров, счётчики restart/OOM
+   и desired/applied generation.
+2. Соберите точный commit, отправленный в `main`; не собирайте checkout с
+   незакоммиченными изменениями.
+3. Пересоздайте **оба** сервиса, `gateway` и `controller`, из одного image через
+   обязательный readiness gate:
 
    ```bash
    docker compose build
    ./scripts/deploy.sh
    ```
 
-   The script first waits for Compose health (`/api/health`), then runs bounded
-   in-container checks of `http://127.0.0.1:8080/api/ready`. A release is
-   accepted only after 10 consecutive successful checks, so one transient green
-   response cannot pass the gate. Defaults are 360 attempts, two seconds between
-   attempts, and a two-second curl deadline. The twelve-minute bound covers two
-   five-minute full-qualification rounds after a cold source refresh;
-   override them only with `HYDRAT_READY_ATTEMPTS`,
-   `HYDRAT_READY_CONSECUTIVE_SUCCESSES`, `HYDRAT_READY_DELAY_SECONDS`, and
-   `HYDRAT_READY_MAX_TIME_SECONDS`.
-4. If the command exits non-zero, the **release rejected** gate has failed:
-   do not record a successful deployment and do not delete `ROLLBACK_IMAGE` or
-   `BACKUP_PATH`. Keep the previous release artifacts and execute the rollback
-   procedure below.
-5. Do not use `docker compose down`, image/volume prune, host DNS changes or
-   commands against unrelated Compose projects.
+   Скрипт сначала ждёт Compose health (`/api/health`), затем выполняет bounded
+   проверки `http://127.0.0.1:8080/api/ready` внутри контейнера. Release
+   принимается только после 10 последовательных успехов, поэтому единичный
+   кратковременный зелёный ответ не проходит gate. По умолчанию выполняется до
+   360 попыток с интервалом 2 секунды и deadline curl 2 секунды. Ограничение в
+   12 минут покрывает два пятиминутных full-qualification цикла после холодного
+   refresh источников. Переопределять значения можно только через
+   `HYDRAT_READY_ATTEMPTS`, `HYDRAT_READY_CONSECUTIVE_SUCCESSES`,
+   `HYDRAT_READY_DELAY_SECONDS` и `HYDRAT_READY_MAX_TIME_SECONDS`.
+4. Ненулевой exit code означает отказ gate **release rejected**: не отмечайте
+   deployment успешным и не удаляйте `ROLLBACK_IMAGE` или `BACKUP_PATH`.
+   Сохраните артефакты предыдущего release и выполните rollback ниже.
+5. Не используйте `docker compose down`, prune image/volume, изменение DNS хоста
+   или команды для посторонних Compose projects.
 
-### Sticky-routing rollout
+### Развёртывание sticky routing
 
 Новая routing policy сначала проходит shadow-проверку на копии production DB и
 сохранённых событий: решение анализируется без подключения к live agent и без
@@ -504,32 +509,33 @@ WireGuard peer. Существующие пользовательские peers 
 gateway/test namespace; DNS хоста не изменяется и Compose-конфигурации других
 проектов не затрагиваются.
 
-After deployment verify:
+После deployment проверьте:
 
-- both containers are healthy and use SSD-backed data;
-- both containers use the same expected Hydrat image ID;
-- both embedded `/etc/hydrat/config.yml` digests equal the release digest;
-- desired generation equals applied generation;
-- the read-only routing-state audit above passes;
-- source refresh and VLESS/Tor qualification continue;
-- effective VLESS and Tor capacity are non-zero;
-- YouTube, Telegram, ChatGPT and the exact OpenAI API `401` gate pass through
-  assigned routes;
-- probe RSS/FD stay below fixed thresholds;
-- cgroup `oom`/`oom_kill` counters and kernel OOM baseline do not increase;
-- an active WireGuard client keeps traffic during a probe-only recycle;
-- two complete probe epochs finish without a no-op generation increase.
+- оба контейнера healthy и используют данные на SSD;
+- оба контейнера используют один ожидаемый ID image Hydrat;
+- digest встроенного `/etc/hydrat/config.yml` в обоих контейнерах совпадает с
+  release digest;
+- desired generation равен applied generation;
+- приведённый выше read-only audit состояния маршрутизации проходит;
+- refresh источников и qualification VLESS/Tor продолжаются;
+- эффективная ёмкость VLESS и Tor ненулевая;
+- YouTube, Telegram, ChatGPT и точный gate OpenAI API с ответом `401` проходят
+  через назначенные маршруты;
+- RSS/FD probe остаются ниже фиксированных порогов;
+- счётчики cgroup `oom`/`oom_kill` и baseline OOM ядра не растут;
+- активный клиент WireGuard сохраняет трафик во время recycle только probe;
+- два полных epoch probe завершаются без no-op увеличения generation.
 
-### Disposable production-tunnel acceptance
+### Приёмка через одноразовый production-туннель
 
-Container health and direct SOCKS checks do not prove the client path. Create a
-new temporary WireGuard peer through `POST /api/admin/clients`, download its
-`/api/admin/clients/{id}/config`, and use that config only in a disposable
-network namespace or privileged test container. Never reuse an existing peer:
-that would steal its WireGuard handshake and interrupt the owner.
+Container health и прямые SOCKS-проверки не доказывают клиентский путь. Создайте
+новый временный WireGuard peer через `POST /api/admin/clients`, скачайте его
+`/api/admin/clients/{id}/config` и используйте конфигурацию только в одноразовом
+network namespace или привилегированном test container. Никогда не используйте
+существующий peer: это перехватит его WireGuard handshake и прервёт связь владельца.
 
-After the temporary peer has a non-empty TCP and UDP primary/reserve mapping,
-exercise through that namespace:
+После появления у временного peer непустых TCP и UDP primary/reserve mapping
+выполните через этот namespace:
 
 ```bash
 curl --fail --show-error --max-time 10 https://www.youtube.com/generate_204
@@ -541,14 +547,14 @@ curl --fail --output /dev/null --show-error --max-time 60 \
   'https://speed.cloudflare.com/__down?bytes=10485760'
 ```
 
-Repeat the small requests while active generations overlap. Verify DNS through
-the peer's configured resolver, desired/applied generation stability, no new
-clustered `candidate_hard_failure`, and no route interruption during an active
-probe-runtime recycle. After the test, delete the temporary peer through
-`DELETE /api/admin/clients/{id}` and remove the namespace/container and config
-file. Also require `GET /api/admin/profiles` to show controller-visible warm Tor
-profiles and the routing-state audit to show non-empty TCP mappings after any
-gateway restart.
+Повторяйте небольшие запросы при перекрывающихся active generation. Проверьте DNS
+через resolver из конфигурации peer, стабильность desired/applied generation,
+отсутствие новых групп `candidate_hard_failure` и отсутствие разрыва маршрута
+во время recycle active probe-runtime. После теста удалите временный peer через
+`DELETE /api/admin/clients/{id}`, затем namespace/container и файл конфигурации.
+Кроме того, `GET /api/admin/profiles` должен показывать видимые controller warm
+профили Tor, а audit состояния маршрутизации — непустые TCP mapping после любого
+restart gateway.
 
 Rollback schema/state foundation всегда восстанавливает оба артефакта. Сначала
 проверьте записанные значения и остановите **оба** Hydrat service. Пока

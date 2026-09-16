@@ -1,3 +1,7 @@
+<p align="right">
+  <strong>Русский</strong> · <a href="architecture.en.md">English</a> · <a href="architecture.zh-CN.md">简体中文</a>
+</p>
+
 # Архитектура Hydrat
 
 Hydrat состоит из двух Go-процессов в разных network namespace.
