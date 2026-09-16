@@ -1,9 +1,6 @@
 services:
   gateway:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: hydrat:latest
+    image: ${HYDRAT_IMAGE:-ghcr.io/only-hydrat/hydrat:1.0.1}
     restart: unless-stopped
     init: true
     command: ["agent"]
@@ -47,10 +44,7 @@ services:
       start_period: 20s
 
   controller:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: hydrat:latest
+    image: ${HYDRAT_IMAGE:-ghcr.io/only-hydrat/hydrat:1.0.1}
     restart: unless-stopped
     init: true
     user: "10001:10001"

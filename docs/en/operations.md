@@ -365,8 +365,8 @@ configuration, database, and applied plan. Record `ROLLBACK_IMAGE`,
 `PREVIOUS_IMAGE_ID`, `PREVIOUS_CONFIG_SHA256`, `BACKUP_PATH`,
 `APPLIED_PLAN_BACKUP_PATH`, and `FAILED_APPLIED_PLAN_PATH` in the release log;
 rollback requires them. `/etc/hydrat/config.yml` is baked into the image. The
-checkout's `config/config.yml` is only a build input for the exact commit and is
-not mounted into running containers.
+checkout's `config/config.yml` is a build input only when building from source;
+it is not mounted into running containers.
 
 ```bash
 set -eu
@@ -378,7 +378,9 @@ test -n "$CONTROLLER_ID"
 PREVIOUS_IMAGE_ID=$(docker inspect "$GATEWAY_ID" --format '{{.Image}}')
 test "$(docker inspect "$CONTROLLER_ID" --format '{{.Image}}')" = \
   "$PREVIOUS_IMAGE_ID"
-test "$(docker image inspect hydrat:latest --format '{{.Id}}')" = \
+CURRENT_IMAGE_REF=$(docker inspect "$GATEWAY_ID" --format '{{.Config.Image}}')
+test -n "$CURRENT_IMAGE_REF"
+test "$(docker image inspect "$CURRENT_IMAGE_REF" --format '{{.Id}}')" = \
   "$PREVIOUS_IMAGE_ID"
 PREVIOUS_CONFIG_SHA256=$(docker compose exec -T gateway \
   sha256sum /etc/hydrat/config.yml | awk '{print $1}')
@@ -452,15 +454,22 @@ After backup validation:
 
 1. Record current Git commit, both container image IDs, restart/OOM counters
    and desired/applied generation.
-2. Build the exact pushed `main` commit; do not build an uncommitted checkout.
-3. Recreate **both** `gateway` and `controller` from that same image through
-   the mandatory readiness gate:
+2. For an official release, set the desired `HYDRAT_IMAGE` tag in `.env` and
+   pull it. For development, build the exact commit with `docker-compose.dev.yml`;
+   do not build an uncommitted checkout.
+3. Recreate **both** services from the same image through the readiness gate:
 
+   Prebuilt image (default):
    ```bash
-   docker compose build
+   docker compose pull
    ./scripts/deploy.sh
    ```
 
+   Local source build (development):
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.dev.yml build
+   HYDRAT_IMAGE=hydrat:dev ./scripts/deploy.sh
+   ```
    The script first waits for Compose health (`/api/health`), then runs bounded
    in-container checks of `http://127.0.0.1:8080/api/ready`. A release is
    accepted only after 10 consecutive successful checks, so one transient green
@@ -581,8 +590,8 @@ for service in controller gateway; do
   test "$(docker inspect "$container" --format '{{.State.Running}}')" = false
 done
 
-docker image tag "$ROLLBACK_IMAGE" hydrat:latest
-test "$(docker image inspect hydrat:latest --format '{{.Id}}')" = \
+export HYDRAT_IMAGE="${ROLLBACK_IMAGE}"
+test "$(docker image inspect "$HYDRAT_IMAGE" --format '{{.Id}}')" = \
   "$PREVIOUS_IMAGE_ID"
 
 docker compose run --rm --no-deps --entrypoint /bin/sh gateway \

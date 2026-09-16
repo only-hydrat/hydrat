@@ -287,7 +287,7 @@ docker compose exec gateway sh -c '
 
 ## 发布与回滚
 
-部署前请保留精确的旧镜像，并创建可使用主密钥验证的数据库备份。已验收运行状态由镜像、内嵌配置、数据库和已应用计划共同组成。请将 `ROLLBACK_IMAGE`、`PREVIOUS_IMAGE_ID`、`PREVIOUS_CONFIG_SHA256`、`BACKUP_PATH`、`APPLIED_PLAN_BACKUP_PATH` 和 `FAILED_APPLIED_PLAN_PATH` 记录到发布日志；回滚需要这些值。`/etc/hydrat/config.yml` 已烘焙进镜像。Checkout 中的 `config/config.yml` 仅作为精确 commit 的构建输入，不会挂载到运行容器。
+部署前请保留精确的旧镜像，并创建可使用主密钥验证的数据库备份。已验收运行状态由镜像、内嵌配置、数据库和已应用计划共同组成。请将 `ROLLBACK_IMAGE`、`PREVIOUS_IMAGE_ID`、`PREVIOUS_CONFIG_SHA256`、`BACKUP_PATH`、`APPLIED_PLAN_BACKUP_PATH` 和 `FAILED_APPLIED_PLAN_PATH` 记录到发布日志；回滚需要这些值。`/etc/hydrat/config.yml` 已烘焙进镜像。Checkout 中的 `config/config.yml` 仅在从源码构建时作为输入，不会挂载到运行容器。
 
 ```bash
 set -eu
@@ -299,7 +299,9 @@ test -n "$CONTROLLER_ID"
 PREVIOUS_IMAGE_ID=$(docker inspect "$GATEWAY_ID" --format '{{.Image}}')
 test "$(docker inspect "$CONTROLLER_ID" --format '{{.Image}}')" = \
   "$PREVIOUS_IMAGE_ID"
-test "$(docker image inspect hydrat:latest --format '{{.Id}}')" = \
+CURRENT_IMAGE_REF=$(docker inspect "$GATEWAY_ID" --format '{{.Config.Image}}')
+test -n "$CURRENT_IMAGE_REF"
+test "$(docker image inspect "$CURRENT_IMAGE_REF" --format '{{.Id}}')" = \
   "$PREVIOUS_IMAGE_ID"
 PREVIOUS_CONFIG_SHA256=$(docker compose exec -T gateway \
   sha256sum /etc/hydrat/config.yml | awk '{print $1}')
@@ -367,12 +369,19 @@ test -s "$tempdir/reopened.db"
 备份验证后：
 
 1. 记录当前 Git commit、两个容器镜像 ID、restart/OOM 计数及 desired/applied generation。
-2. 构建已推送到 `main` 的精确 commit；不要构建包含未提交更改的 checkout。
+2. 部署官方发布版本时，在 `.env` 中用 `HYDRAT_IMAGE` 指定目标版本并拉取镜像。开发时使用 `docker-compose.dev.yml` 构建精确 commit；不要构建包含未提交更改的 checkout。
 3. 使用同一镜像重新创建 **gateway 和 controller 两个服务**，并通过强制 readiness gate：
 
+   预构建镜像部署（默认）：
    ```bash
-   docker compose build
+   docker compose pull
    ./scripts/deploy.sh
+   ```
+
+   从源码本地构建（开发模式）：
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.dev.yml build
+   HYDRAT_IMAGE=hydrat:dev ./scripts/deploy.sh
    ```
 
    脚本先等待 Compose health（`/api/health`），再在容器内有界检查 `http://127.0.0.1:8080/api/ready`。只有连续 10 次成功才验收发布，因此一次短暂绿色响应不能通过。默认最多 360 次、间隔 2 秒、curl deadline 2 秒。12 分钟上限可覆盖冷来源刷新后的两轮 5 分钟 full qualification；只有通过 `HYDRAT_READY_ATTEMPTS`、`HYDRAT_READY_CONSECUTIVE_SUCCESSES`、`HYDRAT_READY_DELAY_SECONDS` 和 `HYDRAT_READY_MAX_TIME_SECONDS` 才能覆盖默认值。
@@ -453,8 +462,8 @@ for service in controller gateway; do
   test "$(docker inspect "$container" --format '{{.State.Running}}')" = false
 done
 
-docker image tag "$ROLLBACK_IMAGE" hydrat:latest
-test "$(docker image inspect hydrat:latest --format '{{.Id}}')" = \
+export HYDRAT_IMAGE="${ROLLBACK_IMAGE}"
+test "$(docker image inspect "$HYDRAT_IMAGE" --format '{{.Id}}')" = \
   "$PREVIOUS_IMAGE_ID"
 
 docker compose run --rm --no-deps --entrypoint /bin/sh gateway \

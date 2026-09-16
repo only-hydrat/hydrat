@@ -1,0 +1,12 @@
+services:
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hydrat:dev
+
+  controller:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hydrat:dev

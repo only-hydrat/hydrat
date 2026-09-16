@@ -166,9 +166,23 @@ HYDRAT_ADMIN_PASSWORD=choose_a_strong_password
 
 ### Step 3. Start Hydrat
 
+By default, Hydrat pulls and runs the official prebuilt public image `ghcr.io/only-hydrat/hydrat:1.0.1`:
+
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
+
+> **Note:** you can override the image and version using `HYDRAT_IMAGE` in `.env` (e.g. `HYDRAT_IMAGE=ghcr.io/only-hydrat/hydrat:1.0.1`).
+
+### Build from source (development)
+
+If you are modifying the source code, use the `docker-compose.dev.yml` override:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+```
+
+This builds one local `hydrat:dev` image for both services.
 
 **Done.** The service automatically:
 

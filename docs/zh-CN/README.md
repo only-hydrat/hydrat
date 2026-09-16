@@ -166,9 +166,23 @@ HYDRAT_ADMIN_PASSWORD=请设置高强度密码
 
 ### 第 3 步：启动 Hydrat
 
+默认情况下，Hydrat 拉取并运行官方预构建公开镜像 `ghcr.io/only-hydrat/hydrat:1.0.1`：
+
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
+
+> **注意：**可按需在 `.env` 中通过 `HYDRAT_IMAGE` 覆盖镜像和版本（例如 `HYDRAT_IMAGE=ghcr.io/only-hydrat/hydrat:1.0.1`）。
+
+### 从源码构建（开发模式）
+
+如果需要修改源码并在本地构建，请使用 `docker-compose.dev.yml` 覆盖文件：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+```
+
+该命令会为两个服务构建同一个本地镜像 `hydrat:dev`。
 
 **完成。** 服务会自动：
 

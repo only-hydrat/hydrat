@@ -365,8 +365,8 @@ database и applied plan.
 Значения `ROLLBACK_IMAGE`, `PREVIOUS_IMAGE_ID`, `PREVIOUS_CONFIG_SHA256`,
 `BACKUP_PATH`, `APPLIED_PLAN_BACKUP_PATH` и `FAILED_APPLIED_PLAN_PATH` запишите
 в release log: они нужны для rollback. `/etc/hydrat/config.yml` запечён в image;
-checkout `config/config.yml` используется только как build input exact commit и
-не монтируется в работающие containers.
+checkout `config/config.yml` используется как build input только при сборке из
+исходников и не монтируется в работающие containers.
 
 ```bash
 set -eu
@@ -378,7 +378,9 @@ test -n "$CONTROLLER_ID"
 PREVIOUS_IMAGE_ID=$(docker inspect "$GATEWAY_ID" --format '{{.Image}}')
 test "$(docker inspect "$CONTROLLER_ID" --format '{{.Image}}')" = \
   "$PREVIOUS_IMAGE_ID"
-test "$(docker image inspect hydrat:latest --format '{{.Id}}')" = \
+CURRENT_IMAGE_REF=$(docker inspect "$GATEWAY_ID" --format '{{.Config.Image}}')
+test -n "$CURRENT_IMAGE_REF"
+test "$(docker image inspect "$CURRENT_IMAGE_REF" --format '{{.Id}}')" = \
   "$PREVIOUS_IMAGE_ID"
 PREVIOUS_CONFIG_SHA256=$(docker compose exec -T gateway \
   sha256sum /etc/hydrat/config.yml | awk '{print $1}')
@@ -453,14 +455,21 @@ backup immutable/read-only, выполняет SQLite `quick_check`, прове�
 
 1. Запишите текущий Git commit, ID image обоих контейнеров, счётчики restart/OOM
    и desired/applied generation.
-2. Соберите точный commit, отправленный в `main`; не собирайте checkout с
-   незакоммиченными изменениями.
-3. Пересоздайте **оба** сервиса, `gateway` и `controller`, из одного image через
-   обязательный readiness gate:
+2. Для официального релиза укажите нужный тег `HYDRAT_IMAGE` в `.env` и загрузите
+   образ. Для разработки соберите точный commit через `docker-compose.dev.yml`;
+   не собирайте checkout с незакоммиченными изменениями.
+3. Пересоздайте **оба** сервиса из одного image через readiness gate:
 
+   Готовый образ (по умолчанию):
    ```bash
-   docker compose build
+   docker compose pull
    ./scripts/deploy.sh
+   ```
+
+   Локальная сборка (разработка):
+   ```bash
+   docker compose -f docker-compose.yml -f docker-compose.dev.yml build
+   HYDRAT_IMAGE=hydrat:dev ./scripts/deploy.sh
    ```
 
    Скрипт сначала ждёт Compose health (`/api/health`), затем выполняет bounded
@@ -584,8 +593,8 @@ for service in controller gateway; do
   test "$(docker inspect "$container" --format '{{.State.Running}}')" = false
 done
 
-docker image tag "$ROLLBACK_IMAGE" hydrat:latest
-test "$(docker image inspect hydrat:latest --format '{{.Id}}')" = \
+export HYDRAT_IMAGE="${ROLLBACK_IMAGE}"
+test "$(docker image inspect "$HYDRAT_IMAGE" --format '{{.Id}}')" = \
   "$PREVIOUS_IMAGE_ID"
 
 docker compose run --rm --no-deps --entrypoint /bin/sh gateway \
