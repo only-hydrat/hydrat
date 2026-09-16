@@ -271,6 +271,81 @@ func TestAdminCreatePauseResumeRenameDeleteFlow(t *testing.T) {
 		t.Fatalf("client lifecycle signals=%d, want 5", got)
 	}
 }
+func TestPortalServesNormalizedEndpointForExistingStoredProfiles(t *testing.T) {
+	database := testStore(t)
+	oldProfile := "[Interface]\nPrivateKey = secret-key-1\nAddress = 10.44.0.5/32\nDNS = 10.44.0.1\nMTU = 1420\n\n[Peer]\nPublicKey = server-pubkey-1\nEndpoint = 203.0.113.10\nAllowedIPs = 0.0.0.0/0\nPersistentKeepalive = 25\n"
+	_ = database.PutClient(context.Background(), store.ClientRecord{
+		ID: "client-with-endpoint", Name: "Phone", Address: "10.44.0.5/32", PublicKey: "pub1",
+	}, oldProfile)
+
+	noEndpointProfile := "[Interface]\nPrivateKey = secret-key-2\nAddress = 10.44.0.6/32\n"
+	_ = database.PutClient(context.Background(), store.ClientRecord{
+		ID: "client-no-endpoint", Name: "Laptop", Address: "10.44.0.6/32", PublicKey: "pub2",
+	}, noEndpointProfile)
+
+	handler := New(ServerConfig{
+		Store:             database,
+		AdminPassword:     "admin",
+		WireGuardEndpoint: "203.0.113.10:51820",
+	})
+
+	// 1. Text config download
+	configResp := adminRequest(t, handler, http.MethodGet, "/api/admin/clients/client-with-endpoint/config", "admin", nil)
+	if configResp.Code != http.StatusOK {
+		t.Fatalf("config status=%d body=%s", configResp.Code, configResp.Body.String())
+	}
+	bodyText := configResp.Body.String()
+	if !bytes.Contains([]byte(bodyText), []byte("Endpoint = 203.0.113.10:51820\n")) {
+		t.Fatalf("config text missing normalized endpoint, got:\n%s", bodyText)
+	}
+	if bytes.Contains([]byte(bodyText), []byte("Endpoint = 203.0.113.10\n")) {
+		t.Fatalf("config text still contains un-normalized IP-only endpoint:\n%s", bodyText)
+	}
+	if !bytes.Contains([]byte(bodyText), []byte("PrivateKey = secret-key-1")) ||
+		!bytes.Contains([]byte(bodyText), []byte("Address = 10.44.0.5/32")) ||
+		!bytes.Contains([]byte(bodyText), []byte("AllowedIPs = 0.0.0.0/0")) {
+		t.Fatalf("config text corrupted other fields:\n%s", bodyText)
+	}
+
+	// 2. Config JSON download
+	jsonResp := adminRequest(t, handler, http.MethodGet, "/api/admin/clients/client-with-endpoint/config.json", "admin", nil)
+	if jsonResp.Code != http.StatusOK {
+		t.Fatalf("json status=%d body=%s", jsonResp.Code, jsonResp.Body.String())
+	}
+	var payload struct {
+		Config string `json:"config"`
+	}
+	if err := json.Unmarshal(jsonResp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("unmarshal json: %v", err)
+	}
+	if !bytes.Contains([]byte(payload.Config), []byte("Endpoint = 203.0.113.10:51820\n")) {
+		t.Fatalf("json config missing normalized endpoint, got:\n%s", payload.Config)
+	}
+
+	// 3. QR download
+	qrResp := adminRequest(t, handler, http.MethodGet, "/api/admin/clients/client-with-endpoint/qr", "admin", nil)
+	if qrResp.Code != http.StatusOK || !bytes.HasPrefix(qrResp.Body.Bytes(), []byte("\x89PNG\r\n\x1a\n")) {
+		t.Fatalf("qr status=%d prefix=%x", qrResp.Code, qrResp.Body.Bytes()[:min(8, qrResp.Body.Len())])
+	}
+
+	// 4. Verify stored profile in database was NOT overwritten
+	storedInDB, err := database.ClientConfig(context.Background(), "client-with-endpoint")
+	if err != nil {
+		t.Fatalf("database ClientConfig: %v", err)
+	}
+	if storedInDB != oldProfile {
+		t.Fatalf("stored database profile was mutated:\n%s\nwant original:\n%s", storedInDB, oldProfile)
+	}
+
+	// 5. Verify profile without Endpoint line is served completely unchanged
+	noEndpointResp := adminRequest(t, handler, http.MethodGet, "/api/admin/clients/client-no-endpoint/config", "admin", nil)
+	if noEndpointResp.Code != http.StatusOK {
+		t.Fatalf("noEndpoint status=%d body=%s", noEndpointResp.Code, noEndpointResp.Body.String())
+	}
+	if noEndpointResp.Body.String() != noEndpointProfile {
+		t.Fatalf("noEndpoint config was altered:\n%s\nwant:\n%s", noEndpointResp.Body.String(), noEndpointProfile)
+	}
+}
 
 type reassignRecorder struct{ clientID string }
 

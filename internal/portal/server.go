@@ -19,6 +19,7 @@ import (
 	"github.com/only-hydrat/hydrat/internal/sources"
 	"github.com/only-hydrat/hydrat/internal/store"
 	"github.com/only-hydrat/hydrat/internal/torpool"
+	"github.com/only-hydrat/hydrat/internal/wireguard"
 	"github.com/skip2/go-qrcode"
 )
 
@@ -43,6 +44,7 @@ type ServerConfig struct {
 	SourceChanges       chan<- struct{}
 	ClientChanges       chan<- struct{}
 	Routing             RoutingProvider
+	WireGuardEndpoint   string
 }
 
 type RoutingState struct {
@@ -127,6 +129,7 @@ type Server struct {
 	sourceChanges       chan<- struct{}
 	clientChanges       chan<- struct{}
 	routing             RoutingProvider
+	wireguardEndpoint   string
 	mux                 *http.ServeMux
 }
 
@@ -146,8 +149,9 @@ func New(config ServerConfig) http.Handler {
 		retirementGrace: retirementGrace,
 		refresher:       config.Refresher, profiles: config.Profiles, probeRuntime: config.ProbeRuntime,
 		sourceChanges: config.SourceChanges, clientChanges: config.ClientChanges,
-		routing: config.Routing,
-		mux:     http.NewServeMux(),
+		routing:           config.Routing,
+		wireguardEndpoint: strings.TrimSpace(config.WireGuardEndpoint),
+		mux:               http.NewServeMux(),
 	}
 	server.mux.HandleFunc("GET /{$}", server.dashboard)
 	server.mux.HandleFunc("GET /assets/{name}", server.asset)
@@ -376,6 +380,12 @@ func (server *Server) deleteClient(response http.ResponseWriter, request *http.R
 	server.notifyClientChange()
 	response.WriteHeader(http.StatusNoContent)
 }
+func (server *Server) formatClientConfig(config string) string {
+	if server.wireguardEndpoint != "" {
+		return wireguard.ReplaceEndpoint(config, server.wireguardEndpoint)
+	}
+	return config
+}
 
 func (server *Server) clientConfig(response http.ResponseWriter, request *http.Request) {
 	client, ok := server.findClient(response, request, request.PathValue("id"))
@@ -387,6 +397,7 @@ func (server *Server) clientConfig(response http.ResponseWriter, request *http.R
 		writeError(response, http.StatusNotFound, "client not found")
 		return
 	}
+	config = server.formatClientConfig(config)
 	response.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	response.Header().Set("Content-Disposition", `attachment; filename="wireguard.conf"`)
 	_, _ = io.WriteString(response, config)
@@ -402,6 +413,7 @@ func (server *Server) clientQR(response http.ResponseWriter, request *http.Reque
 		writeError(response, http.StatusNotFound, "client not found")
 		return
 	}
+	config = server.formatClientConfig(config)
 	png, err := qrcode.Encode(config, qrcode.Medium, 384)
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, "QR generation failed")
@@ -421,6 +433,7 @@ func (server *Server) clientConfigJSON(response http.ResponseWriter, request *ht
 		writeError(response, http.StatusNotFound, "client not found")
 		return
 	}
+	config = server.formatClientConfig(config)
 	writeJSON(response, http.StatusOK, map[string]any{
 		"name": client.Name, "address": client.Address, "public_key": client.PublicKey, "config": config,
 	})

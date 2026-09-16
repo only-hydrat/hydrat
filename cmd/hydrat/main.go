@@ -247,9 +247,11 @@ func runRestore(ctx context.Context, cfg config.Config, inputPath string) error 
 }
 
 func runAgent(ctx context.Context, cfg config.Config) error {
-	if endpoint := os.Getenv("WIREGUARD_ENDPOINT"); endpoint != "" {
-		cfg.WireGuard.Endpoint = endpoint
+	endpoint, err := resolveWireGuardEndpoint(cfg.WireGuard)
+	if err != nil {
+		return err
 	}
+	cfg.WireGuard.Endpoint = endpoint
 	if err := prepareAgentStorage(ctx, cfg); err != nil {
 		return err
 	}
@@ -459,6 +461,28 @@ func runAgent(ctx context.Context, cfg config.Config) error {
 	})
 }
 
+func resolveWireGuardEndpoint(cfg config.WireGuardConfig) (string, error) {
+	endpoint := os.Getenv("WIREGUARD_ENDPOINT")
+	if endpoint == "" {
+		endpoint = cfg.Endpoint
+	}
+	if endpoint == "" {
+		return "", nil
+	}
+	port := cfg.ListenPort
+	if port == 0 {
+		port = 51820
+	}
+	if value := os.Getenv("WIREGUARD_PORT"); value != "" {
+		var err error
+		port, err = strconv.Atoi(value)
+		if err != nil {
+			return "", fmt.Errorf("invalid WIREGUARD_PORT %q: %w", value, err)
+		}
+	}
+	return wireguard.NormalizeEndpoint(endpoint, port)
+}
+
 func agentQoEMeasurerConfig(cfg config.Config) probe.QoEMeasurerConfig {
 	gateConfig := probe.HTTPGateConfig{
 		YouTubeURL:   cfg.Probes.GateEndpoints.YouTube,
@@ -665,6 +689,10 @@ func prepareAgentStorage(ctx context.Context, cfg config.Config) error {
 }
 
 func runController(ctx context.Context, cfg config.Config) error {
+	endpoint, err := resolveWireGuardEndpoint(cfg.WireGuard)
+	if err != nil {
+		return err
+	}
 	ctx, cancelController := context.WithCancel(ctx)
 	defer cancelController()
 	adminPassword := os.Getenv("HYDRAT_ADMIN_PASSWORD")
@@ -760,7 +788,7 @@ func runController(ctx context.Context, cfg config.Config) error {
 		PoolSize:         cfg.Inventory.WorkingPoolSize,
 		PromotionRatio:   cfg.Tournament.PromotionRatio,
 		ResetWindow:      cfg.Tournament.ResetWindow,
-		FastWorkers: cfg.Probes.FastWorkers, FullWorkers: cfg.Probes.FullWorkers,
+		FastWorkers:      cfg.Probes.FastWorkers, FullWorkers: cfg.Probes.FullWorkers,
 		TorCandidatesPerCycle:  cfg.Tor.WarmProfiles + cfg.Tor.ExplorerProfiles,
 		TorQualificationBudget: time.Duration(cfg.Controller.ProbeSeconds) * time.Second,
 		TorMutationTimeout:     time.Minute,
@@ -782,9 +810,9 @@ func runController(ctx context.Context, cfg config.Config) error {
 	reassigner := controller.ManualReassigner{Store: database, Scheduler: placement, Trigger: manualTrigger}
 	controllerReadiness := controller.NewReadinessLatch()
 	routingManager := &controllerRoutingManager{
-		cfg:       cfg.Routing,
-		statePath: routingStatePath,
-		engine:    engine,
+		cfg:           cfg.Routing,
+		statePath:     routingStatePath,
+		engine:        engine,
 		agent:         agent,
 		qualification: &qualification,
 	}
@@ -794,9 +822,10 @@ func runController(ctx context.Context, cfg config.Config) error {
 		ControllerReadiness: controllerReadiness,
 		RetirementGrace:     cfg.Inventory.RetirementGrace,
 		Provisioner:         provisioner, Reassigner: reassigner, SourceChanges: sourceTrigger,
-		ClientChanges: clientLifecycleTrigger,
-		InternalToken: portalToken,
-		Routing:       routingManager,
+		ClientChanges:     clientLifecycleTrigger,
+		InternalToken:     portalToken,
+		Routing:           routingManager,
+		WireGuardEndpoint: endpoint,
 	})
 	server := &http.Server{Addr: cfg.Portal.Bind, Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	go func() {
@@ -1010,13 +1039,13 @@ func listenUnix(path string) (net.Listener, error) {
 }
 
 type controllerRoutingManager struct {
-	mu        sync.Mutex
-	cfg       config.RoutingConfig
-	statePath string
-	engine    *controller.Engine
-	agent     *agentapi.Client
+	mu            sync.Mutex
+	cfg           config.RoutingConfig
+	statePath     string
+	engine        *controller.Engine
+	agent         *agentapi.Client
 	qualification *controller.QualificationService
-	now       func() time.Time
+	now           func() time.Time
 }
 
 func (m *controllerRoutingManager) GetRouting(ctx context.Context) (portal.RoutingState, error) {

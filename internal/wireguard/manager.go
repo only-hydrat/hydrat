@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/netip"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
@@ -40,6 +41,9 @@ func (manager Manager) Create(ctx context.Context, name, address string) (Peer, 
 	if strings.TrimSpace(name) == "" || strings.TrimSpace(manager.Config.Endpoint) == "" ||
 		strings.TrimSpace(manager.Config.DNS) == "" {
 		return Peer{}, "", errors.New("client name, WireGuard endpoint and DNS are required")
+	}
+	if err := ValidateEndpoint(manager.Config.Endpoint); err != nil {
+		return Peer{}, "", err
 	}
 	dnsAddress, err := netip.ParseAddr(manager.Config.DNS)
 	if err != nil || !dnsAddress.Is4() {
@@ -148,4 +152,98 @@ func (ExecInputRunner) RunInput(ctx context.Context, input, name string, args ..
 		return nil, fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(output.String()))
 	}
 	return output.Bytes(), nil
+}
+func ValidateEndpoint(endpoint string) error {
+	trimmed := strings.TrimSpace(endpoint)
+	if trimmed == "" {
+		return errors.New("WireGuard endpoint is required")
+	}
+	if endpoint != trimmed {
+		return errors.New("WireGuard endpoint must not have surrounding whitespace")
+	}
+	host, portStr, err := net.SplitHostPort(trimmed)
+	if err != nil {
+		return fmt.Errorf("invalid WireGuard endpoint %q: must be host:port", endpoint)
+	}
+	host = strings.TrimSpace(host)
+	if host == "" {
+		return errors.New("WireGuard endpoint host must not be empty")
+	}
+	if strings.ContainsAny(host, " \t\r\n/\\?#") || (strings.HasPrefix(trimmed, "[") && net.ParseIP(host) == nil) {
+		return fmt.Errorf("invalid WireGuard endpoint host %q", host)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port < 1 || port > 65535 {
+		return fmt.Errorf("invalid WireGuard endpoint port %q: must be between 1 and 65535", portStr)
+	}
+	return nil
+}
+
+func NormalizeEndpoint(raw string, defaultPort int) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", errors.New("WireGuard endpoint is required")
+	}
+	if host, portStr, err := net.SplitHostPort(trimmed); err == nil {
+		host = strings.TrimSpace(host)
+		if host == "" {
+			return "", errors.New("WireGuard endpoint host must not be empty")
+		}
+		port, err := strconv.Atoi(portStr)
+		if err != nil || port < 1 || port > 65535 {
+			return "", fmt.Errorf("invalid WireGuard endpoint port %q: must be between 1 and 65535", portStr)
+		}
+		endpoint := net.JoinHostPort(host, strconv.Itoa(port))
+		return endpoint, ValidateEndpoint(endpoint)
+	}
+	if defaultPort < 1 || defaultPort > 65535 {
+		return "", fmt.Errorf("invalid WireGuard default port %d: must be between 1 and 65535", defaultPort)
+	}
+	host := trimmed
+	if strings.HasPrefix(host, "[") && strings.HasSuffix(host, "]") {
+		inner := host[1 : len(host)-1]
+		ip := net.ParseIP(inner)
+		if ip == nil {
+			return "", fmt.Errorf("invalid WireGuard endpoint IPv6 address %q", host)
+		}
+		host = inner
+	} else if strings.Contains(host, ":") {
+		ip := net.ParseIP(host)
+		if ip == nil {
+			return "", fmt.Errorf("invalid WireGuard endpoint %q: must be host:port or valid IP", raw)
+		}
+	} else {
+		if strings.ContainsAny(host, " \t\r\n/\\?#") {
+			return "", fmt.Errorf("invalid WireGuard endpoint host %q", host)
+		}
+	}
+	endpoint := net.JoinHostPort(host, strconv.Itoa(defaultPort))
+	return endpoint, ValidateEndpoint(endpoint)
+}
+
+func ReplaceEndpoint(config, newEndpoint string) string {
+	newEndpoint = strings.TrimSpace(newEndpoint)
+	if newEndpoint == "" {
+		return config
+	}
+	separator := "\n"
+	if strings.Contains(config, "\r\n") {
+		separator = "\r\n"
+	}
+	lines := strings.Split(config, separator)
+	hasEndpoint := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if idx := strings.Index(trimmed, "="); idx != -1 {
+			key := strings.TrimSpace(trimmed[:idx])
+			if strings.EqualFold(key, "Endpoint") {
+				lines[i] = "Endpoint = " + newEndpoint
+				hasEndpoint = true
+			}
+		}
+	}
+	if !hasEndpoint {
+		return config
+	}
+	return strings.Join(lines, separator)
 }

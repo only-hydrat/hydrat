@@ -1320,3 +1320,64 @@ func (writer *closeTrackingWriter) writeAfterClose() bool {
 	defer writer.mu.Unlock()
 	return writer.lateWrite
 }
+
+func TestResolveWireGuardEndpoint(t *testing.T) {
+	tests := []struct {
+		name       string
+		endpoint   string
+		portEnv    string
+		listenPort int
+		want       string
+		wantErr    bool
+	}{
+		{"IP without port with WIREGUARD_PORT", "203.0.113.10", "51820", 0, "203.0.113.10:51820", false},
+		{"IP without port with standalone ListenPort", "203.0.113.10", "", 51820, "203.0.113.10:51820", false},
+		{"IP without port with default fallback", "203.0.113.10", "", 0, "203.0.113.10:51820", false},
+		{"explicit IPv4 port preserved", "203.0.113.10:51822", "51820", 0, "203.0.113.10:51822", false},
+		{"explicit IPv6 port with brackets preserved", "[2001:db8::1]:51822", "51820", 0, "[2001:db8::1]:51822", false},
+		{"IPv6 without port normalized with brackets", "2001:db8::1", "51820", 0, "[2001:db8::1]:51820", false},
+		{"bracketed IPv6 without port normalized", "[2001:db8::1]", "51820", 0, "[2001:db8::1]:51820", false},
+		{"empty endpoint returns empty", "", "51820", 0, "", false},
+		{"reject invalid WIREGUARD_PORT zero", "203.0.113.10", "0", 0, "", true},
+		{"reject invalid WIREGUARD_PORT out of range", "203.0.113.10", "70000", 0, "", true},
+		{"reject invalid WIREGUARD_PORT non-numeric", "203.0.113.10", "abc", 0, "", true},
+		{"reject invalid endpoint port zero", "203.0.113.10:0", "51820", 0, "", true},
+		{"reject invalid endpoint port out of range", "203.0.113.10:70000", "51820", 0, "", true},
+		{"reject invalid endpoint port non-numeric", "203.0.113.10:abc", "51820", 0, "", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("WIREGUARD_ENDPOINT", tc.endpoint)
+			if tc.portEnv != "" {
+				t.Setenv("WIREGUARD_PORT", tc.portEnv)
+			} else {
+				_ = os.Unsetenv("WIREGUARD_PORT")
+			}
+			cfg := config.WireGuardConfig{
+				ListenPort: tc.listenPort,
+			}
+			got, err := resolveWireGuardEndpoint(cfg)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("resolveWireGuardEndpoint() = %q, want error", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("resolveWireGuardEndpoint() unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("resolveWireGuardEndpoint() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRunAgentRejectsMalformedEndpointBeforeSideEffects(t *testing.T) {
+	t.Setenv("WIREGUARD_ENDPOINT", "203.0.113.10:0")
+	cfg := config.Defaults()
+	err := runAgent(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "endpoint port") {
+		t.Fatalf("runAgent() error=%v, want endpoint port validation before startup", err)
+	}
+}
