@@ -1,4 +1,4 @@
-<p align="right">
+<p align="center">
   <a href="architecture.md">Русский</a> · <strong>English</strong> · <a href="architecture.zh-CN.md">简体中文</a>
 </p>
 

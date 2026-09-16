@@ -1,4 +1,4 @@
-<p align="right">
+<p align="center">
   <a href="CODE_OF_CONDUCT.md">Русский</a> · <a href="CODE_OF_CONDUCT.en.md">English</a> · <strong>简体中文</strong>
 </p>
 

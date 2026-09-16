@@ -1,4 +1,4 @@
-<p align="right">
+<p align="center">
   <a href="SECURITY.md">Русский</a> · <a href="SECURITY.en.md">English</a> · <strong>简体中文</strong>
 </p>
 

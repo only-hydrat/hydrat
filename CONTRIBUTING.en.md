@@ -1,4 +1,4 @@
-<p align="right">
+<p align="center">
   <a href="CONTRIBUTING.md">Русский</a> · <strong>English</strong> · <a href="CONTRIBUTING.zh-CN.md">简体中文</a>
 </p>
 

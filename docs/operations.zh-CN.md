@@ -1,4 +1,4 @@
-<p align="right">
+<p align="center">
   <a href="operations.md">Русский</a> · <a href="operations.en.md">English</a> · <strong>简体中文</strong>
 </p>
 
