@@ -166,13 +166,13 @@ HYDRAT_ADMIN_PASSWORD=choose_a_strong_password
 
 ### Step 3. Start Hydrat
 
-By default, Hydrat pulls and runs the official prebuilt public image `ghcr.io/only-hydrat/hydrat:1.0.1`:
+By default, Hydrat pulls and runs the official prebuilt public image `ghcr.io/only-hydrat/hydrat:1.0.2`:
 
 ```bash
 docker compose up -d
 ```
 
-> **Note:** you can override the image and version using `HYDRAT_IMAGE` in `.env` (e.g. `HYDRAT_IMAGE=ghcr.io/only-hydrat/hydrat:1.0.1`).
+> **Note:** you can override the image and version using `HYDRAT_IMAGE` in `.env` (e.g. `HYDRAT_IMAGE=ghcr.io/only-hydrat/hydrat:1.0.2`).
 
 ### Build from source (development)
 
