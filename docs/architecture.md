@@ -10,8 +10,10 @@ Hydrat состоит из двух Go-процессов в разных networ
 Процессы общаются по HTTP/JSON через Unix socket. Доступ к панели управления (Portal)
 возможен как внутри WireGuard по адресу `http://10.44.0.1:80` (gateway перенаправляет
 порт 8080 на 80 через nftables и подписывает реальный WireGuard IP внутренним token;
-forged proxy headers controller не доверяет), так и напрямую на хосте через опубликованный
-порт `${PORTAL_PORT:-8088}:8080`.
+forged proxy headers controller не доверяет). На хосте Compose публикует Portal только как
+`${PORTAL_BIND_ADDRESS:-127.0.0.1}:${PORTAL_PORT:-8088}:8080`; для внешнего доступа
+используйте WireGuard или HTTPS reverse proxy с аутентификацией, а не прямой
+`0.0.0.0:8088`.
 DNS клиентов и внешние DNS upstream разделены. `wireguard.dns` публикует
 `10.44.0.1` в новых клиентских профилях, а `xray.dns_resolvers` задаёт пул
 публичных адресов (`1.1.1.1`, `9.9.9.9`, `8.8.8.8`); одиночный
@@ -40,11 +42,13 @@ Agent сохраняет applied plan. После restart он ждёт Xray, в
 gateway не требует restart controller, а restart controller не снимает уже
 применённые маршруты.
 
-TCP- и UDP-назначения независимы. TCP может использовать VLESS или прогретый
-Tor-профиль с одним мостом. UDP использует только прошедший проверку VLESS.
-Tor участвует в общем TCP-пуле наравне с VLESS: это не специальный резервный
-класс. Если подтверждённый score Tor выше, он может стать primary TCP-маршрутом
-клиента; резервом считается роль любого другого пригодного кандидата.
+TCP- и UDP-назначения независимы. При доступном UDP-qualified VLESS scheduler
+по возможности co-assign назначает его для TCP и UDP. TCP и UDP могут использовать
+разные маршруты: TCP может использовать VLESS или прогретый Tor-профиль с одним
+мостом, UDP использует только прошедший проверку VLESS.
+При emergency replacement Tor участвует в общем TCP-пуле вместе с VLESS. Его
+warm-маршрут может стать TCP replacement по failure domain, нагрузке и score;
+обычное primary placement по-прежнему предпочитает VLESS.
 Распознанные домены `.ru`, `.su`, `.xn--p1ai`, а также адреса из `direct_domains` идут напрямую.
 Интеллектуальная маршрутизация GeoRules (при `routing.geo_rules.enabled: true`) использует
 регулярно обновляемые базы GeoSite и GeoIP (`russia-blocked-geosite` и `russia-blocked-geoip`,
@@ -60,8 +64,10 @@ VLESS-ссылки, URL VLESS-подписок, строки Tor-мостов и
 Tor-мосты `obfs4` и `webtunnel` можно передавать без необязательного префикса
 `Bridge`: parser сохраняет их в каноническом виде `Bridge <исходная строка>`.
 Неизвестные транспорты, некорректные адреса и fingerprint остаются невалидными.
-Секреты шифруются в SQLite. Во время refresh текущие маршруты продолжают
-работать, а ошибка обновления сохраняет last-known-good inventory кандидатов.
+Чувствительные payload шифруются field-level AES-GCM перед записью в SQLite; это
+не полное шифрование SQLite и не защита от компрометации host-root. Во время refresh
+текущие маршруты продолжают работать, а ошибка обновления сохраняет last-known-good
+inventory кандидатов.
 Внутренний `source_position` использует нумерацию с нуля. Миграция версии 3
 задаёт существующим кандидатам fallback-порядок `created_at, id`; успешный
 refresh транзакционно заменяет этот fallback актуальным порядком подписки.
@@ -295,6 +301,13 @@ reserve. Если его active proof или runtime handler устарел, con
 добавляет его handler и меняет только затронутых клиентов. Transport становится
 blocked лишь когда ни одного пригодного кандидата действительно нет; неполная
 primary/reserve coverage сама по себе не создаёт blackout.
+
+Обычное primary placement предпочитает eligible VLESS для TCP. Для VLESS primary
+reserve предпочитает VLESS из отдельного failure domain, но может быть warm Tor,
+если это единственный доступный failure-domain-safe reserve. Emergency replacement
+считает eligible warm маршруты VLESS и Tor равноправными и выбирает по failure
+domain, нагрузке и score; Tor не откладывается до отказа всех VLESS. UDP остаётся
+VLESS-only.
 
 Применение выполняется add outbound → одна полная замена routing rules → remove
 obsolete outbound, без промежуточного `block`. При неоднозначном результате

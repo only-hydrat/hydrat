@@ -588,6 +588,34 @@ func TestDashboardAssetsExposeQoE(t *testing.T) {
 	}
 }
 
+func TestDashboardAssetsUseInMemoryAdminSessions(t *testing.T) {
+	handler := New(ServerConfig{Store: testStore(t), AdminPassword: "admin"})
+	assets := make(map[string][]byte, 3)
+	for _, path := range []string{"/", "/assets/app.js", "/assets/styles.css"} {
+		response := adminRequest(t, handler, http.MethodGet, path, "", nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status=%d", path, response.Code)
+		}
+		assets[path] = response.Body.Bytes()
+	}
+	for path, hooks := range map[string][]string{
+		"/":                  {`id="admin-logout"`, `type="button"`},
+		"/assets/app.js":     {`let adminToken = ""`, `"/api/admin/session"`, `X-Hydrat-Admin-Password`, `Authorization`, `Bearer ${adminToken}`, `method:"POST"`, `method:"DELETE"`, `response.status === 401`, `clearAdminSession()`, `adminToken = ""`, `$("admin-password").value = ""`},
+		"/assets/styles.css": {"#admin-logout"},
+	} {
+		for _, hook := range hooks {
+			if !bytes.Contains(assets[path], []byte(hook)) {
+				t.Errorf("%s missing %q", path, hook)
+			}
+		}
+	}
+	for _, forbidden := range []string{"localStorage", "sessionStorage", "document.cookie", `if (admin) headers.set("X-Hydrat-Admin-Password"`, "let password = \"\""} {
+		if bytes.Contains(assets["/assets/app.js"], []byte(forbidden)) {
+			t.Errorf("app.js contains forbidden browser auth state %q", forbidden)
+		}
+	}
+}
+
 func TestSystemSummaryIncludesOptionalActiveProbeRuntime(t *testing.T) {
 	primary := proberuntime.Snapshot{Status: "ready", Epoch: 7, CompletedProbes: 21}
 	active := proberuntime.Snapshot{Status: "ready", Epoch: 3, CompletedProbes: 411}

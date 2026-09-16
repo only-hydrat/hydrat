@@ -151,6 +151,56 @@ func TestClientIdentityRequiresTrustedGatewayToken(t *testing.T) {
 	}
 }
 
+func TestRequestSource(t *testing.T) {
+	server := New(ServerConfig{InternalToken: "trusted-token"}).(*Server)
+	for _, test := range []struct {
+		name, remote, token, clientIP, want string
+	}{
+		{"direct", "192.0.2.10:40000", "", "", "192.0.2.10"},
+		{"untrusted header", "192.0.2.10:40000", "wrong", "10.44.0.2", "192.0.2.10"},
+		{"trusted client", "172.30.0.10:40000", "trusted-token", "10.44.0.2", "10.44.0.2"},
+		{"malformed trusted client", "172.30.0.10:40000", "trusted-token", "not-an-ip", "172.30.0.10"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+			request.RemoteAddr = test.remote
+			request.Header.Set("X-Hydrat-Internal-Token", test.token)
+			request.Header.Set("X-Hydrat-Client-IP", test.clientIP)
+			if got := server.requestSource(request); got != test.want {
+				t.Fatalf("source=%q want=%q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestGatewayClientsHaveIndependentLimiterBudgets(t *testing.T) {
+	now := time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC)
+	handler := New(ServerConfig{Store: testStore(t), AdminPassword: "secret", InternalToken: "trusted-token"})
+	handler.(*Server).auth = newAdminAuthWith("secret", func() time.Time { return now }, bytes.NewReader(bytes.Repeat([]byte{1}, 32)))
+	for attempt := 0; attempt < maxAdminFailures; attempt++ {
+		request := httptest.NewRequest(http.MethodPost, "/api/admin/session", nil)
+		request.RemoteAddr = "172.30.0.10:40000"
+		request.Header.Set("X-Hydrat-Internal-Token", "trusted-token")
+		request.Header.Set("X-Hydrat-Client-IP", "10.44.0.2")
+		request.Header.Set("X-Hydrat-Admin-Password", "wrong")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt=%d status=%d", attempt+1, response.Code)
+		}
+	}
+	request := httptest.NewRequest(http.MethodPost, "/api/admin/session", nil)
+	request.RemoteAddr = "172.30.0.10:40000"
+	request.Header.Set("X-Hydrat-Internal-Token", "trusted-token")
+	request.Header.Set("X-Hydrat-Client-IP", "10.44.0.3")
+	request.Header.Set("X-Hydrat-Admin-Password", "secret")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("second client status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestAdminClientConfigAndQRNeverAppearInList(t *testing.T) {
 	database := testStore(t)
 	_ = database.PutClient(context.Background(), store.ClientRecord{

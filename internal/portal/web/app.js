@@ -1,5 +1,5 @@
 const $ = (id) => document.getElementById(id);
-let password = "";
+let adminToken = "";
 let candidateOffset = 0;
 let artifactConfig = "";
 let artifactName = "wireguard";
@@ -14,16 +14,26 @@ function notify(message, error = false) {
 
 async function request(url, options = {}, admin = false, raw = false) {
   const headers = new Headers(options.headers || {});
-  if (admin) headers.set("X-Hydrat-Admin-Password", password);
+  if (admin) headers.set("Authorization", `Bearer ${adminToken}`);
   if (options.body && typeof options.body !== "string") {
     headers.set("Content-Type", "application/json");
     options.body = JSON.stringify(options.body);
   }
   const response = await fetch(url, {...options, headers});
+  if (response.status === 401 && (admin || url === "/api/admin/session")) clearAdminSession();
   if (raw && response.ok) return response;
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
   return body;
+}
+
+function clearAdminSession() {
+  adminToken = "";
+  $("admin-password").value = "";
+  $("admin-logout").hidden = true;
+  history.replaceState(null, "", "#overview");
+  // Reload discards all admin projections, dialogs, cached artifacts and Blob URLs.
+  location.reload();
 }
 
 function node(tag, className, text) {
@@ -45,7 +55,7 @@ function setView(name) {
   document.querySelectorAll("[data-nav]").forEach((item) => item.classList.toggle("active", item.dataset.nav === name));
   $("page-title").textContent = {overview:"Обзор",clients:"Клиенты",sources:"Источники",candidates:"Кандидаты",system:"Система"}[name];
   history.replaceState(null, "", `#${name}`);
-  if (password) {
+  if (adminToken) {
     if (name === "candidates") loadCandidates(true);
     if (name === "system") loadSystem();
   }
@@ -80,11 +90,27 @@ $("reassign").addEventListener("click", async () => {
 
 $("auth-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  password = $("admin-password").value;
+  try {
+    const data = await request("/api/admin/session", {method:"POST", headers:{"X-Hydrat-Admin-Password":$("admin-password").value}});
+    adminToken = data.token;
+    $("admin-logout").hidden = false;
+  } catch (error) { notify(error.message, true); return; }
+  finally {
+    $("admin-password").value = "";
+  }
   try {
     await Promise.all([loadOverview(), loadClients(), loadSources(), loadSystem()]);
     notify("Админ-панель подключена");
   } catch (error) { notify(error.message, true); }
+});
+
+$("admin-logout").addEventListener("click", async () => {
+  try {
+    await request("/api/admin/session", {method:"DELETE"}, true);
+  } catch (error) { notify(error.message, true); }
+  finally {
+    clearAdminSession();
+  }
 });
 
 async function loadOverview() {
@@ -492,4 +518,5 @@ $("routing-update-geo").addEventListener("click", async () => {
 });
 
 setView(location.hash.slice(1) || "overview");
+$("admin-password").focus();
 loadSelf();

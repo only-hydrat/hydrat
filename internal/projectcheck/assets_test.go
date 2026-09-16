@@ -20,6 +20,32 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
+func TestCIRunsBrowserSessionTests(t *testing.T) {
+	workflow := readText(t, filepath.Join(repositoryRoot(t), ".github", "workflows", "ci.yml"))
+	var config struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Run             string `yaml:"run"`
+				If              string `yaml:"if"`
+				ContinueOnError bool   `yaml:"continue-on-error"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal([]byte(workflow), &config); err != nil {
+		t.Fatalf("decode CI workflow: %v", err)
+	}
+	const command = "node --test internal/portal/web_app_test.mjs"
+	for _, step := range config.Jobs["test"].Steps {
+		if step.Run == command {
+			if step.If != "" || step.ContinueOnError {
+				t.Fatal("browser session tests must run unconditionally and fail CI on errors")
+			}
+			return
+		}
+	}
+	t.Fatalf("CI test job must run %q", command)
+}
+
 func TestProbeXrayContainsTwentyDedicatedSOCKSInbounds(t *testing.T) {
 	root := repositoryRoot(t)
 	data, err := os.ReadFile(filepath.Join(root, "config/xray/probe.json"))
@@ -952,6 +978,7 @@ func TestProductionEnvironmentAndComposeContract(t *testing.T) {
 	for _, expected := range []string{
 		"DATA_DIR=./data",
 		"WIREGUARD_PORT=51820",
+		"PORTAL_BIND_ADDRESS=127.0.0.1",
 		"WIREGUARD_ENDPOINT=",
 		"HYDRAT_ADMIN_PASSWORD=",
 	} {
@@ -969,6 +996,9 @@ func TestProductionEnvironmentAndComposeContract(t *testing.T) {
 	for _, expected := range []string{
 		"HYDRAT_ADMIN_PASSWORD",
 		"net.ipv4.ip_forward: \"1\"",
+		"${PORTAL_BIND_ADDRESS:-127.0.0.1}:${PORTAL_PORT:-8088}:8080",
+		"NET_ADMIN",
+		"NET_RAW",
 	} {
 		if !strings.Contains(compose, expected) {
 			t.Errorf("docker-compose.yml missing %q", expected)
@@ -982,6 +1012,51 @@ func TestProductionEnvironmentAndComposeContract(t *testing.T) {
 	}
 	if strings.Contains(compose, "network_mode:") {
 		t.Error("controller must not share the gateway network namespace")
+	}
+	operations := readText(t, filepath.Join(root, "docs", "operations.md"))
+	for _, expected := range []string{
+		"X-Hydrat-Admin-Password: ${HYDRAT_ADMIN_PASSWORD}",
+		"Authorization: Bearer",
+	} {
+		if !strings.Contains(operations, expected) {
+			t.Errorf("docs/operations.md missing admin authentication contract %q", expected)
+		}
+	}
+	if strings.Contains(operations, `-u "admin:${HYDRAT_ADMIN_PASSWORD}"`) {
+		t.Error("docs/operations.md still documents Basic Auth")
+	}
+	docs := readText(t, filepath.Join(root, "README.md")) +
+		readText(t, filepath.Join(root, "docs", "architecture.md")) +
+		readText(t, filepath.Join(root, "SECURITY.md"))
+	for _, expected := range []string{
+		"PORTAL_BIND_ADDRESS",
+		"TCP и UDP могут использовать разные маршруты",
+		"field-level AES-GCM",
+		"NET_ADMIN` и `NET_RAW",
+	} {
+		if !strings.Contains(docs, expected) {
+			t.Errorf("public documentation missing security-default contract %q", expected)
+		}
+	}
+	publicReadme := readText(t, filepath.Join(root, "README.md"))
+	for _, expected := range []string{
+		"ssh -N -L 8088:127.0.0.1:8088",
+		"http://127.0.0.1:8088/",
+	} {
+		if !strings.Contains(publicReadme, expected) {
+			t.Errorf("README.md missing first-login bootstrap %q", expected)
+		}
+	}
+	for _, forbidden := range []string{
+		"видеозвонки и загрузки файлов не прерываются",
+		"только при отказе или тотальной блокировке всех VLESS-каналов",
+		"с единым сервером выхода",
+		"SQLite (WAL, encrypted)",
+		"Tor участвует в общем TCP-пуле наравне с VLESS",
+	} {
+		if strings.Contains(docs, forbidden) {
+			t.Errorf("public documentation retains misleading claim %q", forbidden)
+		}
 	}
 	for _, expected := range []string{
 		"control:", "internal: true",

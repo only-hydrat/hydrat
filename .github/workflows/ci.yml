@@ -29,5 +29,8 @@ jobs:
       - name: Run unit tests
         run: go test -v ./...
 
+      - name: Run browser session tests
+        run: node --test internal/portal/web_app_test.mjs
+
       - name: Build hydrat
         run: go build -v ./cmd/hydrat

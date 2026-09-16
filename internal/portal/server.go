@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -114,7 +115,7 @@ type Server struct {
 	store               *store.Store
 	healthChecker       HealthChecker
 	controllerReadiness HealthChecker
-	adminPassword       string
+	auth                *adminAuth
 	internalToken       string
 	maxBodyBytes        int64
 	retirementGrace     time.Duration
@@ -139,7 +140,7 @@ func New(config ServerConfig) http.Handler {
 		retirementGrace = defaultRetirementGrace
 	}
 	server := &Server{
-		store: config.Store, adminPassword: config.AdminPassword, internalToken: config.InternalToken,
+		store: config.Store, auth: newAdminAuth(config.AdminPassword), internalToken: config.InternalToken,
 		healthChecker: config.Health, controllerReadiness: config.ControllerReadiness,
 		maxBodyBytes: maxBodyBytes, reassigner: config.Reassigner, provisioner: config.Provisioner,
 		retirementGrace: retirementGrace,
@@ -154,6 +155,8 @@ func New(config ServerConfig) http.Handler {
 	server.mux.HandleFunc("GET /api/ready", server.ready)
 	server.mux.HandleFunc("GET /api/me", server.me)
 	server.mux.HandleFunc("POST /api/me/reassign", server.reassign)
+	server.mux.HandleFunc("POST /api/admin/session", server.createAdminSession)
+	server.mux.HandleFunc("DELETE /api/admin/session", server.deleteAdminSession)
 	server.mux.HandleFunc("GET /api/admin/clients", server.admin(server.listClients))
 	server.mux.HandleFunc("POST /api/admin/clients", server.admin(server.createClient))
 	server.mux.HandleFunc("GET /api/admin/clients/{id}", server.admin(server.getClient))
@@ -237,16 +240,7 @@ func (server *Server) reassign(response http.ResponseWriter, request *http.Reque
 }
 
 func (server *Server) clientForRequest(response http.ResponseWriter, request *http.Request) (store.ClientRecord, store.AssignmentRecord, bool) {
-	host, _, err := net.SplitHostPort(request.RemoteAddr)
-	if err != nil {
-		host = request.RemoteAddr
-	}
-	if server.internalToken != "" &&
-		subtle.ConstantTimeCompare([]byte(request.Header.Get("X-Hydrat-Internal-Token")), []byte(server.internalToken)) == 1 {
-		if forwarded := net.ParseIP(strings.TrimSpace(request.Header.Get("X-Hydrat-Client-IP"))); forwarded != nil {
-			host = forwarded.String()
-		}
-	}
+	host := server.requestSource(request)
 	clients, err := server.store.ListClients(request.Context())
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, "client lookup failed")
@@ -541,14 +535,79 @@ func (server *Server) ServeHTTP(response http.ResponseWriter, request *http.Requ
 
 func (server *Server) admin(next http.HandlerFunc) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
-		provided := request.Header.Get("X-Hydrat-Admin-Password")
-		if server.adminPassword == "" || len(provided) != len(server.adminPassword) ||
-			subtle.ConstantTimeCompare([]byte(provided), []byte(server.adminPassword)) != 1 {
+		if _, present := request.Header["Authorization"]; present {
+			authorization := request.Header.Get("Authorization")
+			token, ok := strings.CutPrefix(authorization, "Bearer ")
+			if !ok || !server.auth.authenticateBearer(token) {
+				writeError(response, http.StatusUnauthorized, "admin authentication required")
+				return
+			}
+			next(response, request)
+			return
+		}
+		if authenticated, retry := server.auth.authenticatePassword(server.requestSource(request), request.Header.Get("X-Hydrat-Admin-Password")); !authenticated {
+			if retry > 0 {
+				response.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())))
+				writeError(response, http.StatusTooManyRequests, "admin authentication required")
+				return
+			}
 			writeError(response, http.StatusUnauthorized, "admin authentication required")
 			return
 		}
 		next(response, request)
 	}
+}
+
+func (server *Server) createAdminSession(response http.ResponseWriter, request *http.Request) {
+	authenticated, retry := server.auth.authenticatePassword(server.requestSource(request), request.Header.Get("X-Hydrat-Admin-Password"))
+	if !authenticated {
+		if retry > 0 {
+			response.Header().Set("Retry-After", strconv.Itoa(int(retry.Seconds())))
+			writeError(response, http.StatusTooManyRequests, "admin authentication required")
+			return
+		}
+		writeError(response, http.StatusUnauthorized, "admin authentication required")
+		return
+	}
+	token, idle, absolute, err := server.auth.createSession()
+	if err != nil {
+		if errors.Is(err, errSessionCapacity) {
+			writeError(response, http.StatusServiceUnavailable, "admin sessions unavailable")
+			return
+		}
+		writeError(response, http.StatusInternalServerError, "admin session creation failed")
+		return
+	}
+	writeJSON(response, http.StatusOK, map[string]any{
+		"token": token, "expires_in": int(idle.Seconds()), "absolute_expires_in": int(absolute.Seconds()),
+	})
+}
+
+func (server *Server) deleteAdminSession(response http.ResponseWriter, request *http.Request) {
+	token, ok := strings.CutPrefix(request.Header.Get("Authorization"), "Bearer ")
+	if !ok || !server.auth.authenticateBearer(token) {
+		writeError(response, http.StatusUnauthorized, "admin authentication required")
+		return
+	}
+	server.auth.revoke(token)
+	response.WriteHeader(http.StatusNoContent)
+}
+
+func (server *Server) requestSource(request *http.Request) string {
+	host, _, err := net.SplitHostPort(request.RemoteAddr)
+	if err != nil {
+		host = request.RemoteAddr
+	}
+	if server.internalTokenValid(request.Header.Get("X-Hydrat-Internal-Token")) {
+		if ip := net.ParseIP(strings.TrimSpace(request.Header.Get("X-Hydrat-Client-IP"))); ip != nil {
+			return ip.String()
+		}
+	}
+	return host
+}
+
+func (server *Server) internalTokenValid(token string) bool {
+	return server.internalToken != "" && subtle.ConstantTimeCompare([]byte(token), []byte(server.internalToken)) == 1
 }
 
 func (server *Server) health(response http.ResponseWriter, request *http.Request) {

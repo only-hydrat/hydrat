@@ -292,12 +292,18 @@ docker compose exec gateway sh -c \
 ```
 
 Inspect the operator projection through the admin API from the WireGuard
-network:
+network. Legacy CLI authentication uses the custom password header:
 
 ```bash
-curl --fail --silent -u "admin:${HYDRAT_ADMIN_PASSWORD}" \
+curl --fail --silent \
+  -H "X-Hydrat-Admin-Password: ${HYDRAT_ADMIN_PASSWORD}" \
   http://10.44.0.1/api/admin/system
 ```
+
+For interactive use, `POST /api/admin/session` exchanges that header for an
+in-memory Bearer session; later requests use `Authorization: Bearer <token>`.
+The browser holds no password after login, and sessions end on logout, controller
+restart, 30 minutes idle, or eight hours absolute lifetime.
 
 Do not paste either response into public reports without checking it for
 deployment-specific identifiers.

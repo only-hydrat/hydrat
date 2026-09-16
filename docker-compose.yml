@@ -56,7 +56,7 @@ services:
     user: "10001:10001"
     command: ["controller"]
     ports:
-      - "${PORTAL_PORT:-8088}:8080"
+      - "${PORTAL_BIND_ADDRESS:-127.0.0.1}:${PORTAL_PORT:-8088}:8080"
     # Встроенная ротация структурированных логов в ${DATA_DIR}/logs (HYDRAT_LOG_RETENTION=72h)
     # предотвращает переполнение диска хоста журналом Docker (driver: none)
     logging:
