@@ -145,6 +145,18 @@ func TestAdminDeleteSourceUsesConfiguredStableRetirementGrace(t *testing.T) {
 		t.Fatalf("repeated delete extended deadline: %+v err=%v",
 			candidate, err)
 	}
+	reimported := adminRequest(t, server, http.MethodPost,
+		"/api/admin/sources/import", "admin", map[string]string{"input": preview.Items[0].Payload})
+	if reimported.Code != http.StatusCreated {
+		t.Fatalf("reimport status=%d body=%s", reimported.Code, reimported.Body.String())
+	}
+	var importResponse struct {
+		Result store.ImportResult `json:"result"`
+	}
+	if err := json.Unmarshal(reimported.Body.Bytes(), &importResponse); err != nil ||
+		importResponse.Result.Restored != 1 {
+		t.Fatalf("reimport response=%s err=%v", reimported.Body.String(), err)
+	}
 }
 
 func TestServerDefaultsInvalidRetirementGraceForLegacyConstruction(t *testing.T) {

@@ -32,6 +32,21 @@ func (store *Store) ImportSources(ctx context.Context, items []sources.PreviewIt
 		if label == "" {
 			label = string(item.Kind)
 		}
+		restored, err := tx.ExecContext(ctx, `
+			UPDATE sources
+			SET kind=?, label=?, encrypted_payload=?, enabled=1,
+			    pending_delete=0, candidate_count=0, last_refresh_error='', updated_at=?
+			WHERE fingerprint=? AND pending_delete=1
+		`, string(item.Kind), label, encrypted, now, item.Fingerprint)
+		if err != nil {
+			return ImportResult{}, fmt.Errorf("restore source: %w", err)
+		}
+		if rows, err := restored.RowsAffected(); err != nil {
+			return ImportResult{}, err
+		} else if rows == 1 {
+			result.Restored++
+			continue
+		}
 		queryResult, err := tx.ExecContext(ctx, `
             INSERT INTO sources(id, kind, label, fingerprint, encrypted_payload, enabled, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, 1, ?, ?)
@@ -48,6 +63,11 @@ func (store *Store) ImportSources(ctx context.Context, items []sources.PreviewIt
 			result.Imported++
 		} else {
 			result.Skipped++
+		}
+	}
+	if result.Restored > 0 {
+		if err := incrementInventoryEpochTx(ctx, tx); err != nil {
+			return ImportResult{}, err
 		}
 	}
 	if err := tx.Commit(); err != nil {

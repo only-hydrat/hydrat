@@ -93,6 +93,7 @@ const routeReserveTableDDL = `
 
 type ImportResult struct {
 	Imported int `json:"imported"`
+	Restored int `json:"restored"`
 	Skipped  int `json:"skipped"`
 }
 
@@ -124,6 +125,5 @@ func sqliteConnectionDSN(path string) string {
 	uri.RawQuery = query.Encode()
 	return uri.String()
 }
-
 
 func (store *Store) Close() error { return store.db.Close() }
