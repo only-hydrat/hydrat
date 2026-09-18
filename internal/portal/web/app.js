@@ -247,12 +247,13 @@ async function loadSources() {
   const target = $("admin-sources");
   target.replaceChildren();
   target.className = "data-list";
-  if (!(data.sources || []).length) {
+  const sources = (data.sources || []).filter((source) => !source.pending_delete);
+  if (!sources.length) {
     target.className = "data-list empty";
     target.textContent = "Источников пока нет";
     return;
   }
-  data.sources.forEach((source) => {
+  sources.forEach((source) => {
     const row = node("article", "data-row");
     const identity = node("div");
     identity.append(node("strong", "", source.label), node("small", "", source.kind));

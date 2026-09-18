@@ -185,6 +185,164 @@ func TestAdminCanRefreshSourceAndRotateTorExplorer(t *testing.T) {
 	}
 }
 
+func TestAdminBearerSessionSourceDeletionAndSubsequentAPIs(t *testing.T) {
+	database := testStore(t)
+	changes := make(chan struct{}, 2)
+	server := New(ServerConfig{
+		Store:         database,
+		AdminPassword: "admin-password",
+		SourceChanges: changes,
+	})
+
+	// 1. Admin logs in with password -> gets Bearer token.
+	loginReq := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/api/admin/session", nil)
+	loginReq.Header.Set("X-Hydrat-Admin-Password", "admin-password")
+	loginResp := httptest.NewRecorder()
+	server.ServeHTTP(loginResp, loginReq)
+	if loginResp.Code != http.StatusOK {
+		t.Fatalf("login status=%d body=%s", loginResp.Code, loginResp.Body.String())
+	}
+	var loginPayload struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(loginResp.Body.Bytes(), &loginPayload); err != nil || loginPayload.Token == "" {
+		t.Fatalf("login decode: %+v, %v", loginPayload, err)
+	}
+	token := loginPayload.Token
+
+	// 2. Import a VLESS source using Bearer token.
+	secretURI := "vless://550e8400-e29b-41d4-a716-446655440000@example.net:443?security=tls#fast"
+	importResp := bearerRequest(t, server, http.MethodPost, "/api/admin/sources/import", token, map[string]string{"input": secretURI})
+	if importResp.Code != http.StatusCreated {
+		t.Fatalf("import status=%d body=%s", importResp.Code, importResp.Body.String())
+	}
+	select {
+	case <-changes:
+	default:
+		t.Fatal("source import did not signal source change")
+	}
+
+	// 3. List sources using Bearer token.
+	listResp := bearerRequest(t, server, http.MethodGet, "/api/admin/sources", token, nil)
+	if listResp.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", listResp.Code, listResp.Body.String())
+	}
+	var listPayload struct {
+		Sources []store.Source `json:"sources"`
+	}
+	if err := json.Unmarshal(listResp.Body.Bytes(), &listPayload); err != nil || len(listPayload.Sources) != 1 {
+		t.Fatalf("sources list: %+v, %v", listPayload, err)
+	}
+	sourceID := listPayload.Sources[0].ID
+
+	// 4. Delete the empty source (no candidates) using Bearer token.
+	deleteResp := bearerRequest(t, server, http.MethodDelete, "/api/admin/sources/"+sourceID, token, nil)
+	if deleteResp.Code != http.StatusNoContent {
+		t.Fatalf("delete status=%d body=%s", deleteResp.Code, deleteResp.Body.String())
+	}
+	select {
+	case <-changes:
+	default:
+		t.Fatal("source delete did not signal source change")
+	}
+
+	// 5. Subsequent GET of sources using Bearer token.
+	listAfter := bearerRequest(t, server, http.MethodGet, "/api/admin/sources", token, nil)
+	if listAfter.Code != http.StatusOK {
+		t.Fatalf("list after delete status=%d body=%s", listAfter.Code, listAfter.Body.String())
+	}
+	var listAfterPayload struct {
+		Sources []store.Source `json:"sources"`
+	}
+	if err := json.Unmarshal(listAfter.Body.Bytes(), &listAfterPayload); err != nil || len(listAfterPayload.Sources) != 0 {
+		t.Fatalf("expected 0 sources after empty source delete, got: %+v", listAfterPayload.Sources)
+	}
+
+	// 6. Subsequent GET of system using Bearer token.
+	systemAfter := bearerRequest(t, server, http.MethodGet, "/api/admin/system", token, nil)
+	if systemAfter.Code != http.StatusOK {
+		t.Fatalf("system after delete status=%d body=%s", systemAfter.Code, systemAfter.Body.String())
+	}
+
+	// 7. Case with candidates: source enters pending_delete.
+	importResp2 := bearerRequest(t, server, http.MethodPost, "/api/admin/sources/import", token, map[string]string{"input": secretURI})
+	if importResp2.Code != http.StatusCreated {
+		t.Fatalf("import2 status=%d body=%s", importResp2.Code, importResp2.Body.String())
+	}
+	select {
+	case <-changes:
+	default:
+		t.Fatal("second source import did not signal source change")
+	}
+	listResp2 := bearerRequest(t, server, http.MethodGet, "/api/admin/sources", token, nil)
+	if listResp2.Code != http.StatusOK {
+		t.Fatalf("second list status=%d body=%s", listResp2.Code, listResp2.Body.String())
+	}
+	if err := json.Unmarshal(listResp2.Body.Bytes(), &listPayload); err != nil || len(listPayload.Sources) != 1 {
+		t.Fatalf("second sources list: %+v, %v", listPayload, err)
+	}
+	sourceID2 := listPayload.Sources[0].ID
+
+	// Add candidate to sourceID2.
+	if err := database.ReplaceCandidates(context.Background(), sourceID2, []store.CandidateInput{{
+		Kind: sources.KindVLESS, Label: "candidate-1", Fingerprint: "fp1", Payload: "vless://secret@example.net:443",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Delete source with candidates using Bearer token.
+	deleteResp2 := bearerRequest(t, server, http.MethodDelete, "/api/admin/sources/"+sourceID2, token, nil)
+	if deleteResp2.Code != http.StatusNoContent {
+		t.Fatalf("delete with candidates status=%d body=%s", deleteResp2.Code, deleteResp2.Body.String())
+	}
+	select {
+	case <-changes:
+	default:
+		t.Fatal("source with candidates delete did not signal source change")
+	}
+
+	// Subsequent GET of sources using Bearer token.
+	listAfter2 := bearerRequest(t, server, http.MethodGet, "/api/admin/sources", token, nil)
+	if listAfter2.Code != http.StatusOK {
+		t.Fatalf("list after delete with candidates status=%d body=%s", listAfter2.Code, listAfter2.Body.String())
+	}
+	var listAfterPayload2 struct {
+		Sources []store.Source `json:"sources"`
+	}
+	if err := json.Unmarshal(listAfter2.Body.Bytes(), &listAfterPayload2); err != nil || len(listAfterPayload2.Sources) != 1 {
+		t.Fatalf("expected 1 pending-delete source, got: %+v", listAfterPayload2.Sources)
+	}
+	if !listAfterPayload2.Sources[0].PendingDelete || listAfterPayload2.Sources[0].Enabled {
+		t.Fatalf("expected pending_delete=true, enabled=false, got: %+v", listAfterPayload2.Sources[0])
+	}
+
+	// Subsequent GET of system using Bearer token.
+	systemAfter2 := bearerRequest(t, server, http.MethodGet, "/api/admin/system", token, nil)
+	if systemAfter2.Code != http.StatusOK {
+		t.Fatalf("system after delete with candidates status=%d body=%s", systemAfter2.Code, systemAfter2.Body.String())
+	}
+}
+
+func bearerRequest(t *testing.T, handler http.Handler, method, path, token string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	var data []byte
+	if body != nil {
+		var err error
+		data, err = json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	request := httptest.NewRequestWithContext(context.Background(), method, path, bytes.NewReader(data))
+	request.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	return response
+}
+
 func testStore(t *testing.T) *store.Store {
 	t.Helper()
 	box, err := secretbox.New(make([]byte, secretbox.KeySize))
