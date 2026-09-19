@@ -336,6 +336,43 @@ func TestPinnedXrayAcceptsProductionSizedRoutingUpdate(t *testing.T) {
 	}
 }
 
+func TestPinnedXrayAcceptsLegacyInsecureVLESSOutbound(t *testing.T) {
+	binaryPath := os.Getenv("HYDRAT_XRAY_BINARY")
+	if binaryPath == "" {
+		t.Fatal("HYDRAT_XRAY_BINARY is required")
+	}
+
+	apiAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(fixtureXrayAPIPort+2))
+	xray := startXray(t, binaryPath, map[string]any{
+		"log": map[string]any{"access": "none", "loglevel": "warning"},
+		"api": map[string]any{
+			"tag": "api", "listen": apiAddress, "services": []string{"HandlerService"},
+		},
+		"outbounds": []any{
+			map[string]any{"tag": "api", "protocol": "blackhole", "settings": map[string]any{}},
+			map[string]any{"tag": "block", "protocol": "blackhole", "settings": map[string]any{}},
+		},
+		"routing": stagingRules(),
+	}, apiAddress)
+	defer xray.stop(t)
+
+	outbound := map[string]any{
+		"tag": "legacy-vless-grpc", "protocol": "vless",
+		"settings": map[string]any{"vnext": []any{map[string]any{
+			"address": "8.8.8.8", "port": 2083,
+			"users": []any{map[string]any{
+				"id": "00000000-0000-4000-8000-000000000002", "encryption": "none",
+			}},
+		}}},
+		"streamSettings": map[string]any{
+			"network": "grpc", "grpcSettings": map[string]any{"serviceName": "vless"},
+		},
+	}
+	if output, err := addOutbounds(context.Background(), binaryPath, apiAddress, outbound); err != nil {
+		t.Fatalf("add legacy insecure VLESS outbound: %v: %s", err, output)
+	}
+}
+
 func dnsOutbound(tag, proxyTag, rewriteAddress string) map[string]any {
 	return map[string]any{
 		"tag": tag, "protocol": "dns",
@@ -379,6 +416,22 @@ func replaceRules(parent context.Context, binaryPath, apiAddress string, routing
 	ctx, cancel := context.WithTimeout(parent, feasibilityTimeout)
 	defer cancel()
 	command := exec.CommandContext(ctx, binaryPath, "api", "adrules", "--server="+apiAddress)
+	command.Stdin = bytes.NewReader(body)
+	output, err := command.CombinedOutput()
+	if err != nil && ctx.Err() != nil {
+		return strings.TrimSpace(string(output)), ctx.Err()
+	}
+	return strings.TrimSpace(string(output)), err
+}
+
+func addOutbounds(parent context.Context, binaryPath, apiAddress string, outbounds ...any) (string, error) {
+	body, err := json.Marshal(map[string]any{"outbounds": outbounds})
+	if err != nil {
+		return "", fmt.Errorf("encode outbounds: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(parent, feasibilityTimeout)
+	defer cancel()
+	command := exec.CommandContext(ctx, binaryPath, "api", "ado", "--server="+apiAddress)
 	command.Stdin = bytes.NewReader(body)
 	output, err := command.CombinedOutput()
 	if err != nil && ctx.Err() != nil {

@@ -1129,9 +1129,12 @@ func TestProductionEnvironmentAndComposeContract(t *testing.T) {
 		"ARG XRAY_SOURCE_SHA256=0159e934d908cd176fed51dc61209e546046351928af685b143cad2ebe704831",
 		"https://codeload.github.com/XTLS/Xray-core/zip/${XRAY_COMMIT}",
 		"grpc.NewServer(grpc.MaxRecvMsgSize(16 * 1024 * 1024))",
+		"requiresTransportSecurity(vlessCfg.Address)",
+		"vless without TLS or other encryption is prohibited",
+		"trojan without TLS is prohibited",
 		"-buildvcs=false",
 		"-buildid=",
-		"-X github.com/xtls/xray-core/core.build=52a412d-hydrat1",
+		"-X github.com/xtls/xray-core/core.build=52a412d-hydrat2",
 		"COPY --from=xray-build /out/xray /usr/local/bin/xray",
 		"COPY config/xray/active.json /etc/hydrat/xray-active.json",
 	} {

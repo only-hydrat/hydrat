@@ -78,12 +78,18 @@ WORKDIR /src/xray
 RUN sed -i \
       's/c.server = grpc.NewServer()/c.server = grpc.NewServer(grpc.MaxRecvMsgSize(16 * 1024 * 1024))/' \
       app/commander/commander.go \
+    && sed -i \
+      '/^[[:space:]]*if requiresTransportSecurity(vlessCfg.Address) {$/,+2d' \
+      infra/conf/xray.go \
     && grep -Fq 'grpc.NewServer(grpc.MaxRecvMsgSize(16 * 1024 * 1024))' \
       app/commander/commander.go \
+    && ! grep -Fq 'vless without TLS or other encryption is prohibited' \
+      infra/conf/xray.go \
+    && grep -Fq 'trojan without TLS is prohibited' infra/conf/xray.go \
     && go mod download \
     && CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
       go build -buildvcs=false -trimpath \
-        -ldflags="-s -w -buildid= -X github.com/xtls/xray-core/core.build=52a412d-hydrat1" \
+        -ldflags="-s -w -buildid= -X github.com/xtls/xray-core/core.build=52a412d-hydrat2" \
         -o /out/xray ./main
 
 FROM --platform=$BUILDPLATFORM golang:1.26.5-bookworm AS probe-runtime-test
