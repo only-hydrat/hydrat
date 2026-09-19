@@ -162,10 +162,11 @@ deadlines и число workers при этом не меняются, а explor
   рабочего кандидата.
 
 Full probe проверяет Cloudflare/GStatic, YouTube, ChatGPT, OpenAI API, Telegram
-Web, Telegram MTProto, Instagram и bounded speed download. Для VLESS UDP считается
-пригодным только после двух свежих QUIC/TLS handshakes с YouTube через SOCKS5
-UDP association; успешный DNS datagram сам по себе больше не квалифицирует
-маршрут. YouTube gate требует успешный ответ от `https://www.youtube.com/generate_204`.
+Web, Telegram MTProto, Instagram и bounded speed download. Для обычного VLESS
+UDP считается пригодным только после двух свежих QUIC/TLS handshakes с YouTube
+через SOCKS5 UDP association. Стандартный `xtls-rprx-vision` намеренно
+отклоняет UDP/443, поэтому для него проверяется DNS-over-UDP через тот же SOCKS5;
+`xtls-rprx-vision-udp443` остаётся на QUIC-проверке. YouTube gate требует успешный ответ от `https://www.youtube.com/generate_204`.
 Instagram gate требует успешный ответ (<400) от `https://www.instagram.com/`. ChatGPT gate
 принимает origin response без следования redirect: любой 2xx/3xx либо
 аутентичные origin 403/429. OpenAI gate обращается именно к
@@ -227,13 +228,13 @@ EWMA 0,1 и замораживается в `degraded`. История хран�
 bounded batches; состояние и вызвавший его sample записываются одной SQLite
 транзакцией.
 
-Для VLESS QoE параллельно с TCP-измерением выполняет ту же реальную QUIC
-проверку. Два последовательных провала снимают только `UDPQualified`, сохраняя
+Для VLESS QoE параллельно с TCP-измерением повторяет соответствующую UDP-проверку:
+DNS-over-UDP для стандартного `xtls-rprx-vision`, QUIC для остальных flow.
+Два последовательных провала снимают только `UDPQualified`, сохраняя
 TCP score, availability и freshness; три последовательных успеха возвращают
 UDP eligibility. Каждая смена немедленно запускает перепланирование UDP, но не
 эвакуирует рабочий TCP и не переподключает WireGuard peer. Эта отдельная
-гистерезисная петля предотвращает как назначение DNS-only UDP маршрута, так и
-переключения из-за единичной потери QUIC-пакета.
+гистерезисная петля предотвращает переключения из-за единичной потери пакета.
 
 Endpoint isolation отделяет деградацию маршрута от сбоя измерителя. Ошибочные
 HTTP status, неожиданный размер и malformed response сразу считаются

@@ -399,7 +399,7 @@ Canary 必须满足以下不变量：
 - 添加 canary 不改变现有客户端 assignments。
 - 主路由 hard failure 只迁移分配给该路由的客户端。
 - 存在其他可用 Tor/VLESS 时，过期 reserve 不会产生 `BlockTCP`；可用 UDP VLESS 不会产生 `BlockUDP`。
-- 能响应 DNS-over-UDP 但无法完成两次 QUIC handshake 的 VLESS，在两次 QoE observation 后只失去 UDP eligibility；其 TCP assignment 和 canary WireGuard peer 不变。
+- 普通 VLESS 若无法完成两次 QUIC handshake，在两次 QoE observation 后只失去 UDP eligibility。标准 `xtls-rprx-vision` 会有意拒绝 UDP/443，因此改用 DNS-over-UDP 检查。
 - Applied generation 只变化一次，Xray 规则不包含临时 `hydrat-stage-*-block`。
 - 更换 egress 时 canary 的 WireGuard handshake 保持连续。
 

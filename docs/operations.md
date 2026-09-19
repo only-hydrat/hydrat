@@ -505,9 +505,9 @@ WireGuard peer. Существующие пользовательские peers 
 - hard failure primary переносит только назначенных ему клиентов;
 - устаревший reserve при наличии другого рабочего Tor/VLESS не создаёт
   `BlockTCP`, а рабочий UDP VLESS не создаёт `BlockUDP`;
-- VLESS, который отвечает на DNS-over-UDP, но не завершает два QUIC handshake,
-  теряет только UDP eligibility после двух QoE observations; TCP assignment и
-  WireGuard peer canary при этом не меняются;
+- обычный VLESS, который не завершает два QUIC handshake, теряет только UDP
+  eligibility после двух QoE observations; стандартный `xtls-rprx-vision`
+  вместо QUIC проходит DNS-over-UDP, поскольку намеренно отклоняет UDP/443;
 - applied generation меняется один раз, а Xray rules не содержат временный
   `hydrat-stage-*-block`;
 - WireGuard handshake canary остаётся непрерывным во время смены egress.

@@ -10,6 +10,34 @@ import (
 	"time"
 )
 
+func TestListenPacketCancellationInterruptsSOCKSHandshake(t *testing.T) {
+	client, server := net.Pipe()
+	defer server.Close()
+	dialer := Dialer{
+		ProxyAddress: "127.0.0.1:1080",
+		Dial: func(context.Context, string, string) (net.Conn, error) {
+			return client, nil
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	returned := make(chan error, 1)
+	go func() {
+		_, err := dialer.ListenPacket(ctx)
+		returned <- err
+	}()
+	hello := make([]byte, 3)
+	if _, err := io.ReadFull(server, hello); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	select {
+	case <-returned:
+	case <-time.After(200 * time.Millisecond):
+		_ = client.Close()
+		t.Fatal("SOCKS UDP association ignored context cancellation")
+	}
+}
+
 func TestDialerPacketConnRelaysUDPAndPreservesPeerAddress(t *testing.T) {
 	relay, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
 	if err != nil {

@@ -30,6 +30,8 @@ func (dialer Dialer) DialContext(ctx context.Context, network, address string) (
 	if err != nil {
 		return nil, err
 	}
+	stopClose := context.AfterFunc(ctx, func() { _ = connection.Close() })
+	defer stopClose()
 	failed := true
 	defer func() {
 		if failed {
@@ -62,6 +64,9 @@ func (dialer Dialer) DialContext(ctx context.Context, network, address string) (
 	if err := discardAddress(connection, header[3]); err != nil {
 		return nil, err
 	}
+	if !stopClose() {
+		return nil, ctx.Err()
+	}
 	_ = connection.SetDeadline(time.Time{})
 	failed = false
 	return connection, nil
@@ -80,6 +85,8 @@ func (dialer Dialer) open(ctx context.Context) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
+	stopClose := context.AfterFunc(ctx, func() { _ = connection.Close() })
+	defer stopClose()
 	failed := true
 	defer func() {
 		if failed {
@@ -123,6 +130,9 @@ func (dialer Dialer) open(ctx context.Context) (net.Conn, error) {
 	} else if response[1] != 0 {
 		return nil, fmt.Errorf("unsupported SOCKS5 authentication method %d", response[1])
 	}
+	if !stopClose() {
+		return nil, ctx.Err()
+	}
 	failed = false
 	return connection, nil
 }
@@ -135,6 +145,8 @@ func (dialer Dialer) ListenPacket(ctx context.Context) (net.PacketConn, error) {
 	if err != nil {
 		return nil, err
 	}
+	stopClose := context.AfterFunc(ctx, func() { _ = control.Close() })
+	defer stopClose()
 	failed := true
 	defer func() {
 		if failed {
@@ -173,6 +185,10 @@ func (dialer Dialer) ListenPacket(ctx context.Context) (net.PacketConn, error) {
 	packet, err := net.DialUDP("udp", nil, relay)
 	if err != nil {
 		return nil, err
+	}
+	if !stopClose() {
+		_ = packet.Close()
+		return nil, ctx.Err()
 	}
 	_ = control.SetDeadline(time.Time{})
 	failed = false

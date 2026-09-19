@@ -83,13 +83,38 @@ func TestQoEMeasurerReportsVLESSQUICIndependentlyFromHealthyTCP(t *testing.T) {
 		},
 	})
 
-	got := measurer.MeasureVLESS(context.Background(), "candidate", "127.0.0.1:1080")
+	got := measurer.MeasureVLESS(context.Background(), "candidate", "127.0.0.1:1080", "")
 	if !got.Success || got.Infrastructure || got.UDPReachable == nil || *got.UDPReachable || checks != 1 {
 		t.Fatalf("observation=%+v checks=%d", got, checks)
 	}
 	plain := measurer.Measure(context.Background(), "tor", "127.0.0.1:1080")
 	if plain.UDPReachable != nil || checks != 1 {
 		t.Fatalf("plain observation=%+v checks=%d", plain, checks)
+	}
+}
+
+func TestQoEMeasurerUsesGeneralUDPForStandardVision(t *testing.T) {
+	quicChecks := 0
+	dnsUDPChecks := 0
+	measurer := NewQoEMeasurer(QoEMeasurerConfig{
+		ClientFactory: func(string) *http.Client { return qoeSuccessClient() },
+		DirectClient:  qoeSuccessClient(),
+		SampleBytes:   65536,
+		UDPCheck: func(context.Context, string) bool {
+			quicChecks++
+			return false
+		},
+		VisionUDPCheck: func(context.Context, string) bool {
+			dnsUDPChecks++
+			return true
+		},
+	})
+
+	got := measurer.MeasureVLESS(
+		context.Background(), "candidate", "127.0.0.1:1080", "xtls-rprx-vision",
+	)
+	if !got.Success || got.UDPReachable == nil || !*got.UDPReachable || quicChecks != 0 || dnsUDPChecks != 1 {
+		t.Fatalf("observation=%+v QUIC checks=%d DNS UDP checks=%d", got, quicChecks, dnsUDPChecks)
 	}
 }
 
@@ -116,7 +141,7 @@ func TestQoEMeasurerJoinsCanceledUDPCheckBeforeReturning(t *testing.T) {
 	returned := make(chan qoe.Observation, 1)
 	go func() {
 		returned <- measurer.MeasureVLESS(
-			context.Background(), "candidate", "127.0.0.1:1080",
+			context.Background(), "candidate", "127.0.0.1:1080", "",
 		)
 	}()
 

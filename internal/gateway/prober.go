@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,7 +40,7 @@ type qoeMeasurer interface {
 }
 
 type vlessQoEMeasurer interface {
-	MeasureVLESS(context.Context, string, string) qoe.Observation
+	MeasureVLESS(context.Context, string, string, string) qoe.Observation
 }
 
 type availabilityMeasurer interface {
@@ -307,14 +309,16 @@ func (prober *Prober) measureVLESS(
 		}
 		var observation qoe.Observation
 		if measurer, ok := prober.qoe.(vlessQoEMeasurer); ok {
-			observation = measurer.MeasureVLESS(ctx, request.CandidateID, address)
+			observation = measurer.MeasureVLESS(
+				ctx, request.CandidateID, address, vlessFlow(request.Payload),
+			)
 		} else {
 			observation = prober.qoe.Measure(ctx, request.CandidateID, address)
 		}
 		return qoeProbeResponse(request.CandidateID, observation), nil
 	}
 	if mode == agentapi.ProbeModeFull {
-		metrics, err := prober.measurer.Measure(ctx, address, health.ProtocolVLESS)
+		metrics, err := prober.measurer.MeasureVLESS(ctx, address, vlessFlow(request.Payload))
 		if contextErr := ctx.Err(); contextErr != nil {
 			return agentapi.ProbeResponse{}, contextErr
 		}
@@ -338,6 +342,14 @@ func (prober *Prober) measureVLESS(
 		response.ErrorCode = "liveness_failed"
 	}
 	return response, nil
+}
+
+func vlessFlow(payload string) string {
+	link, err := url.Parse(strings.TrimSpace(payload))
+	if err != nil {
+		return ""
+	}
+	return link.Query().Get("flow")
 }
 
 func (prober *Prober) probeTor(ctx context.Context, mode agentapi.ProbeMode, request agentapi.ProbeRequest) (agentapi.ProbeResponse, error) {

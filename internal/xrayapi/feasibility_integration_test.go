@@ -37,8 +37,8 @@ func TestPinnedXrayDNSAndRoutingFeasibility(t *testing.T) {
 	}
 	if output, err := exec.Command(binaryPath, "version").CombinedOutput(); err != nil {
 		t.Fatalf("read pinned Xray version: %v: %s", err, strings.TrimSpace(string(output)))
-	} else if !bytes.Contains(output, []byte("035d438")) {
-		t.Fatalf("unexpected Xray build (want pinned 035d438): %s", strings.TrimSpace(string(output)))
+	} else if !bytes.Contains(output, []byte("d2758a0")) {
+		t.Fatalf("unexpected Xray build (want pinned d2758a0): %s", strings.TrimSpace(string(output)))
 	}
 
 	dns := startTCPDNSFixture(t)

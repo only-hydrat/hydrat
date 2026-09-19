@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -734,6 +735,52 @@ func TestVLESSFullProbeRuntimeDrainIsInfrastructureFailure(t *testing.T) {
 	}
 }
 
+func TestVLESSFullProbePassesVisionFlowToUDPQualification(t *testing.T) {
+	runner := &recordingProbeXrayRunner{}
+	control := probexray.New("xray", "127.0.0.1:10086", TotalProbeSlots, runner)
+	control.Reset(7)
+	quicChecks := 0
+	dnsUDPChecks := 0
+	client := &http.Client{Transport: probeRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		status := http.StatusOK
+		if request.URL.Host == "api.openai.com" {
+			status = http.StatusUnauthorized
+		}
+		return &http.Response{
+			StatusCode: status,
+			Body:       io.NopCloser(bytes.NewReader(make([]byte, 1024*1024))),
+			Header:     make(http.Header),
+		}, nil
+	})}
+	prober := &Prober{
+		control: control, runtime: &recordingProbeRuntime{epoch: 7}, cleanupTimeout: time.Second,
+		measurer: probe.Measurer{
+			ClientFactory: func(string) *http.Client { return client },
+			MTProtoCheck:  func(context.Context, string) bool { return true },
+			UDPCheck: func(context.Context, string) bool {
+				quicChecks++
+				return false
+			},
+			VisionUDPCheck: func(context.Context, string) bool {
+				dnsUDPChecks++
+				return true
+			},
+		},
+		portBase: 11080, fullSlots: slotPool(fullSlotStart, fullSlotCount),
+		fastSlots: slotPool(fastSlotStart, fastSlotCount), activeSlots: slotPool(activeSlotStart, activeSlotCount),
+		qoeSlots: slotPool(qoeSlotStart, qoeSlotCount),
+	}
+	request := vlessProbeRequest()
+	request.Payload = " \t" + request.Payload + "&flow=xtls-rprx-vision\n"
+	response, err := prober.Probe(context.Background(), agentapi.ProbeModeFull, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !response.Evaluation.UDPQualified || quicChecks != 0 || dnsUDPChecks != 1 {
+		t.Fatalf("response=%+v QUIC checks=%d DNS UDP checks=%d", response, quicChecks, dnsUDPChecks)
+	}
+}
+
 func TestVLESSProbeClearsAndRepanics(t *testing.T) {
 	panicValue := errors.New("measurement panic")
 	clearFailure := errors.New("clear failed during panic")
@@ -1221,7 +1268,7 @@ func (measurer *recordingVLESSQoEMeasurer) Measure(
 }
 
 func (measurer *recordingVLESSQoEMeasurer) MeasureVLESS(
-	context.Context, string, string,
+	context.Context, string, string, string,
 ) qoe.Observation {
 	measurer.vlessCalls++
 	return qoe.Observation{Success: true}

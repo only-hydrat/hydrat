@@ -67,6 +67,7 @@ type QoEMeasurerConfig struct {
 	DNSRouteCheck      DNSRouteChecker
 	DNSDirectCheck     DNSDirectChecker
 	UDPCheck           func(context.Context, string) bool
+	VisionUDPCheck     func(context.Context, string) bool
 }
 
 type QoEMeasurer struct {
@@ -83,6 +84,7 @@ type QoEMeasurer struct {
 	dnsRouteCheck      DNSRouteChecker
 	dnsDirectCheck     DNSDirectChecker
 	udpCheck           func(context.Context, string) bool
+	visionUDPCheck     func(context.Context, string) bool
 
 	mu                 sync.Mutex
 	recentFailures     map[string]time.Time
@@ -142,6 +144,9 @@ func NewQoEMeasurer(config QoEMeasurerConfig) *QoEMeasurer {
 	if config.UDPCheck == nil {
 		config.UDPCheck = CheckQUIC
 	}
+	if config.VisionUDPCheck == nil {
+		config.VisionUDPCheck = CheckUDPDNS
+	}
 	return &QoEMeasurer{
 		clientFactory:      config.ClientFactory,
 		directClient:       config.DirectClient,
@@ -156,6 +161,7 @@ func NewQoEMeasurer(config QoEMeasurerConfig) *QoEMeasurer {
 		dnsRouteCheck:      config.DNSRouteCheck,
 		dnsDirectCheck:     config.DNSDirectCheck,
 		udpCheck:           config.UDPCheck,
+		visionUDPCheck:     config.VisionUDPCheck,
 		recentFailures:     make(map[string]time.Time),
 	}
 }
@@ -173,15 +179,20 @@ func (measurer *QoEMeasurer) Measure(
 	candidateID string,
 	socksAddress string,
 ) qoe.Observation {
-	return measurer.measure(ctx, candidateID, socksAddress, false)
+	return measurer.measure(ctx, candidateID, socksAddress, nil)
 }
 
 func (measurer *QoEMeasurer) MeasureVLESS(
 	ctx context.Context,
 	candidateID string,
 	socksAddress string,
+	flow string,
 ) qoe.Observation {
-	return measurer.measure(ctx, candidateID, socksAddress, true)
+	udpCheck := measurer.udpCheck
+	if flow == "xtls-rprx-vision" {
+		udpCheck = measurer.visionUDPCheck
+	}
+	return measurer.measure(ctx, candidateID, socksAddress, udpCheck)
 }
 
 // MeasureAvailability performs only the routed DNS check and its direct
@@ -241,7 +252,7 @@ func (measurer *QoEMeasurer) measure(
 	ctx context.Context,
 	candidateID string,
 	socksAddress string,
-	checkUDP bool,
+	udpCheck func(context.Context, string) bool,
 ) qoe.Observation {
 	at := measurer.now()
 	observation := qoe.Observation{At: at}
@@ -281,12 +292,12 @@ func (measurer *QoEMeasurer) measure(
 	}
 	var udpResult <-chan bool
 	udpCancel := func() {}
-	if checkUDP && measurer.udpCheck != nil {
+	if udpCheck != nil {
 		udpCtx, cancelUDP := context.WithCancel(ctx)
 		udpCancel = cancelUDP
 		results := make(chan bool, 1)
 		udpResult = results
-		go func() { results <- measurer.udpCheck(udpCtx, socksAddress) }()
+		go func() { results <- udpCheck(udpCtx, socksAddress) }()
 	}
 	defer func() {
 		udpCancel()

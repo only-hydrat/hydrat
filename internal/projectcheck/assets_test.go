@@ -1110,12 +1110,12 @@ func TestProductionEnvironmentAndComposeContract(t *testing.T) {
 	}
 	for _, expected := range []string{
 		"AS xray-build",
-		"ARG XRAY_COMMIT=035d43897925cde32639c77f84d64a79d5f4cde7",
-		"ARG XRAY_SOURCE_SHA256=cdd5a0bee355119db2fce31715f5a1ce22821c69d4f3dcc1fcd02c038429f12d",
+		"ARG XRAY_COMMIT=d2758a023cd7f4174a5a5fa4ff66e487d4342ba0",
+		"ARG XRAY_SOURCE_SHA256=768528fdbd6f8c2b3fb3d3b04a5df88bcd8722216f3b1ca81ae69cdfaad28299",
 		"https://codeload.github.com/XTLS/Xray-core/zip/${XRAY_COMMIT}",
 		"-buildvcs=false",
 		"-buildid=",
-		"-X github.com/xtls/xray-core/core.build=035d438",
+		"-X github.com/xtls/xray-core/core.build=d2758a0",
 		"COPY --from=xray-build /out/xray /usr/local/bin/xray",
 		"COPY config/xray/active.json /etc/hydrat/xray-active.json",
 	} {
