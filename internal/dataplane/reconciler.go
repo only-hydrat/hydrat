@@ -507,10 +507,17 @@ func validateDNSOutboundConfig(encoded json.RawMessage) (string, error) {
 	type proxySettings struct {
 		Tag string `json:"tag"`
 	}
+	type socketSettings struct {
+		DialerProxy string `json:"dialerProxy"`
+	}
+	type streamSettings struct {
+		Sockopt *socketSettings `json:"sockopt"`
+	}
 	type dnsConfig struct {
-		Protocol      string         `json:"protocol"`
-		Settings      *dnsSettings   `json:"settings"`
-		ProxySettings *proxySettings `json:"proxySettings"`
+		Protocol       string          `json:"protocol"`
+		Settings       *dnsSettings    `json:"settings"`
+		StreamSettings *streamSettings `json:"streamSettings"`
+		ProxySettings  *proxySettings  `json:"proxySettings"`
 	}
 	if len(bytes.TrimSpace(encoded)) == 0 {
 		return "", errors.New("config is required")
@@ -535,10 +542,20 @@ func validateDNSOutboundConfig(encoded json.RawMessage) (string, error) {
 	if err := ValidatePublicDNSResolver(config.Settings.RewriteAddress); err != nil {
 		return "", errors.New("rewrite address must be a canonical public IPv4 literal")
 	}
-	if config.ProxySettings == nil || config.ProxySettings.Tag == "" {
-		return "", errors.New("proxySettings tag is required")
+	dialerProxy := ""
+	if config.StreamSettings != nil && config.StreamSettings.Sockopt != nil {
+		dialerProxy = config.StreamSettings.Sockopt.DialerProxy
 	}
-	return config.ProxySettings.Tag, nil
+	if config.ProxySettings != nil {
+		if dialerProxy != "" {
+			return "", errors.New("DNS outbound has both dialerProxy and legacy proxySettings")
+		}
+		dialerProxy = config.ProxySettings.Tag
+	}
+	if dialerProxy == "" {
+		return "", errors.New("DNS outbound dialerProxy is required")
+	}
+	return dialerProxy, nil
 }
 
 var nonPublicDNSPrefixes = [...]netip.Prefix{
@@ -653,13 +670,16 @@ func BuildDNSOutbound(clientID string, target Outbound, resolver string) (Outbou
 		RewriteAddress string `json:"rewriteAddress"`
 		RewritePort    int    `json:"rewritePort"`
 	}
-	type proxySettings struct {
-		Tag string `json:"tag"`
+	type socketSettings struct {
+		DialerProxy string `json:"dialerProxy"`
+	}
+	type streamSettings struct {
+		Sockopt socketSettings `json:"sockopt"`
 	}
 	type dnsConfig struct {
-		Protocol      string        `json:"protocol"`
-		Settings      dnsSettings   `json:"settings"`
-		ProxySettings proxySettings `json:"proxySettings"`
+		Protocol       string         `json:"protocol"`
+		Settings       dnsSettings    `json:"settings"`
+		StreamSettings streamSettings `json:"streamSettings"`
 	}
 	config, err := json.Marshal(dnsConfig{
 		Protocol: string(ProtocolDNS),
@@ -668,7 +688,7 @@ func BuildDNSOutbound(clientID string, target Outbound, resolver string) (Outbou
 			RewriteAddress: resolver,
 			RewritePort:    53,
 		},
-		ProxySettings: proxySettings{Tag: target.ID},
+		StreamSettings: streamSettings{Sockopt: socketSettings{DialerProxy: target.ID}},
 	})
 	if err != nil {
 		return Outbound{}, fmt.Errorf("encode DNS outbound: %w", err)

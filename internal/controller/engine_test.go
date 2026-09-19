@@ -7279,6 +7279,11 @@ func engineDNSConfig(t *testing.T, encoded json.RawMessage) (string, string) {
 		Settings struct {
 			RewriteAddress string `json:"rewriteAddress"`
 		} `json:"settings"`
+		StreamSettings struct {
+			Sockopt struct {
+				DialerProxy string `json:"dialerProxy"`
+			} `json:"sockopt"`
+		} `json:"streamSettings"`
 		ProxySettings struct {
 			Tag string `json:"tag"`
 		} `json:"proxySettings"`
@@ -7286,7 +7291,11 @@ func engineDNSConfig(t *testing.T, encoded json.RawMessage) (string, string) {
 	if err := json.Unmarshal(encoded, &config); err != nil {
 		t.Fatal(err)
 	}
-	return config.ProxySettings.Tag, config.Settings.RewriteAddress
+	target := config.StreamSettings.Sockopt.DialerProxy
+	if target == "" {
+		target = config.ProxySettings.Tag
+	}
+	return target, config.Settings.RewriteAddress
 }
 
 func engineDNSHandlerForClientTarget(

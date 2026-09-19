@@ -161,9 +161,11 @@ func TestAdapterAddsActiveAndReserveDNSOutboundsWithExactResolver(t *testing.T) 
 					RewriteAddress string `json:"rewriteAddress"`
 					RewritePort    int    `json:"rewritePort"`
 				} `json:"settings"`
-				ProxySettings struct {
-					Tag string `json:"tag"`
-				} `json:"proxySettings"`
+				StreamSettings struct {
+					Sockopt struct {
+						DialerProxy string `json:"dialerProxy"`
+					} `json:"sockopt"`
+				} `json:"streamSettings"`
 			} `json:"outbounds"`
 		}
 		if err := json.Unmarshal([]byte(runner.stdin[index]), &document); err != nil {
@@ -176,7 +178,7 @@ func TestAdapterAddsActiveAndReserveDNSOutboundsWithExactResolver(t *testing.T) 
 		if got.Tag != want.tag || got.Protocol != "dns" ||
 			got.Settings.RewriteNetwork != "tcp" ||
 			got.Settings.RewriteAddress != "9.9.9.9" || got.Settings.RewritePort != 53 ||
-			got.ProxySettings.Tag != want.proxy {
+			got.StreamSettings.Sockopt.DialerProxy != want.proxy {
 			t.Fatalf("DNS outbound=%+v want tag=%s proxy=%s", got, want.tag, want.proxy)
 		}
 	}
@@ -247,7 +249,7 @@ func TestAdapterNormalizesOnlyPersistedDNSResolverDuringRecovery(t *testing.T) {
 	adapter := NewAdapter("xray", "127.0.0.1:10085", "9.9.9.9", runner)
 	persisted := dataplane.Outbound{
 		ID: "old-dns-tag", Protocol: dataplane.ProtocolDNS,
-		Config: dnsAdapterConfig("1.1.1.1", "tcp-handler"),
+		Config: json.RawMessage(`{"protocol":"dns","settings":{"rewriteNetwork":"tcp","rewriteAddress":"1.1.1.1","rewritePort":53},"proxySettings":{"tag":"tcp-handler"}}`),
 	}
 	if err := adapter.AddOutbound(context.Background(), persisted); err == nil {
 		t.Fatal("regular Add accepted persisted resolver mismatch")
@@ -265,8 +267,9 @@ func TestAdapterNormalizesOnlyPersistedDNSResolverDuringRecovery(t *testing.T) {
 	}
 	if config.Tag != "" || config.Protocol != "dns" || config.Settings == nil ||
 		config.Settings.RewriteNetwork != "tcp" || config.Settings.RewritePort != 53 ||
-		config.Settings.RewriteAddress != "9.9.9.9" || config.ProxySettings == nil ||
-		config.ProxySettings.Tag != "tcp-handler" {
+		config.Settings.RewriteAddress != "9.9.9.9" || config.StreamSettings == nil ||
+		config.StreamSettings.Sockopt == nil ||
+		config.StreamSettings.Sockopt.DialerProxy != "tcp-handler" || config.ProxySettings != nil {
 		t.Fatalf("normalized config=%+v", config)
 	}
 	if err := adapter.AddOutbound(context.Background(), normalized); err != nil {
@@ -393,7 +396,7 @@ func TestAdapterSkipsRouteReplacementWhenOnlyPreloadedReservesChange(t *testing.
 
 func dnsAdapterConfig(resolver, proxy string) json.RawMessage {
 	return json.RawMessage(fmt.Sprintf(
-		`{"protocol":"dns","settings":{"rewriteNetwork":"tcp","rewriteAddress":%q,"rewritePort":53},"proxySettings":{"tag":%q}}`,
+		`{"protocol":"dns","settings":{"rewriteNetwork":"tcp","rewriteAddress":%q,"rewritePort":53},"streamSettings":{"sockopt":{"dialerProxy":%q}}}`,
 		resolver, proxy,
 	))
 }

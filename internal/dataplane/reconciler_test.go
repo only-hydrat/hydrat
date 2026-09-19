@@ -73,16 +73,18 @@ func TestBuildDNSOutboundUsesDeterministicCollisionSafeTargetDigest(t *testing.T
 			RewriteAddress string `json:"rewriteAddress"`
 			RewritePort    int    `json:"rewritePort"`
 		} `json:"settings"`
-		ProxySettings struct {
-			Tag string `json:"tag"`
-		} `json:"proxySettings"`
+		StreamSettings struct {
+			Sockopt struct {
+				DialerProxy string `json:"dialerProxy"`
+			} `json:"sockopt"`
+		} `json:"streamSettings"`
 	}
 	if err := json.Unmarshal(first.Config, &config); err != nil {
 		t.Fatal(err)
 	}
 	if config.Protocol != "dns" || config.Settings.RewriteNetwork != "tcp" ||
 		config.Settings.RewriteAddress != "9.9.9.9" || config.Settings.RewritePort != 53 ||
-		config.ProxySettings.Tag != target.ID {
+		config.StreamSettings.Sockopt.DialerProxy != target.ID {
 		t.Fatalf("DNS config=%+v", config)
 	}
 
@@ -300,7 +302,7 @@ func dnsTestConfig(proxy string) json.RawMessage {
 
 func dnsTestConfigResolver(proxy, resolver string) json.RawMessage {
 	return json.RawMessage(fmt.Sprintf(
-		`{"protocol":"dns","settings":{"rewriteNetwork":"tcp","rewriteAddress":%q,"rewritePort":53},"proxySettings":{"tag":%q}}`,
+		`{"protocol":"dns","settings":{"rewriteNetwork":"tcp","rewriteAddress":%q,"rewritePort":53},"streamSettings":{"sockopt":{"dialerProxy":%q}}}`,
 		resolver, proxy,
 	))
 }
@@ -1576,9 +1578,11 @@ func (adapter *dnsRecoveryAdapter) NormalizeOutboundForRecovery(
 			RewriteAddress string `json:"rewriteAddress"`
 			RewritePort    int    `json:"rewritePort"`
 		} `json:"settings"`
-		ProxySettings struct {
-			Tag string `json:"tag"`
-		} `json:"proxySettings"`
+		StreamSettings struct {
+			Sockopt struct {
+				DialerProxy string `json:"dialerProxy"`
+			} `json:"sockopt"`
+		} `json:"streamSettings"`
 	}
 	if err := json.Unmarshal(outbound.Config, &config); err != nil {
 		return Outbound{}, err

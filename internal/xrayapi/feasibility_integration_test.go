@@ -37,8 +37,8 @@ func TestPinnedXrayDNSAndRoutingFeasibility(t *testing.T) {
 	}
 	if output, err := exec.Command(binaryPath, "version").CombinedOutput(); err != nil {
 		t.Fatalf("read pinned Xray version: %v: %s", err, strings.TrimSpace(string(output)))
-	} else if !bytes.Contains(output, []byte("d2758a0")) {
-		t.Fatalf("unexpected Xray build (want pinned d2758a0): %s", strings.TrimSpace(string(output)))
+	} else if !bytes.Contains(output, []byte("52a412d")) {
+		t.Fatalf("unexpected Xray build (want pinned 52a412d): %s", strings.TrimSpace(string(output)))
 	}
 
 	dns := startTCPDNSFixture(t)
@@ -246,14 +246,14 @@ func TestPinnedXrayDNSAndRoutingFeasibility(t *testing.T) {
 	if !strings.Contains(output, "duplicate balancer tag") {
 		t.Fatalf("failed adrules did not reach API-side reload: %v: %s", err, output)
 	}
-	if queryErr := exchangeDNSWithTimeout(dnsIngress, 0x1010, 250*time.Millisecond); queryErr == nil {
-		t.Fatalf("native destructive reload unexpectedly retained a route: api_error=%q", sanitizeEvidence(output))
-	}
-	requireNoFixtureHit(t, directTrap.hits, "direct UDP trap after destructive reload")
-	t.Logf("FEASIBILITY native_rules=destructive static_default=block direct_evidence=zero api_error=%q", sanitizeEvidence(output))
+	requireDNSQuery(t, dnsIngress, 0x1010)
+	requireFixtureHit(t, torSOCKS.hits, "Tor SOCKS after rejected reload")
+	requireFixtureHit(t, dns.hits, "TCP DNS after rejected reload")
+	requireNoFixtureHit(t, directTrap.hits, "direct UDP trap after rejected reload")
+	t.Logf("FEASIBILITY native_rules=atomic state=old-service direct_evidence=zero api_error=%q", sanitizeEvidence(output))
 
-	// The API listens outside the router. It must remain reachable even after
-	// ReloadRules has destroyed the matcher, so a retry can restore service.
+	// The API remains reachable after a rejected reload, so staged retries can
+	// still converge without exposing direct traffic.
 	if output, err := replaceRules(context.Background(), binaryPath, apiAddress, stagingRules()); err != nil {
 		t.Fatalf("static API did not survive empty matcher: %v: %s", err, output)
 	}
@@ -292,6 +292,50 @@ func TestPinnedXrayDNSAndRoutingFeasibility(t *testing.T) {
 	t.Logf("FEASIBILITY PASS branch=staged-fail-closed latency_samples=%d p95=%s max=%s", latencySamples, p95, maximum)
 }
 
+func TestPinnedXrayAcceptsProductionSizedRoutingUpdate(t *testing.T) {
+	binaryPath := os.Getenv("HYDRAT_XRAY_BINARY")
+	if binaryPath == "" {
+		t.Fatal("HYDRAT_XRAY_BINARY is required")
+	}
+
+	apiAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(fixtureXrayAPIPort+1))
+	xray := startXray(t, binaryPath, map[string]any{
+		"log": map[string]any{"access": "none", "loglevel": "warning"},
+		"api": map[string]any{
+			"tag": "api", "listen": apiAddress, "services": []string{"RoutingService"},
+		},
+		"outbounds": []any{
+			map[string]any{"tag": "api", "protocol": "blackhole", "settings": map[string]any{}},
+			map[string]any{"tag": "block", "protocol": "blackhole", "settings": map[string]any{}},
+		},
+		"routing": stagingRules(),
+	}, apiAddress)
+	defer xray.stop(t)
+
+	domains := make([]string, 75_000)
+	for index := range domains {
+		domains[index] = fmt.Sprintf("full:%06d.%s.example", index, strings.Repeat("a", 48))
+	}
+	routing := map[string]any{
+		"domainStrategy": "AsIs",
+		"rules": []any{
+			map[string]any{"type": "field", "ruleTag": "large-api", "inboundTag": []string{"api"}, "outboundTag": "api"},
+			map[string]any{"type": "field", "ruleTag": "large-domains", "domain": domains, "outboundTag": "block"},
+			map[string]any{"type": "field", "ruleTag": "large-fail-closed", "network": "tcp,udp", "outboundTag": "block"},
+		},
+	}
+	body, err := json.Marshal(map[string]any{"routing": routing})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) <= 4*1024*1024 {
+		t.Fatalf("routing fixture is only %d bytes; want more than the default gRPC limit", len(body))
+	}
+	if output, err := replaceRules(context.Background(), binaryPath, apiAddress, routing); err != nil {
+		t.Fatalf("replace %d-byte routing document: %v: %s", len(body), err, output)
+	}
+}
+
 func dnsOutbound(tag, proxyTag, rewriteAddress string) map[string]any {
 	return map[string]any{
 		"tag": tag, "protocol": "dns",
@@ -301,7 +345,7 @@ func dnsOutbound(tag, proxyTag, rewriteAddress string) map[string]any {
 			"rewritePort":    53,
 			"rules":          []any{map[string]any{"action": "direct"}},
 		},
-		"proxySettings": map[string]any{"tag": proxyTag},
+		"streamSettings": map[string]any{"sockopt": map[string]any{"dialerProxy": proxyTag}},
 	}
 }
 

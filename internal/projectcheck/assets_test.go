@@ -46,6 +46,21 @@ func TestCIRunsBrowserSessionTests(t *testing.T) {
 	t.Fatalf("CI test job must run %q", command)
 }
 
+func TestWorkflowsRunPinnedXrayFeasibilityTests(t *testing.T) {
+	root := repositoryRoot(t)
+	const command = "docker build --target xray-feasibility-test ."
+	for _, workflow := range []string{"ci.yml", "publish.yml"} {
+		contents := readText(t, filepath.Join(root, ".github", "workflows", workflow))
+		if !strings.Contains(contents, command) {
+			t.Errorf("%s must run %q", workflow, command)
+		}
+	}
+	dockerfile := readText(t, filepath.Join(root, "Dockerfile"))
+	if strings.Contains(dockerfile, "go test -tags=xrayintegration -run '^$'") {
+		t.Error("xray-feasibility-test must execute integration tests, not only compile them")
+	}
+}
+
 func TestProbeXrayContainsTwentyDedicatedSOCKSInbounds(t *testing.T) {
 	root := repositoryRoot(t)
 	data, err := os.ReadFile(filepath.Join(root, "config/xray/probe.json"))
@@ -1109,13 +1124,14 @@ func TestProductionEnvironmentAndComposeContract(t *testing.T) {
 		t.Error("Dockerfile must cross-compile Hydrat for the requested target platform")
 	}
 	for _, expected := range []string{
-		"AS xray-build",
-		"ARG XRAY_COMMIT=d2758a023cd7f4174a5a5fa4ff66e487d4342ba0",
-		"ARG XRAY_SOURCE_SHA256=768528fdbd6f8c2b3fb3d3b04a5df88bcd8722216f3b1ca81ae69cdfaad28299",
+		"FROM --platform=$BUILDPLATFORM golang:1.27.1-bookworm AS xray-build",
+		"ARG XRAY_COMMIT=52a412d9e2f5c2a5142b1b4e2ab3771dacb8b120",
+		"ARG XRAY_SOURCE_SHA256=0159e934d908cd176fed51dc61209e546046351928af685b143cad2ebe704831",
 		"https://codeload.github.com/XTLS/Xray-core/zip/${XRAY_COMMIT}",
+		"grpc.NewServer(grpc.MaxRecvMsgSize(16 * 1024 * 1024))",
 		"-buildvcs=false",
 		"-buildid=",
-		"-X github.com/xtls/xray-core/core.build=d2758a0",
+		"-X github.com/xtls/xray-core/core.build=52a412d-hydrat1",
 		"COPY --from=xray-build /out/xray /usr/local/bin/xray",
 		"COPY config/xray/active.json /etc/hydrat/xray-active.json",
 	} {

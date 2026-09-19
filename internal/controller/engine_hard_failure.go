@@ -745,12 +745,23 @@ func dnsHandlerForClientTarget(
 			Settings struct {
 				RewriteAddress string `json:"rewriteAddress"`
 			} `json:"settings"`
+			StreamSettings struct {
+				Sockopt struct {
+					DialerProxy string `json:"dialerProxy"`
+				} `json:"sockopt"`
+			} `json:"streamSettings"`
 			ProxySettings struct {
 				Tag string `json:"tag"`
 			} `json:"proxySettings"`
 		}
-		if json.Unmarshal(outbound.Config, &config) != nil ||
-			config.ProxySettings.Tag != targetID {
+		if json.Unmarshal(outbound.Config, &config) != nil {
+			continue
+		}
+		dialerProxy := config.StreamSettings.Sockopt.DialerProxy
+		if dialerProxy == "" {
+			dialerProxy = config.ProxySettings.Tag
+		}
+		if dialerProxy != targetID {
 			continue
 		}
 		expected, err := dataplane.BuildDNSOutbound(

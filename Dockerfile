@@ -48,12 +48,12 @@ RUN go get \
     && CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
       go build -trimpath -ldflags="-s -w" -o /out/lyrebird ./cmd/lyrebird
 
-FROM --platform=$BUILDPLATFORM golang:1.26.5-bookworm AS xray-build
+FROM --platform=$BUILDPLATFORM golang:1.27.1-bookworm AS xray-build
 
 ARG TARGETOS
 ARG TARGETARCH
-ARG XRAY_COMMIT=d2758a023cd7f4174a5a5fa4ff66e487d4342ba0
-ARG XRAY_SOURCE_SHA256=768528fdbd6f8c2b3fb3d3b04a5df88bcd8722216f3b1ca81ae69cdfaad28299
+ARG XRAY_COMMIT=52a412d9e2f5c2a5142b1b4e2ab3771dacb8b120
+ARG XRAY_SOURCE_SHA256=0159e934d908cd176fed51dc61209e546046351928af685b143cad2ebe704831
 
 ENV GOTOOLCHAIN=local \
     GOPROXY=https://proxy.golang.org,direct \
@@ -75,10 +75,15 @@ RUN set -eu; \
     rm "$archive"
 
 WORKDIR /src/xray
-RUN go mod download \
+RUN sed -i \
+      's/c.server = grpc.NewServer()/c.server = grpc.NewServer(grpc.MaxRecvMsgSize(16 * 1024 * 1024))/' \
+      app/commander/commander.go \
+    && grep -Fq 'grpc.NewServer(grpc.MaxRecvMsgSize(16 * 1024 * 1024))' \
+      app/commander/commander.go \
+    && go mod download \
     && CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
       go build -buildvcs=false -trimpath \
-        -ldflags="-s -w -buildid= -X github.com/xtls/xray-core/core.build=d2758a0" \
+        -ldflags="-s -w -buildid= -X github.com/xtls/xray-core/core.build=52a412d-hydrat1" \
         -o /out/xray ./main
 
 FROM --platform=$BUILDPLATFORM golang:1.26.5-bookworm AS probe-runtime-test
@@ -107,7 +112,7 @@ RUN go mod download
 COPY config ./config
 COPY internal ./internal
 ENV HYDRAT_XRAY_BINARY=/usr/local/bin/xray
-RUN CGO_ENABLED=0 go test -tags=xrayintegration -run '^$' \
+RUN CGO_ENABLED=0 go test -tags=xrayintegration -count=1 -v \
       ./internal/dataplane ./internal/xrayapi
 ENTRYPOINT ["go", "test", "-tags=xrayintegration", "-count=1", "-v", "./internal/dataplane", "./internal/xrayapi"]
 

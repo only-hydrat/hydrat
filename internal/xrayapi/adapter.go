@@ -179,11 +179,20 @@ type proxySettings struct {
 	Tag string `json:"tag"`
 }
 
+type socketSettings struct {
+	DialerProxy string `json:"dialerProxy"`
+}
+
+type streamSettings struct {
+	Sockopt *socketSettings `json:"sockopt"`
+}
+
 type dnsOutboundConfig struct {
-	Tag           string         `json:"tag,omitempty"`
-	Protocol      string         `json:"protocol"`
-	Settings      *dnsSettings   `json:"settings"`
-	ProxySettings *proxySettings `json:"proxySettings"`
+	Tag            string          `json:"tag,omitempty"`
+	Protocol       string          `json:"protocol"`
+	Settings       *dnsSettings    `json:"settings"`
+	StreamSettings *streamSettings `json:"streamSettings,omitempty"`
+	ProxySettings  *proxySettings  `json:"proxySettings,omitempty"`
 }
 
 func (adapter *Adapter) decodeDNSOutbound(
@@ -222,9 +231,21 @@ func (adapter *Adapter) decodeDNSOutbound(
 			adapter.dnsResolvers,
 		)
 	}
-	if config.ProxySettings == nil || config.ProxySettings.Tag == "" {
-		return dnsOutboundConfig{}, errors.New("DNS outbound proxySettings tag is required")
+	dialerProxy := ""
+	if config.StreamSettings != nil && config.StreamSettings.Sockopt != nil {
+		dialerProxy = config.StreamSettings.Sockopt.DialerProxy
 	}
+	if config.ProxySettings != nil {
+		if dialerProxy != "" {
+			return dnsOutboundConfig{}, errors.New("DNS outbound has both dialerProxy and legacy proxySettings")
+		}
+		dialerProxy = config.ProxySettings.Tag
+	}
+	if dialerProxy == "" {
+		return dnsOutboundConfig{}, errors.New("DNS outbound dialerProxy is required")
+	}
+	config.StreamSettings = &streamSettings{Sockopt: &socketSettings{DialerProxy: dialerProxy}}
+	config.ProxySettings = nil
 	config.Tag = outbound.ID
 	return *config, nil
 }
