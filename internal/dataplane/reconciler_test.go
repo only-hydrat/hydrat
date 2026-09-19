@@ -2,6 +2,7 @@ package dataplane
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -133,6 +134,33 @@ func TestBuildDNSOutboundUsesDeterministicCollisionSafeTargetDigest(t *testing.T
 	}
 	if formatted.ID != first.ID {
 		t.Fatal("JSON formatting changed DNS handler tag")
+	}
+}
+
+func TestBuildDNSOutboundDoesNotReuseLegacyProxySettingsTag(t *testing.T) {
+	target := Outbound{
+		ID: "active", Protocol: ProtocolVLESS,
+		Config: json.RawMessage(`{"protocol":"vless","settings":{"address":"example.net"}}`),
+	}
+	current, err := BuildDNSOutbound("alice", target, "9.9.9.9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := canonicalOutboundJSON(target.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetHash := sha256.New()
+	writeDigestField(targetHash, []byte(target.ID))
+	writeDigestField(targetHash, []byte(target.Protocol))
+	writeDigestField(targetHash, canonical)
+	tagHash := sha256.New()
+	writeDigestField(tagHash, []byte("alice"))
+	writeDigestField(tagHash, targetHash.Sum(nil))
+	writeDigestField(tagHash, []byte("9.9.9.9"))
+	legacyTag := "hydrat-dns-" + hex.EncodeToString(tagHash.Sum(nil))
+	if current.ID == legacyTag {
+		t.Fatalf("DNS config migration reused immutable legacy tag %q", legacyTag)
 	}
 }
 

@@ -660,6 +660,7 @@ func BuildDNSOutbound(clientID string, target Outbound, resolver string) (Outbou
 	targetDigest := targetHash.Sum(nil)
 
 	tagHash := sha256.New()
+	writeDigestField(tagHash, []byte("streamSettings.sockopt.dialerProxy/v1"))
 	writeDigestField(tagHash, []byte(clientID))
 	writeDigestField(tagHash, targetDigest)
 	writeDigestField(tagHash, []byte(resolver))
