@@ -164,6 +164,79 @@ func TestBuildDNSOutboundDoesNotReuseLegacyProxySettingsTag(t *testing.T) {
 	}
 }
 
+func TestReconcileMigratesLegacyDNSOutboundConfigWithoutImmutableConflict(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "applied.json")
+	adapter := newDNSLayerAdapter()
+	reconciler, err := NewReconciler(adapter, statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	target := Outbound{
+		ID: "stable-candidate", Protocol: ProtocolVLESS,
+		Config: json.RawMessage(`{"protocol":"vless","settings":{"address":"example.net"}}`),
+	}
+	canonical, err := canonicalOutboundJSON(target.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetHash := sha256.New()
+	writeDigestField(targetHash, []byte(target.ID))
+	writeDigestField(targetHash, []byte(target.Protocol))
+	writeDigestField(targetHash, canonical)
+	tagHash := sha256.New()
+	writeDigestField(tagHash, []byte("alice"))
+	writeDigestField(tagHash, targetHash.Sum(nil))
+	writeDigestField(tagHash, []byte("9.9.9.9"))
+	legacyTag := "hydrat-dns-" + hex.EncodeToString(tagHash.Sum(nil))
+
+	legacyDNS := Outbound{
+		ID:       legacyTag,
+		Protocol: ProtocolDNS,
+		Config:   json.RawMessage(`{"protocol":"dns","settings":{"rewriteNetwork":"tcp","rewriteAddress":"9.9.9.9","rewritePort":53},"proxySettings":{"tag":"stable-candidate"}}`),
+	}
+	initialPlan := DesiredPlan{
+		Generation: 1,
+		Outbounds:  []Outbound{target, legacyDNS},
+		Clients: []ClientRoute{{
+			ClientID: "alice", SourceCIDR: "10.44.0.2/32",
+			TCPOutbound: target.ID, UDPOutbound: target.ID, DNSOutbound: legacyDNS.ID,
+		}},
+		DirectSuffixes: []string{".ru"},
+		FailClosed:     true,
+	}
+	if err := reconciler.Apply(context.Background(), initialPlan); err != nil {
+		t.Fatalf("apply initial legacy DNS plan: %v", err)
+	}
+
+	currentDNS, err := BuildDNSOutbound("alice", target, "9.9.9.9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	migratedPlan := DesiredPlan{
+		Generation: 2,
+		Outbounds:  []Outbound{target, currentDNS},
+		Clients: []ClientRoute{{
+			ClientID: "alice", SourceCIDR: "10.44.0.2/32",
+			TCPOutbound: target.ID, UDPOutbound: target.ID, DNSOutbound: currentDNS.ID,
+		}},
+		DirectSuffixes: []string{".ru"},
+		FailClosed:     true,
+	}
+	if err := reconciler.Apply(context.Background(), migratedPlan); err != nil {
+		t.Fatalf("apply migrated DNS plan failed: %v", err)
+	}
+	if _, exists := adapter.handlers[legacyDNS.ID]; exists {
+		t.Fatalf("legacy DNS %s was not removed after migration", legacyDNS.ID)
+	}
+	if _, exists := adapter.handlers[currentDNS.ID]; !exists {
+		t.Fatalf("current DNS %s was not added after migration", currentDNS.ID)
+	}
+	if len(adapter.lastRoutes) != 1 || adapter.lastRoutes[0].DNSOutbound != currentDNS.ID {
+		t.Fatalf("routes did not switch to current DNS: %+v", adapter.lastRoutes)
+	}
+}
+
 func TestSelectDNSResolverIsStableAndDistributesCandidates(t *testing.T) {
 	resolvers := []string{"1.1.1.1", "8.8.8.8", "9.9.9.9"}
 	first, err := SelectDNSResolver("candidate-a", resolvers)
