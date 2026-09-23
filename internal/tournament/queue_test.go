@@ -17,14 +17,45 @@ func TestDiscoveryQueueIsFairAndDeterministic(t *testing.T) {
 		{Fingerprint: "unseen-b"},
 		{Fingerprint: "unseen-a"},
 		{Fingerprint: "still-banned", Status: StatusBanned, BannedUntil: now.Add(time.Hour)},
-	}, QueuePolicy{Now: now, ResetWindow: 5 * time.Hour})
+	}, QueuePolicy{Now: now, ResetWindow: 5 * time.Hour, PreferWorking: true})
 	got := make([]string, 0, len(jobs))
 	for _, job := range jobs {
 		got = append(got, job.Fingerprint)
 	}
-	want := []string{"unseen-a", "unseen-b", "expired", "boundary", "one-success", "other", "top"}
+	want := []string{"top", "one-success", "boundary", "unseen-a", "unseen-b", "expired", "other"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got=%v want=%v", got, want)
+	}
+}
+
+func TestDiscoveryQueuePrioritizesAssignedAndOldestCheckedCandidates(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	jobs := BuildDiscoveryQueue([]Candidate{
+		{Fingerprint: "recent", LastFullProbeAt: now.Add(-time.Minute)},
+		{Fingerprint: "old", LastFullProbeAt: now.Add(-time.Hour)},
+		{Fingerprint: "assigned", Assigned: true, LastFullProbeAt: now.Add(-time.Minute)},
+		{Fingerprint: "reserve", InWorkingPool: true, LastFullProbeAt: now.Add(-time.Minute)},
+		{Fingerprint: "one-success", FullSuccessStreak: 1, LastFullProbeAt: now.Add(-time.Minute)},
+	}, QueuePolicy{Now: now, ResetWindow: 5 * time.Hour, PreferWorking: true})
+	got := make([]string, 0, len(jobs))
+	for _, job := range jobs {
+		got = append(got, job.Fingerprint)
+	}
+	want := []string{"assigned", "reserve", "one-success", "old", "recent"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("priority and fairness=%v want=%v", got, want)
+	}
+}
+
+func TestDiscoveryQueueDefaultKeepsUnseenTorAheadOfWarmPool(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	jobs := BuildDiscoveryQueue([]Candidate{
+		{Fingerprint: "warm", Status: StatusQualified, InWorkingPool: true,
+			FullSuccessStreak: 2, LastFullProbeAt: now.Add(-time.Minute)},
+		{Fingerprint: "new"},
+	}, QueuePolicy{Now: now, ResetWindow: 5 * time.Hour})
+	if len(jobs) != 2 || jobs[0].Fingerprint != "new" {
+		t.Fatalf("Tor discovery starved: %+v", jobs)
 	}
 }
 

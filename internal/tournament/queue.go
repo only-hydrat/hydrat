@@ -15,6 +15,7 @@ const (
 	PriorityOneSuccess
 	PriorityOther
 	PriorityWorkingPool
+	PriorityAssigned
 )
 
 type Job struct {
@@ -26,12 +27,14 @@ type Job struct {
 }
 
 type QueuePolicy struct {
-	Now         time.Time
-	ResetWindow time.Duration
+	Now           time.Time
+	ResetWindow   time.Duration
+	PreferWorking bool
 }
 
 func BuildDiscoveryQueue(candidates []Candidate, policy QueuePolicy) []Job {
 	jobs := make([]Job, 0, len(candidates))
+	lastProbeByFingerprint := make(map[string]time.Time, len(candidates))
 	for _, candidate := range candidates {
 		if candidate.Status == StatusBanned && policy.Now.Before(candidate.BannedUntil) {
 			continue
@@ -46,7 +49,6 @@ func BuildDiscoveryQueue(candidates []Candidate, policy QueuePolicy) []Job {
 			job.Priority = PriorityResetExpired
 			job.Stage = ProbeFast
 		case candidate.Status == StatusUnknown && candidate.LastFullProbeAt.IsZero():
-			job.Priority = PriorityOther
 			job.Stage = ProbeFast
 		case candidate.Stale && candidate.NearBoundary:
 			job.Priority = PriorityBoundaryStale
@@ -55,15 +57,57 @@ func BuildDiscoveryQueue(candidates []Candidate, policy QueuePolicy) []Job {
 		case candidate.InWorkingPool:
 			job.Priority = PriorityWorkingPool
 		}
+		if policy.PreferWorking {
+			switch {
+			case candidate.Assigned:
+				job.Priority = PriorityAssigned
+			case candidate.InWorkingPool:
+				job.Priority = PriorityWorkingPool
+			case candidate.FullSuccessStreak == 1:
+				job.Priority = PriorityOneSuccess
+			}
+		}
+		lastProbeByFingerprint[job.Fingerprint] = candidate.LastFullProbeAt
+		if job.Stage == ProbeFast {
+			lastProbeByFingerprint[job.Fingerprint] = candidate.LastFastProbeAt
+		}
 		jobs = append(jobs, job)
 	}
 	sort.Slice(jobs, func(left, right int) bool {
 		if jobs[left].Priority == jobs[right].Priority {
+			leftAt := lastProbeByFingerprint[jobs[left].Fingerprint]
+			rightAt := lastProbeByFingerprint[jobs[right].Fingerprint]
+			if !leftAt.Equal(rightAt) {
+				return leftAt.Before(rightAt)
+			}
 			return jobs[left].Fingerprint < jobs[right].Fingerprint
 		}
-		return jobs[left].Priority < jobs[right].Priority
+		return discoveryPriorityRank(jobs[left].Priority, policy.PreferWorking) <
+			discoveryPriorityRank(jobs[right].Priority, policy.PreferWorking)
 	})
 	return jobs
+}
+
+func discoveryPriorityRank(priority Priority, preferWorking bool) int {
+	if !preferWorking {
+		return int(priority)
+	}
+	switch priority {
+	case PriorityAssigned:
+		return 0
+	case PriorityWorkingPool:
+		return 1
+	case PriorityOneSuccess:
+		return 2
+	case PriorityBoundaryStale:
+		return 3
+	case PriorityUnseen:
+		return 4
+	case PriorityResetExpired:
+		return 5
+	default:
+		return 6
+	}
 }
 
 type queuedJob struct {

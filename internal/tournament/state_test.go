@@ -69,3 +69,40 @@ func TestStateFiveHourResetClearsBanAndStreaksButKeepsStaleScore(t *testing.T) {
 		t.Fatalf("reset=%+v", reset)
 	}
 }
+
+func TestQualifiedCandidateSurvivesExpiredWindowInfrastructureFailureAndSuccessfulRecheck(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	state := State{
+		Fingerprint: "working", Status: StatusQualified, FullSuccessStreak: 2,
+		WindowStartedAt: now, LastFullProbeAt: now, LastScore: 90,
+		ConservativeScore: 80,
+	}
+	expired := now.Add(5 * time.Hour)
+	state = ApplyProbe(state, ProbeResult{
+		Stage: ProbeFast, Outcome: ProbeInfrastructureFailure,
+		ErrorCode: "agent_unavailable",
+	}, expired, 5*time.Hour)
+	if state.Status != StatusQualified || state.FullSuccessStreak != 2 ||
+		!state.WindowStartedAt.Equal(now) {
+		t.Fatalf("infrastructure failure removed a verified route: %+v", state)
+	}
+	state = ApplyProbe(state, ProbeResult{
+		Stage: ProbeFast, Outcome: ProbeSuccess,
+	}, expired.Add(time.Minute), 5*time.Hour)
+	if state.Status != StatusQualified || state.FullSuccessStreak < 2 ||
+		!state.WindowStartedAt.Equal(expired.Add(time.Minute)) {
+		t.Fatalf("successful fast recheck removed a verified route: %+v", state)
+	}
+	state = ApplyProbe(state, ProbeResult{
+		Stage: ProbeFull, Outcome: ProbeSuccess, Score: 85,
+	}, expired.Add(2*time.Minute), 5*time.Hour)
+	if state.Status != StatusQualified || state.ConservativeScore != 85 {
+		t.Fatalf("successful full recheck removed a verified route: %+v", state)
+	}
+	state = ApplyProbe(state, ProbeResult{
+		Stage: ProbeFast, Outcome: ProbeCandidateFailure, ErrorCode: "liveness_failed",
+	}, expired.Add(3*time.Minute), 5*time.Hour)
+	if state.Status != StatusUnknown || state.FullSuccessStreak != 0 {
+		t.Fatalf("real route failure remained qualified: %+v", state)
+	}
+}

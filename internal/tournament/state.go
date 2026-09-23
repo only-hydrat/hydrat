@@ -56,13 +56,18 @@ type State struct {
 }
 
 func ApplyProbe(state State, result ProbeResult, now time.Time, window time.Duration) State {
-	state = ResetIfExpired(state, now, window)
 	if result.Outcome == ProbeInfrastructureFailure {
+		if result.Stage == ProbeFull {
+			state.LastFullProbeAt = now
+		} else {
+			state.LastFastProbeAt = now
+		}
 		state.LastErrorCode = result.ErrorCode
 		state.LastErrorMessage = result.ErrorMessage
 		state.UpdatedAt = now
 		return state
 	}
+	state = ResetIfExpired(state, now, window)
 	if state.WindowStartedAt.IsZero() {
 		state.WindowStartedAt = now
 	}
@@ -94,7 +99,9 @@ func ApplyProbe(state State, result ProbeResult, now time.Time, window time.Dura
 	state.LastErrorMessage = ""
 	if result.Stage == ProbeFast {
 		state.LastFastProbeAt = now
-		state.Status = StatusPreflight
+		if state.Status != StatusQualified {
+			state.Status = StatusPreflight
+		}
 		state.UpdatedAt = now
 		return state
 	}
@@ -122,12 +129,14 @@ func ResetIfExpired(state State, now time.Time, window time.Duration) State {
 	if window <= 0 || state.WindowStartedAt.IsZero() || now.Before(state.WindowStartedAt.Add(window)) {
 		return state
 	}
-	state.Status = StatusUnknown
 	state.FailureStreak = 0
-	state.FullSuccessStreak = 0
 	state.WindowStartedAt = now
 	state.BannedUntil = time.Time{}
-	state.Stale = true
+	if state.Status != StatusQualified {
+		state.Status = StatusUnknown
+		state.FullSuccessStreak = 0
+		state.Stale = true
+	}
 	state.UpdatedAt = now
 	return state
 }

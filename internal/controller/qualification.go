@@ -342,6 +342,8 @@ func candidateByID(candidates []store.Candidate, candidateID string) (store.Cand
 }
 
 func (service QualificationService) runAgent(ctx context.Context, now time.Time) error {
+	const fastExplorationLimit = 64
+	const fullExplorationLimit = 32
 	candidates, err := service.Store.ListCandidates(ctx, "")
 	if err != nil {
 		return err
@@ -404,7 +406,7 @@ func (service QualificationService) runAgent(ctx context.Context, now time.Time)
 			promotionJobs := make([]qualificationJob, 0, len(fullJobs))
 			attemptedPromotions := make(map[string]struct{})
 			for _, job := range fullJobs {
-				if job.priority == tournament.PriorityOneSuccess ||
+				if job.oneSuccess ||
 					udpQualified[job.candidate.ID] || cachedTCP[job.candidate.ID] {
 					job.retryInfrastructure = udpQualified[job.candidate.ID] || cachedTCP[job.candidate.ID]
 					promotionJobs = append(promotionJobs, job)
@@ -429,7 +431,7 @@ func (service QualificationService) runAgent(ctx context.Context, now time.Time)
 			confirmations := confirmationJobs[:0]
 			for _, job := range confirmationJobs {
 				_, attempted := attemptedPromotions[job.candidate.Fingerprint]
-				if attempted && job.priority == tournament.PriorityOneSuccess {
+				if attempted && job.oneSuccess {
 					confirmations = append(confirmations, job)
 				}
 			}
@@ -472,7 +474,7 @@ func (service QualificationService) runAgent(ctx context.Context, now time.Time)
 				recovery := recoveryJobs[:0]
 				for _, job := range recoveryJobs {
 					_, attempted := udpRecovery[job.candidate.Fingerprint]
-					if attempted && (confirmation == 0 || job.priority == tournament.PriorityOneSuccess) {
+					if attempted && (confirmation == 0 || job.oneSuccess) {
 						recovery = append(recovery, job)
 					}
 				}
@@ -483,7 +485,7 @@ func (service QualificationService) runAgent(ctx context.Context, now time.Time)
 				}
 			}
 			if err := service.runProbeJobs(
-				laneCtx, now, remainingFast, tournament.ProbeFast, service.FastWorkers,
+				laneCtx, now, boundedExplorationJobs(remainingFast, fastExplorationLimit), tournament.ProbeFast, service.FastWorkers,
 			); err != nil {
 				return err
 			}
@@ -500,7 +502,7 @@ func (service QualificationService) runAgent(ctx context.Context, now time.Time)
 				}
 			}
 			if err := service.runProbeJobs(
-				laneCtx, now, remaining, tournament.ProbeFull, service.FullWorkers,
+				laneCtx, now, boundedExplorationJobs(remaining, fullExplorationLimit), tournament.ProbeFull, service.FullWorkers,
 			); err != nil {
 				return err
 			}

@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -273,6 +274,187 @@ func TestVLESSFastProbeOrderingRemainsTournamentOrder(t *testing.T) {
 	if got, want := qualificationJobFingerprints(jobs), []string{"a1", "a2", "b1"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("fast probe order=%v want=%v", got, want)
 	}
+}
+
+func TestDiscoveryJobsPrioritizeAssignedCandidateAndWorkingReserve(t *testing.T) {
+	ctx := context.Background()
+	database, candidates := qualificationStore(t, []store.CandidateInput{
+		{Kind: sources.KindVLESS, Label: "assigned", Fingerprint: "assigned", Payload: "vless://assigned@example.net:443"},
+		{Kind: sources.KindVLESS, Label: "reserve", Fingerprint: "reserve", Payload: "vless://reserve@example.net:443"},
+		{Kind: sources.KindVLESS, Label: "unknown", Fingerprint: "unknown", Payload: "vless://unknown@example.net:443"},
+	})
+	now := time.Unix(1_800_000_000, 0)
+	seedVLESSFullProbeState(t, database, candidates, now, true)
+	if err := database.PutClient(ctx, store.ClientRecord{
+		ID: "client", Name: "client", Address: "10.44.0.2/32", PublicKey: "key",
+	}, "config"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.SetAssignment(ctx, store.AssignmentRecord{
+		ClientID: "client", TCPOutbound: candidates["assigned"].ID,
+		UDPOutbound: candidates["assigned"].ID, TCPSince: now, UDPSince: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.RecordCandidateProbe(ctx, store.ProbeTransition{
+		Fingerprint: candidates["reserve"].Fingerprint,
+		CandidateID: candidates["reserve"].ID,
+		SourceID:    candidates["reserve"].SourceID,
+		Full:        true, Success: true, Score: 80,
+		At: now.Add(time.Minute), ResetWindow: 5 * time.Hour,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ReplaceWorkingPoolCurrent(ctx,
+		[]store.Candidate{candidates["reserve"]}, nil, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	service := QualificationService{Store: database, ResetWindow: 5 * time.Hour}
+	jobs, err := service.discoveryJobs(ctx, orderedCandidatesByID(candidates), now.Add(2*time.Minute), tournament.ProbeFull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := qualificationJobFingerprints(jobs), []string{"assigned", "reserve", "unknown"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("qualification order=%v want=%v", got, want)
+	}
+}
+
+func TestQualificationCycleBoundsAndRotatesUnknownExploration(t *testing.T) {
+	inputs := make([]store.CandidateInput, 80)
+	for index := range inputs {
+		fingerprint := fmt.Sprintf("unknown-%03d", index)
+		inputs[index] = store.CandidateInput{
+			Kind: sources.KindVLESS, Label: fingerprint, Fingerprint: fingerprint,
+			Payload: "vless://" + fingerprint + "@example.net:443",
+		}
+	}
+	database, _ := qualificationStore(t, inputs)
+	agent := &recordingExplorationAgent{seen: make(map[string]bool)}
+	service := QualificationService{
+		Store: database, Agent: agent, ResetWindow: 5 * time.Hour,
+		FastWorkers: 8, FullWorkers: 4,
+	}
+	now := time.Unix(1_800_000_000, 0)
+	if err := service.runAgent(context.Background(), now); err != nil {
+		t.Fatal(err)
+	}
+	if got := agent.count(); got != 64 {
+		t.Fatalf("first cycle probed %d unknown candidates, want 64", got)
+	}
+	if err := service.runAgent(context.Background(), now.Add(5*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if got := agent.uniqueCount(); got != 80 {
+		t.Fatalf("two cycles reached %d unique candidates, want 80", got)
+	}
+}
+
+func TestQualificationCycleBoundsAndRotatesFullExploration(t *testing.T) {
+	inputs := make([]store.CandidateInput, 40)
+	for index := range inputs {
+		fingerprint := fmt.Sprintf("unknown-%03d", index)
+		inputs[index] = store.CandidateInput{
+			Kind: sources.KindVLESS, Label: fingerprint, Fingerprint: fingerprint,
+			Payload: "vless://" + fingerprint + "@example.net:443",
+		}
+	}
+	database, candidates := qualificationStore(t, inputs)
+	now := time.Unix(1_800_000_000, 0)
+	seedVLESSFullProbeState(t, database, candidates, now.Add(-time.Hour), false)
+	agent := &recordingExplorationAgent{seen: make(map[string]bool)}
+	service := QualificationService{
+		Store: database, Agent: agent, ResetWindow: 5 * time.Hour,
+		FastWorkers: 8, FullWorkers: 4,
+	}
+	if err := service.runAgent(context.Background(), now); err != nil {
+		t.Fatal(err)
+	}
+	if got := agent.count(); got != 32 {
+		t.Fatalf("first cycle fully probed %d unknown candidates, want 32", got)
+	}
+	if err := service.runAgent(context.Background(), now.Add(5*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if got := agent.uniqueCount(); got != 40 {
+		t.Fatalf("two cycles fully probed %d unique candidates, want 40", got)
+	}
+}
+
+func TestQualificationCycleRotatesWhenAgentUnavailable(t *testing.T) {
+	inputs := make([]store.CandidateInput, 80)
+	for index := range inputs {
+		fingerprint := fmt.Sprintf("unknown-%03d", index)
+		inputs[index] = store.CandidateInput{
+			Kind: sources.KindVLESS, Label: fingerprint, Fingerprint: fingerprint,
+			Payload: "vless://" + fingerprint + "@example.net:443",
+		}
+	}
+	database, _ := qualificationStore(t, inputs)
+	agent := &recordingExplorationAgent{
+		seen: make(map[string]bool), infrastructure: true,
+	}
+	service := QualificationService{
+		Store: database, Agent: agent, ResetWindow: 5 * time.Hour,
+		FastWorkers: 8, FullWorkers: 4,
+	}
+	now := time.Unix(1_800_000_000, 0)
+	if err := service.runAgent(context.Background(), now); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.runAgent(context.Background(), now.Add(5*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if got := agent.uniqueCount(); got != 80 {
+		t.Fatalf("agent outage repeatedly selected the same %d candidates, want 80", got)
+	}
+}
+
+type recordingExplorationAgent struct {
+	mu             sync.Mutex
+	calls          int
+	seen           map[string]bool
+	infrastructure bool
+}
+
+func (agent *recordingExplorationAgent) ProbeFast(_ context.Context, request agentapi.ProbeRequest) (agentapi.ProbeResponse, error) {
+	agent.mu.Lock()
+	agent.calls++
+	agent.seen[request.CandidateID] = true
+	agent.mu.Unlock()
+	if agent.infrastructure {
+		return agentapi.ProbeResponse{
+			CandidateID:  request.CandidateID,
+			FailureClass: agentapi.FailureInfrastructure,
+		}, nil
+	}
+	return agentapi.ProbeResponse{CandidateID: request.CandidateID}, nil
+}
+
+func (agent *recordingExplorationAgent) ProbeFull(_ context.Context, request agentapi.ProbeRequest) (agentapi.ProbeResponse, error) {
+	agent.mu.Lock()
+	agent.calls++
+	agent.seen[request.CandidateID] = true
+	agent.mu.Unlock()
+	if agent.infrastructure {
+		return agentapi.ProbeResponse{
+			CandidateID:  request.CandidateID,
+			FailureClass: agentapi.FailureInfrastructure,
+		}, nil
+	}
+	return agentapi.ProbeResponse{CandidateID: request.CandidateID}, nil
+}
+
+func (agent *recordingExplorationAgent) count() int {
+	agent.mu.Lock()
+	defer agent.mu.Unlock()
+	return agent.calls
+}
+
+func (agent *recordingExplorationAgent) uniqueCount() int {
+	agent.mu.Lock()
+	defer agent.mu.Unlock()
+	return len(agent.seen)
 }
 
 func TestVLESSIndependentDomainsRunBeforeSlowSameDomainTail(t *testing.T) {

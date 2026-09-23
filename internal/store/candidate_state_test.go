@@ -386,6 +386,51 @@ func TestRecordCandidateProbeRejectsCandidateRemovedByRefresh(t *testing.T) {
 	}
 }
 
+func TestStoredQualifiedCandidateRemainsEligibleAcrossExpiredWindowRecheck(t *testing.T) {
+	ctx := context.Background()
+	database, candidates := candidateStateTestStore(t, []CandidateInput{{
+		Kind: sources.KindVLESS, Label: "working", Fingerprint: "working",
+		Payload: "vless://working@example.net:443",
+	}})
+	candidate := candidates["working"]
+	now := time.Unix(1_800_000_000, 0)
+	probe := func(at time.Time, full, success, infrastructure bool) CandidateProbeState {
+		t.Helper()
+		state, err := database.RecordCandidateProbe(ctx, ProbeTransition{
+			Fingerprint: candidate.Fingerprint, CandidateID: candidate.ID,
+			SourceID: candidate.SourceID, At: at, Full: full, Success: success,
+			InfrastructureFailure: infrastructure, Score: 80,
+			ErrorCode: "agent_unavailable",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return state
+	}
+	probe(now, true, true, false)
+	state := probe(now.Add(time.Minute), true, true, false)
+	if state.Status != CandidateQualified {
+		t.Fatalf("setup status=%s", state.Status)
+	}
+	state = probe(now.Add(5*time.Hour), false, false, true)
+	if state.Status != CandidateQualified || state.FullSuccessStreak != 2 ||
+		!state.WindowStartedAt.Equal(now) {
+		t.Fatalf("infrastructure failure removed verified route: %+v", state)
+	}
+	state = probe(now.Add(5*time.Hour+time.Minute), false, true, false)
+	if state.Status != CandidateQualified || state.FullSuccessStreak < 2 {
+		t.Fatalf("fast recheck removed verified route: %+v", state)
+	}
+	state = probe(now.Add(5*time.Hour+2*time.Minute), true, true, false)
+	if state.Status != CandidateQualified {
+		t.Fatalf("full recheck removed verified route: %+v", state)
+	}
+	state = probe(now.Add(5*time.Hour+3*time.Minute), false, false, false)
+	if state.Status != CandidateUnknown {
+		t.Fatalf("candidate failure remained qualified: %+v", state)
+	}
+}
+
 func TestRecordCandidateHealthResultRejectsCandidateRemovedByRefresh(t *testing.T) {
 	ctx := context.Background()
 	database, candidates := candidateStateTestStore(t, []CandidateInput{

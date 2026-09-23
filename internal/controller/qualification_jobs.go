@@ -18,6 +18,7 @@ type qualificationJob struct {
 	payload             string
 	reservation         store.ObservationReservation
 	priority            tournament.Priority
+	oneSuccess          bool
 	retryInfrastructure bool
 }
 
@@ -38,6 +39,15 @@ func (service QualificationService) discoveryJobs(
 	states, err := service.Store.ListCandidateProbeStates(ctx)
 	if err != nil {
 		return nil, err
+	}
+	assignments, err := service.Store.ListAssignments(ctx)
+	if err != nil {
+		return nil, err
+	}
+	assignedIDs := make(map[string]bool, len(assignments)*2)
+	for _, assignment := range assignments {
+		assignedIDs[assignment.TCPOutbound] = true
+		assignedIDs[assignment.UDPOutbound] = true
 	}
 	stateByFingerprint := make(map[string]store.CandidateProbeState, len(states))
 	for _, state := range states {
@@ -102,11 +112,14 @@ func (service QualificationService) discoveryJobs(
 			continue
 		}
 		state := stateByFingerprint[candidate.Fingerprint]
-		queueCandidates = append(queueCandidates, discoveryCandidate(candidate, state))
+		entry := discoveryCandidate(candidate, state)
+		entry.Assigned = assignedIDs[candidate.ID]
+		queueCandidates = append(queueCandidates, entry)
 		candidateByFingerprint[candidate.Fingerprint] = candidate
 	}
 	queued := tournament.BuildDiscoveryQueue(queueCandidates, tournament.QueuePolicy{
 		Now: now, ResetWindow: service.ResetWindow,
+		PreferWorking: len(candidates) > 0 && candidates[0].Kind == sources.KindVLESS,
 	})
 	jobs := make([]qualificationJob, 0, len(queued))
 	for _, queuedJob := range queued {
@@ -123,6 +136,7 @@ func (service QualificationService) discoveryJobs(
 		}
 		jobs = append(jobs, qualificationJob{
 			candidate: candidate, payload: payload, priority: queuedJob.Priority,
+			oneSuccess: stateByFingerprint[candidate.Fingerprint].FullSuccessStreak == 1,
 		})
 	}
 	if stage == tournament.ProbeFull {
@@ -197,6 +211,23 @@ func interleaveFullProbePriorityGroup(jobs []qualificationJob) []qualificationJo
 		active = nextRound
 	}
 	return ordered
+}
+
+func boundedExplorationJobs(jobs []qualificationJob, limit int) []qualificationJob {
+	selected := make([]qualificationJob, 0, min(len(jobs), limit))
+	explored := 0
+	for _, job := range jobs {
+		if job.priority != tournament.PriorityAssigned &&
+			job.priority != tournament.PriorityWorkingPool &&
+			job.priority != tournament.PriorityOneSuccess {
+			if explored >= limit {
+				continue
+			}
+			explored++
+		}
+		selected = append(selected, job)
+	}
+	return selected
 }
 
 func discoveryCandidate(

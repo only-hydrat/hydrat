@@ -247,13 +247,20 @@ func recordCandidateProbeTx(
 	if transition.SourceID != "" {
 		state.SourceID = transition.SourceID
 	}
-	resetCandidateWindow(&state, transition.At, transition.ResetWindow)
+	if !transition.InfrastructureFailure {
+		resetCandidateWindow(&state, transition.At, transition.ResetWindow)
+	}
 	if state.WindowStartedAt.IsZero() {
 		state.WindowStartedAt = transition.At
 	}
 
 	switch {
 	case transition.InfrastructureFailure:
+		if transition.Full {
+			state.LastFullProbeAt = transition.At
+		} else {
+			state.LastFastProbeAt = transition.At
+		}
 		state.LastErrorCode = transition.ErrorCode
 		state.LastErrorMessage = transition.SafeErrorMessage
 	case !transition.Success:
@@ -299,7 +306,9 @@ func recordCandidateProbeTx(
 		state.LastSuccessAt = transition.At
 		state.LastErrorCode = ""
 		state.LastErrorMessage = ""
-		state.Status = CandidatePreflight
+		if state.Status != CandidateQualified {
+			state.Status = CandidatePreflight
+		}
 	}
 	state.UpdatedAt = transition.At
 
@@ -692,10 +701,12 @@ func resetCandidateWindow(state *CandidateProbeState, now time.Time, window time
 		return
 	}
 	state.FailureStreak = 0
-	state.FullSuccessStreak = 0
 	state.BannedUntil = time.Time{}
-	state.Status = CandidateUnknown
-	state.Stale = true
+	if state.Status != CandidateQualified {
+		state.FullSuccessStreak = 0
+		state.Status = CandidateUnknown
+		state.Stale = true
+	}
 	state.WindowStartedAt = now
 }
 
