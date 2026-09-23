@@ -257,7 +257,8 @@ func (store *Store) CommitCandidateProbeObservation(
 	}
 	if reservation.Stage == ObservationFull &&
 		!transition.Success &&
-		!transition.InfrastructureFailure {
+		!transition.InfrastructureFailure &&
+		!(transition.ErrorCode == "score_too_low" && state.Status == CandidateQualified) {
 		result, err := tx.ExecContext(ctx, `
 			UPDATE candidate_health
 			SET failure_generation=failure_generation+1

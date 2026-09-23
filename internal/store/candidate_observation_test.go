@@ -2024,6 +2024,88 @@ func observationMutationCounts(
 	return counts
 }
 
+func TestQualifiedRouteSurvivesTwoLowScoreFullProbes(t *testing.T) {
+	ctx := context.Background()
+	database, candidates := observationTestStore(t)
+	candidate := candidates["candidate"]
+	base := time.Unix(1_900_000_000, 0)
+	commit := func(at time.Time, success bool, code string, score float64) CandidateProbeState {
+		t.Helper()
+		reservation, err := database.ReserveCandidateObservation(ctx, candidate, ObservationFull)
+		if err != nil {
+			t.Fatal(err)
+		}
+		state, result, err := database.CommitCandidateProbeObservation(ctx, candidate, reservation,
+			ProbeTransition{Fingerprint: candidate.Fingerprint, CandidateID: candidate.ID,
+				SourceID: candidate.SourceID, Full: true, Success: success,
+				ErrorCode: code, Score: score, At: at},
+			&CandidateHealth{CandidateID: candidate.ID, Score: score, TCPQualified: success,
+				UDPQualified: success, Available: success, UpdatedAt: at}, nil)
+		if err != nil || !result.Accepted {
+			t.Fatalf("commit=%+v err=%v", result, err)
+		}
+		return state
+	}
+	commit(base, true, "", 90)
+	state := commit(base.Add(time.Minute), true, "", 91)
+	if state.Status != CandidateQualified {
+		t.Fatalf("setup status=%s", state.Status)
+	}
+	active, err := database.ReserveCandidateObservation(ctx, candidate, ObservationActive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := database.CommitCandidateActiveObservation(ctx, candidate, active, true, base.Add(2*time.Minute)); err != nil || !result.Accepted {
+		t.Fatalf("active commit=%+v err=%v", result, err)
+	}
+	for n := 1; n <= 2; n++ {
+		at := base.Add(time.Duration(n+2) * time.Minute)
+		if n == 2 {
+			fast, err := database.ReserveCandidateObservation(ctx, candidate, ObservationFast)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state, result, err := database.CommitCandidateProbeObservation(ctx, candidate, fast,
+				ProbeTransition{Fingerprint: candidate.Fingerprint, CandidateID: candidate.ID,
+					SourceID: candidate.SourceID, Success: true, At: base.Add(4 * time.Minute)}, nil, nil)
+			if err != nil || !result.Accepted || state.FailureStreak != 1 {
+				t.Fatalf("fast recheck reset low-score streak: state=%+v commit=%+v err=%v", state, result, err)
+			}
+			infrastructure, err := database.ReserveCandidateObservation(ctx, candidate, ObservationFull)
+			if err != nil {
+				t.Fatal(err)
+			}
+			state, result, err = database.CommitCandidateProbeObservation(ctx, candidate, infrastructure,
+				ProbeTransition{Fingerprint: candidate.Fingerprint, CandidateID: candidate.ID,
+					SourceID: candidate.SourceID, Full: true, InfrastructureFailure: true,
+					ErrorCode: "agent_unavailable", At: base.Add(5 * time.Hour)}, nil, nil)
+			if err != nil || !result.Accepted || state.FailureStreak != 1 {
+				t.Fatalf("agent outage reset low-score streak: state=%+v commit=%+v err=%v", state, result, err)
+			}
+			at = base.Add(5*time.Hour + time.Minute)
+		}
+		state = commit(at, false, "score_too_low", 77)
+		health, generation := observationHealth(t, database, candidate.ID)
+		rows, err := database.ListCandidateHealth(ctx)
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("health rows=%+v err=%v", rows, err)
+		}
+		if state.Status != CandidateQualified || state.Stale || state.FullSuccessStreak < 2 ||
+			state.FailureStreak != n || health.Score != 77 || !health.Available ||
+			!health.TCPQualified || !health.UDPQualified || generation != 0 ||
+			!rows[0].ActiveCurrent || !rows[0].ActiveSuccess ||
+			!rows[0].ActiveObservedAt.Equal(base.Add(2*time.Minute)) {
+			t.Fatalf("low score #%d: state=%+v health=%+v generation=%d active=%+v", n, state, health, generation, rows[0])
+		}
+	}
+	state = commit(base.Add(5*time.Hour+2*time.Minute), false, "score_too_low", 76)
+	health, generation := observationHealth(t, database, candidate.ID)
+	if state.Status != CandidateUnknown || state.BannedUntil.After(base.Add(5*time.Hour+2*time.Minute)) ||
+		health.Available || generation != 1 {
+		t.Fatalf("third low score: state=%+v health=%+v generation=%d", state, health, generation)
+	}
+}
+
 func observationHealth(
 	t *testing.T,
 	database *Store,

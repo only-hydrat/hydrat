@@ -253,6 +253,7 @@ func recordCandidateProbeTx(
 	if state.WindowStartedAt.IsZero() {
 		state.WindowStartedAt = transition.At
 	}
+	softScoreRetained := false
 
 	switch {
 	case transition.InfrastructureFailure:
@@ -263,11 +264,31 @@ func recordCandidateProbeTx(
 		}
 		state.LastErrorCode = transition.ErrorCode
 		state.LastErrorMessage = transition.SafeErrorMessage
+	case transition.Full && !transition.Success &&
+		transition.ErrorCode == "score_too_low" && state.Status == CandidateQualified:
+		state.FailureStreak++
+		state.LastFullProbeAt = transition.At
+		state.LastFailureAt = transition.At
+		state.LastErrorCode = transition.ErrorCode
+		state.LastErrorMessage = transition.SafeErrorMessage
+		state.LastScore = transition.Score
+		state.ConservativeScore = minFloat(state.ConservativeScore, transition.Score)
+		if state.FailureStreak < 3 {
+			softScoreRetained = true
+		} else {
+			state.Status = CandidateUnknown
+			state.FailureStreak = 0
+			state.FullSuccessStreak = 0
+			state.Stale = true
+		}
 	case !transition.Success:
 		if transition.Full {
 			state.LastFullProbeAt = transition.At
 		} else {
 			state.LastFastProbeAt = transition.At
+		}
+		if state.Status == CandidateQualified {
+			state.FailureStreak = 0
 		}
 		state.FailureStreak++
 		state.FullSuccessStreak = 0
@@ -301,7 +322,9 @@ func recordCandidateProbeTx(
 			state.Status = CandidatePreflight
 		}
 	default:
-		state.FailureStreak = 0
+		if state.Status != CandidateQualified {
+			state.FailureStreak = 0
+		}
 		state.LastFastProbeAt = transition.At
 		state.LastSuccessAt = transition.At
 		state.LastErrorCode = ""
@@ -319,7 +342,20 @@ func recordCandidateProbeTx(
 		if health.CandidateID != transition.CandidateID {
 			return CandidateProbeState{}, errors.New("candidate health identity does not match probe transition")
 		}
-		if err := saveCandidateHealthTx(ctx, tx, *health); err != nil {
+		if softScoreRetained {
+			result, err := tx.ExecContext(ctx, `
+				UPDATE candidate_health
+				SET score=?, latency_ms=?, throughput_mbps=?, updated_at=?
+				WHERE candidate_id=? AND observation_placeholder=0
+			`, health.Score, health.LatencyMS, health.ThroughputMbps,
+				health.UpdatedAt.Unix(), health.CandidateID)
+			if err != nil {
+				return CandidateProbeState{}, err
+			}
+			if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+				return CandidateProbeState{}, errors.New("qualified candidate health is missing")
+			}
+		} else if err := saveCandidateHealthTx(ctx, tx, *health); err != nil {
 			return CandidateProbeState{}, err
 		}
 	}
@@ -700,7 +736,9 @@ func resetCandidateWindow(state *CandidateProbeState, now time.Time, window time
 	if state.WindowStartedAt.IsZero() || now.Before(state.WindowStartedAt.Add(window)) {
 		return
 	}
-	state.FailureStreak = 0
+	if state.Status != CandidateQualified {
+		state.FailureStreak = 0
+	}
 	state.BannedUntil = time.Time{}
 	if state.Status != CandidateQualified {
 		state.FullSuccessStreak = 0
