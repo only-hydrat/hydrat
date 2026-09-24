@@ -67,7 +67,6 @@ type QoEMeasurerConfig struct {
 	DNSRouteCheck      DNSRouteChecker
 	DNSDirectCheck     DNSDirectChecker
 	UDPCheck           func(context.Context, string) bool
-	VisionUDPCheck     func(context.Context, string) bool
 }
 
 type QoEMeasurer struct {
@@ -84,7 +83,6 @@ type QoEMeasurer struct {
 	dnsRouteCheck      DNSRouteChecker
 	dnsDirectCheck     DNSDirectChecker
 	udpCheck           func(context.Context, string) bool
-	visionUDPCheck     func(context.Context, string) bool
 
 	mu                 sync.Mutex
 	recentFailures     map[string]time.Time
@@ -144,9 +142,6 @@ func NewQoEMeasurer(config QoEMeasurerConfig) *QoEMeasurer {
 	if config.UDPCheck == nil {
 		config.UDPCheck = CheckQUIC
 	}
-	if config.VisionUDPCheck == nil {
-		config.VisionUDPCheck = CheckUDPDNS
-	}
 	return &QoEMeasurer{
 		clientFactory:      config.ClientFactory,
 		directClient:       config.DirectClient,
@@ -161,7 +156,6 @@ func NewQoEMeasurer(config QoEMeasurerConfig) *QoEMeasurer {
 		dnsRouteCheck:      config.DNSRouteCheck,
 		dnsDirectCheck:     config.DNSDirectCheck,
 		udpCheck:           config.UDPCheck,
-		visionUDPCheck:     config.VisionUDPCheck,
 		recentFailures:     make(map[string]time.Time),
 	}
 }
@@ -186,13 +180,9 @@ func (measurer *QoEMeasurer) MeasureVLESS(
 	ctx context.Context,
 	candidateID string,
 	socksAddress string,
-	flow string,
+	_ string,
 ) qoe.Observation {
-	udpCheck := measurer.udpCheck
-	if flow == "xtls-rprx-vision" {
-		udpCheck = measurer.visionUDPCheck
-	}
-	return measurer.measure(ctx, candidateID, socksAddress, udpCheck)
+	return measurer.measure(ctx, candidateID, socksAddress, measurer.udpCheck)
 }
 
 // MeasureAvailability performs only the routed DNS check and its direct

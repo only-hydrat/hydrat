@@ -10,27 +10,19 @@ import (
 )
 
 type Measurer struct {
-	GateConfig     HTTPGateConfig
-	ClientFactory  func(string) *http.Client
-	MTProtoCheck   func(context.Context, string) bool
-	UDPCheck       func(context.Context, string) bool
-	VisionUDPCheck func(context.Context, string) bool
-	Now            func() time.Time
+	GateConfig    HTTPGateConfig
+	ClientFactory func(string) *http.Client
+	MTProtoCheck  func(context.Context, string) bool
+	UDPCheck      func(context.Context, string) bool
+	Now           func() time.Time
 }
 
 func (measurer Measurer) Measure(ctx context.Context, socksAddress string, protocol health.Protocol) (health.Metrics, error) {
 	return measurer.measure(ctx, socksAddress, protocol, measurer.UDPCheck)
 }
 
-func (measurer Measurer) MeasureVLESS(ctx context.Context, socksAddress, flow string) (health.Metrics, error) {
-	udpCheck := measurer.UDPCheck
-	if flow == "xtls-rprx-vision" {
-		udpCheck = measurer.VisionUDPCheck
-		if udpCheck == nil {
-			udpCheck = CheckUDPDNS
-		}
-	}
-	return measurer.measure(ctx, socksAddress, health.ProtocolVLESS, udpCheck)
+func (measurer Measurer) MeasureVLESS(ctx context.Context, socksAddress, _ string) (health.Metrics, error) {
+	return measurer.measure(ctx, socksAddress, health.ProtocolVLESS, measurer.UDPCheck)
 }
 
 func (measurer Measurer) measure(

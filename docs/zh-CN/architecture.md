@@ -59,7 +59,7 @@ Tor discovery 使用一个串行 worker，从替换 explorer 到 readiness 和�
 - 五小时后封禁和计数重置，旧评分仅作为 stale 提示保留。
 - Pool 已满时，挑战者必须比最差 working candidate 至少高 15%。
 
-Full probe 检查 Cloudflare/GStatic、YouTube、ChatGPT、OpenAI API、Telegram Web、Telegram MTProto、Instagram 和有界测速。普通 VLESS 只有通过 SOCKS5 UDP association 与 YouTube 完成两次新的 QUIC/TLS 握手后才具备 UDP 资格。标准 `xtls-rprx-vision` 会有意拒绝 UDP/443，因此改为通过同一 SOCKS5 association 检查 DNS-over-UDP；`xtls-rprx-vision-udp443` 仍使用 QUIC 检查。YouTube 关卡要求 `https://www.youtube.com/generate_204` 成功响应；Instagram 要求 `https://www.instagram.com/` 返回低于 400；ChatGPT 不跟随重定向，接受任意 2xx/3xx 或真实源站 403/429；OpenAI 访问 `https://api.openai.com/v1/models`，接受 401、204 或 200；Telegram 同时要求 Web 可用和有效 MTProto 响应。
+Full probe 检查 Cloudflare/GStatic、YouTube、ChatGPT、OpenAI API、Telegram Web、Telegram MTProto、Instagram 和有界测速。对于标准 `xtls-rprx-vision`，Hydrat 将客户端 outbound 的 flow 设为 `xtls-rprx-vision-udp443`，以允许 UDP/443。VLESS 路由只有通过 SOCKS5 UDP association 与 YouTube 完成两次新的 QUIC/TLS 握手后才具备 UDP 资格；DNS-over-UDP 不作为 UDP 资格证明。YouTube 关卡要求 `https://www.youtube.com/generate_204` 成功响应；Instagram 要求 `https://www.instagram.com/` 返回低于 400；ChatGPT 不跟随重定向，接受任意 2xx/3xx 或真实源站 403/429；OpenAI 访问 `https://api.openai.com/v1/models`，接受 401、204 或 200；Telegram 同时要求 Web 可用和有效 MTProto 响应。
 
 Active probe 使用独立高优先级 Xray slot、1900 ms deadline 和 75 ms response slack。后台锦标赛不会阻塞故障切换，网络超时能及时作为候选 hard failure 返回。两个独立 HTTP 检查在一个周期内并行运行，不需要第二个外层周期。同一 active slot 还会并行进行轻量 routed-DNS 检查，不执行大文件下载、应用关卡或 QUIC。相邻两次 DNS 失败且 direct control 成功，即确认路由故障。
 
@@ -80,7 +80,7 @@ TCP/UDP 重叠按 candidate ID 去重，同一候选的第二个 in-flight probe
 
 持久化状态机包含 `learning`、`healthy`、`degraded`。前 5 次成功测量建立中位数 baseline。在此之前，TTFB >3 秒或吞吐量 <0.256 Mbit/s 为严重样本。建立 baseline 后，候选连接/TLS/请求/超时/响应体失败，或 TTFB 同时 >1500 ms 且 >2.5 倍 baseline，或吞吐量 <35% baseline，均为坏样本。基础设施样本不进入窗口。最近 5 个有效样本中 3 个坏样本进入 `degraded`，5 个中 4 个好样本恢复。并行的 20 个有效样本可用性窗口在出现两次路由/服务失败后退化，即使失败之间有成功；恢复需等待计数降至 2 以下。好样本以 EWMA 0.1 更新 healthy baseline，`degraded` 时冻结。历史保留 168 小时并分批删除；状态与触发样本在同一 SQLite 事务写入。
 
-对于 VLESS，QoE 会与 TCP 测量并行重复相应的 UDP 检查：标准 `xtls-rprx-vision` 使用 DNS-over-UDP，其他 flow 使用 QUIC。连续两次失败只移除 `UDPQualified`，保留 TCP 评分、可用性和新鲜度；连续三次成功恢复 UDP 资格。每次变化立即触发 UDP 重规划，但不迁移正常 TCP，也不重连 WireGuard peer。独立迟滞循环可避免单个数据包丢失引发切换。
+对于 VLESS，QoE 会与 TCP 测量并行通过 SOCKS5 UDP association 对 YouTube 执行两次 QUIC/TLS 检查。标准 `xtls-rprx-vision` 的客户端 outbound 使用 flow `xtls-rprx-vision-udp443`。连续两次失败只移除 `UDPQualified`，保留 TCP 评分、可用性和新鲜度；连续三次成功恢复 UDP 资格。每次变化立即触发 UDP 重规划，但不迁移正常 TCP，也不重连 WireGuard peer。独立迟滞循环可避免单个数据包丢失引发切换。
 
 端点隔离用于区分路由退化与测量器故障。错误 HTTP 状态、异常长度和 malformed response 会立即归类为基础设施问题。路由 transport/TLS/request 错误后执行有界 direct control：直连成功即可确认候选失败。并发 control request 会合并为 single-flight，健康结果复用 30 秒。如果 direct control 失败同时伴随 30 秒内至少三个不同候选的错误，circuit 打开。打开的 circuit 会跳过 QoE 工作且不改变窗口，并在端点恢复前每分钟最多发起一次 direct recovery。服务特定的 active liveness 继续运行。
 

@@ -93,9 +93,8 @@ func TestQoEMeasurerReportsVLESSQUICIndependentlyFromHealthyTCP(t *testing.T) {
 	}
 }
 
-func TestQoEMeasurerUsesGeneralUDPForStandardVision(t *testing.T) {
+func TestQoEMeasurerUsesQUICForStandardVision(t *testing.T) {
 	quicChecks := 0
-	dnsUDPChecks := 0
 	measurer := NewQoEMeasurer(QoEMeasurerConfig{
 		ClientFactory: func(string) *http.Client { return qoeSuccessClient() },
 		DirectClient:  qoeSuccessClient(),
@@ -104,17 +103,13 @@ func TestQoEMeasurerUsesGeneralUDPForStandardVision(t *testing.T) {
 			quicChecks++
 			return false
 		},
-		VisionUDPCheck: func(context.Context, string) bool {
-			dnsUDPChecks++
-			return true
-		},
 	})
 
 	got := measurer.MeasureVLESS(
 		context.Background(), "candidate", "127.0.0.1:1080", "xtls-rprx-vision",
 	)
-	if !got.Success || got.UDPReachable == nil || !*got.UDPReachable || quicChecks != 0 || dnsUDPChecks != 1 {
-		t.Fatalf("observation=%+v QUIC checks=%d DNS UDP checks=%d", got, quicChecks, dnsUDPChecks)
+	if !got.Success || got.UDPReachable == nil || *got.UDPReachable || quicChecks != 1 {
+		t.Fatalf("observation=%+v QUIC checks=%d", got, quicChecks)
 	}
 }
 

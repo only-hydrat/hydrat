@@ -504,9 +504,9 @@ The canary must satisfy these invariants:
 - A primary hard failure moves only clients assigned to it.
 - A stale reserve does not create `BlockTCP` while another working Tor/VLESS
   route exists, and a working UDP VLESS route does not create `BlockUDP`.
-- An ordinary VLESS route that does not complete two QUIC handshakes loses only
-  UDP eligibility after two QoE observations. Standard `xtls-rprx-vision`
-  uses DNS-over-UDP instead because it intentionally rejects UDP/443.
+- Standard `xtls-rprx-vision` uses flow `xtls-rprx-vision-udp443` in the client
+  outbound. Full and QoE UDP qualification each require two YouTube QUIC/TLS
+  handshakes over a SOCKS5 UDP association.
 - Applied generation changes once, and Xray rules contain no temporary
   `hydrat-stage-*-block`.
 - The canary WireGuard handshake remains continuous during egress replacement.
