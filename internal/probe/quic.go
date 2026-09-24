@@ -17,11 +17,31 @@ const (
 	quicProbeTimeout = 5 * time.Second
 )
 
-// CheckQUIC verifies the UDP behavior clients actually need for HTTP/3. Both
-// DNS resolution and QUIC traffic use the same SOCKS UDP association.
+// CheckQUIC verifies HTTP/3 through a candidate using DNS through that candidate.
 func CheckQUIC(ctx context.Context, socksAddress string) bool {
+	return checkQUIC(ctx, socksAddress, "")
+}
+
+// CheckQUICWithDNS resolves like a WireGuard client, then probes the candidate's UDP path.
+func CheckQUICWithDNS(ctx context.Context, socksAddress, clientDNS string) bool {
+	return checkQUIC(ctx, socksAddress, clientDNS)
+}
+
+func checkQUIC(ctx context.Context, socksAddress, clientDNS string) bool {
 	ctx, cancel := context.WithTimeout(ctx, quicProbeTimeout)
 	defer cancel()
+	var targetIP net.IP
+	if clientDNS != "" {
+		dnsPacket, err := net.ListenPacket("udp4", "0.0.0.0:0")
+		if err != nil {
+			return false
+		}
+		targetIP, err = lookupQUICProbeIP(ctx, dnsPacket, clientDNS)
+		_ = dnsPacket.Close()
+		if err != nil {
+			return false
+		}
+	}
 	packet, err := (socks5.Dialer{ProxyAddress: socksAddress}).ListenPacket(ctx)
 	if err != nil {
 		return false
@@ -29,9 +49,11 @@ func CheckQUIC(ctx context.Context, socksAddress string) bool {
 	defer packet.Close()
 	stopClose := context.AfterFunc(ctx, func() { _ = packet.Close() })
 	defer stopClose()
-	targetIP, err := lookupQUICProbeIP(ctx, packet)
-	if err != nil {
-		return false
+	if targetIP == nil {
+		targetIP, err = lookupQUICProbeIP(ctx, packet)
+		if err != nil {
+			return false
+		}
 	}
 	transport := &quic.Transport{Conn: packet}
 	defer transport.Close()
@@ -48,7 +70,10 @@ func CheckQUIC(ctx context.Context, socksAddress string) bool {
 	return true
 }
 
-func lookupQUICProbeIP(ctx context.Context, packet net.PacketConn) (net.IP, error) {
+func lookupQUICProbeIP(ctx context.Context, packet net.PacketConn, resolvers ...string) (net.IP, error) {
+	if len(resolvers) == 0 {
+		resolvers = []string{"1.1.1.1:53", "9.9.9.9:53"}
+	}
 	message := dnsmessage.Message{
 		Header: dnsmessage.Header{ID: 0x4859, RecursionDesired: true},
 		Questions: []dnsmessage.Question{{
@@ -61,7 +86,11 @@ func lookupQUICProbeIP(ctx context.Context, packet net.PacketConn) (net.IP, erro
 		return nil, err
 	}
 	response := make([]byte, 1500)
-	for _, resolver := range []string{"1.1.1.1", "9.9.9.9"} {
+	for _, resolver := range resolvers {
+		address, err := net.ResolveUDPAddr("udp", resolver)
+		if err != nil {
+			return nil, err
+		}
 		deadline := time.Now().Add(time.Second)
 		if parentDeadline, ok := ctx.Deadline(); ok && parentDeadline.Before(deadline) {
 			deadline = parentDeadline
@@ -69,7 +98,7 @@ func lookupQUICProbeIP(ctx context.Context, packet net.PacketConn) (net.IP, erro
 		if err := packet.SetDeadline(deadline); err != nil {
 			return nil, err
 		}
-		if _, err := packet.WriteTo(query, &net.UDPAddr{IP: net.ParseIP(resolver), Port: 53}); err != nil {
+		if _, err := packet.WriteTo(query, address); err != nil {
 			continue
 		}
 		n, _, err := packet.ReadFrom(response)

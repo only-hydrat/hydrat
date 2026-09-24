@@ -50,6 +50,24 @@ func TestReserveSelectorPrefersStableCandidateOverLearningCandidate(t *testing.T
 	}
 }
 
+func TestAppliedReserveStaysReadyWhenOnlyQoEPreferenceAges(t *testing.T) {
+	now := time.Unix(1_900_000_000, 0)
+	candidates := []Candidate{
+		{ID: "primary", Protocol: ProtocolVLESS, FailureDomain: "primary", Score: 100, TCPQualified: true, UDPQualified: true},
+		{ID: "applied", Protocol: ProtocolVLESS, FailureDomain: "applied", Score: 70, TCPQualified: true, UDPQualified: true, ReserveEligible: true, ActiveEligible: true, ActiveFresh: true, QoETracked: true, QoEStatus: qoe.StatusHealthy},
+		{ID: "preferred", Protocol: ProtocolVLESS, FailureDomain: "preferred", Score: 100, TCPQualified: true, UDPQualified: true, ReserveEligible: true, ActiveEligible: true, ActiveFresh: true, QoETracked: true, QoEStatus: qoe.StatusHealthy, QoEFresh: true, QoEEffective: time.Second},
+	}
+	placement := New(PolicyDefaults())
+	assignment := Assignment{TCP: "primary", UDP: "primary"}
+	if selected := placement.SelectReserves(now, "alice", assignment, candidates); selected.TCP != "preferred" || selected.UDP != "preferred" {
+		t.Fatalf("new reserve preference=%+v", selected)
+	}
+	valid, err := placement.ValidateReserveSelectionContext(context.Background(), now, "alice", assignment, ReserveSelection{TCP: "applied", UDP: "applied"}, candidates)
+	if err != nil || !valid.TCP || !valid.UDP {
+		t.Fatalf("active-proven applied reserve rejected after QoE sample aged: valid=%+v err=%v", valid, err)
+	}
+}
+
 func TestValidateReserveSelectionAcceptsEligibleNonWinner(t *testing.T) {
 	now := time.Unix(1_900_000_000, 0)
 	candidates := []Candidate{
@@ -141,7 +159,7 @@ func TestValidateReserveSelectionRejectsIneligibleAppliedCandidates(t *testing.T
 		primary    Candidate
 		valid      Candidate
 	}{
-		{name: "below quality tier", change: func(candidate *Candidate) { candidate.Score = 79 }},
+		{name: "below preferred quality tier", change: func(candidate *Candidate) { candidate.Score = 79 }, wantTCP: true, wantUDP: true},
 		{name: "same route identity", change: func(candidate *Candidate) { candidate.RouteKey = primary.RouteKey }},
 		{name: "not fully qualified", change: func(candidate *Candidate) { candidate.ReserveEligible = false }},
 		{name: "failed active proof", change: func(candidate *Candidate) { candidate.ActiveEligible = false }},
@@ -533,7 +551,6 @@ func TestSchedulerSharesTopQualityCandidateBeforeScatteringToLowQuality(t *testi
 		t.Fatalf("bob was forced onto low-quality candidate: %+v", bob)
 	}
 }
-
 
 func TestScoreJitterAroundThirtyPercentDoesNotAccumulateMigrationStreak(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)

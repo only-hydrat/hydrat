@@ -26,6 +26,37 @@ func TestLookupQUICProbeIPUsesSOCKSUDPAndResolvedAddress(t *testing.T) {
 	}
 }
 
+func TestCheckQUICResolvesThroughClientDNSBeforeCandidateSOCKS(t *testing.T) {
+	dns, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dns.Close()
+	querySeen := make(chan bool, 1)
+	go func() {
+		response := make([]byte, 1500)
+		_ = dns.SetReadDeadline(time.Now().Add(time.Second))
+		n, source, readErr := dns.ReadFrom(response)
+		if readErr != nil {
+			querySeen <- false
+			return
+		}
+		querySeen <- bytes.Contains(response[:n], []byte("youtube"))
+		response = append(response[:n], 0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 203, 0, 113, 9)
+		response[2] |= 0x80
+		binary.BigEndian.PutUint16(response[6:8], 1)
+		_, _ = dns.WriteTo(response, source)
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if CheckQUICWithDNS(ctx, "127.0.0.1:1", dns.LocalAddr().String()) {
+		t.Fatal("unavailable candidate SOCKS passed QUIC")
+	}
+	if !<-querySeen {
+		t.Fatal("client DNS did not receive YouTube lookup")
+	}
+}
+
 type quicDNSPacketConn struct {
 	destination string
 	query       []byte

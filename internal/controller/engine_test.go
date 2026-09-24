@@ -6218,7 +6218,7 @@ func TestEngineCapacityReadyKeepsAdmissibleAppliedReserveAcrossWinnerChurn(t *te
 	}
 }
 
-func TestEngineCapacityReadyRejectsAppliedReserveBelowFullUniverseQualityTier(t *testing.T) {
+func TestEngineCapacityReadyKeepsUsableReserveBelowFullUniverseQualityTier(t *testing.T) {
 	ctx := context.Background()
 	now := time.Unix(1_900_000_000, 0)
 	database, candidates := newEngineQoEFixture(t, now, []engineQoECandidateSpec{
@@ -6281,24 +6281,14 @@ func TestEngineCapacityReadyRejectsAppliedReserveBelowFullUniverseQualityTier(t 
 	if selected.TCP != candidates["much-better"].ID {
 		t.Fatalf("full-universe winner=%q want=%q", selected.TCP, candidates["much-better"].ID)
 	}
-	err = engine.CapacityReady(ctx, checkAt)
-	var coverageErr *ActiveCriticalCoveragePlanError
-	if !errors.As(err, &coverageErr) ||
-		!slices.Contains(coverageErr.Unsatisfied, "alice:tcp:reserve") ||
-		!slices.Contains(coverageErr.Unsatisfied, "alice:udp:reserve") {
-		t.Fatalf("below-tier applied reserve readiness=%v", err)
+	if err := engine.CapacityReady(ctx, checkAt); err != nil {
+		t.Fatalf("usable applied reserve rejected solely for preference: %v", err)
 	}
 	if err := engine.Cycle(ctx, checkAt); err != nil {
 		t.Fatal(err)
 	}
-	if len(agent.plans) != 2 {
-		t.Fatalf("below-tier applied reserve was not replaced: plans=%d", len(agent.plans))
-	}
-	replacement := candidateIDFromHandler(
-		agent.plans[1].Clients[0].TCPReserveOutbound, "alice",
-	)
-	if replacement != candidates["much-better"].ID {
-		t.Fatalf("replacement reserve=%q want=%q", replacement, candidates["much-better"].ID)
+	if len(agent.plans) != 1 {
+		t.Fatalf("usable applied reserve caused unnecessary republish: plans=%d", len(agent.plans))
 	}
 }
 

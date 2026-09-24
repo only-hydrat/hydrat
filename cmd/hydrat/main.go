@@ -364,7 +364,7 @@ func runAgent(ctx context.Context, cfg config.Config) error {
 				probeControl,
 				probeRuntime,
 				cfg.ProbeRuntime.CleanupTimeout,
-				probe.Measurer{GateConfig: gateConfig},
+				probe.Measurer{GateConfig: gateConfig, UDPCheck: agentQUICCheck(cfg)},
 				probe.Liveness{},
 				qoeMeasurer,
 				torProbeManager,
@@ -502,12 +502,20 @@ func agentQoEMeasurerConfig(cfg config.Config) probe.QoEMeasurerConfig {
 		SampleBytes:  cfg.QoE.SampleBytes,
 		Deadline:     cfg.QoE.Deadline,
 		DNSResolvers: cfg.Xray.EffectiveDNSResolvers(),
+		UDPCheck:     agentQUICCheck(cfg),
 		ApplicationGates: func(ctx context.Context, client *http.Client) probe.HTTPGateResult {
 			return probe.CheckHTTPGatesWithConfig(ctx, client, gateConfig)
 		},
 		ApplicationControl: func(ctx context.Context, client *http.Client) probe.HTTPGateResult {
 			return probe.CheckHTTPReachabilityWithConfig(ctx, client, gateConfig)
 		},
+	}
+}
+
+func agentQUICCheck(cfg config.Config) func(context.Context, string) bool {
+	clientDNS := net.JoinHostPort(cfg.WireGuard.DNS, "53")
+	return func(ctx context.Context, socksAddress string) bool {
+		return probe.CheckQUICWithDNS(ctx, socksAddress, clientDNS)
 	}
 }
 

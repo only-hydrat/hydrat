@@ -247,7 +247,7 @@ func TestAgentQoEMeasurerUsesConfiguredBounds(t *testing.T) {
 	got := agentQoEMeasurerConfig(cfg)
 	if got.SampleBytes != cfg.QoE.SampleBytes || got.Deadline != cfg.QoE.Deadline ||
 		!reflect.DeepEqual(got.DNSResolvers, cfg.Xray.EffectiveDNSResolvers()) ||
-		got.ApplicationGates == nil || got.ApplicationControl == nil {
+		got.ApplicationGates == nil || got.ApplicationControl == nil || got.UDPCheck == nil {
 		t.Fatalf("QoE measurer config=%+v, want bytes=%d deadline=%s", got, cfg.QoE.SampleBytes, cfg.QoE.Deadline)
 	}
 }
@@ -446,6 +446,7 @@ func TestMainInstallsQoEClientDeadlineAndEngineGate(t *testing.T) {
 	for _, required := range []string{
 		"probexray.New(cfg.Xray.Binary, cfg.Xray.ProbeAPIAddress, gateway.TotalProbeSlots, nil)",
 		"probe.NewQoEMeasurer(agentQoEMeasurerConfig(cfg))",
+		"UDPCheck: agentQUICCheck(cfg)",
 		"agentapi.WithQoEProbeWorkers(cfg.QoE.Workers)",
 		"agentapi.WithQoEProbeDeadline(cfg.QoE.Deadline)",
 		"agentapi.WithClientQoEProbeDeadline(cfg.QoE.Deadline)",

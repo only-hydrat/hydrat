@@ -51,7 +51,7 @@ func (scheduler *Scheduler) ValidateReserveSelectionContext(
 	tcpEligible, err := scheduler.eligibleReserveCandidatesContext(
 		ctx,
 		now, clientID, "tcp", assignment.TCP, candidates, byID,
-		true,
+		true, false,
 	)
 	if err != nil {
 		return ReserveValidation{}, err
@@ -59,7 +59,7 @@ func (scheduler *Scheduler) ValidateReserveSelectionContext(
 	udpEligible, err := scheduler.eligibleReserveCandidatesContext(
 		ctx,
 		now, clientID, "udp", assignment.UDP, candidates, byID,
-		true,
+		true, false,
 	)
 	if err != nil {
 		return ReserveValidation{}, err
@@ -230,7 +230,7 @@ func (scheduler *Scheduler) selectReserveContext(
 ) (string, error) {
 	eligible, err := scheduler.eligibleReserveCandidatesContext(
 		ctx, now, clientID, network, primaryID, candidates, byID,
-		requireActiveProof,
+		requireActiveProof, true,
 	)
 	if err != nil {
 		return "", err
@@ -250,6 +250,7 @@ func (scheduler *Scheduler) eligibleReserveCandidatesContext(
 	candidates []Candidate,
 	byID map[string]Candidate,
 	requireActiveProof bool,
+	preferQuality bool,
 ) ([]Candidate, error) {
 	primary, exists := byID[primaryID]
 	if primaryID == "" || !exists {
@@ -312,6 +313,9 @@ func (scheduler *Scheduler) eligibleReserveCandidatesContext(
 			preferred = append(preferred, candidate)
 		}
 		eligible = preferred
+	}
+	if !preferQuality {
+		return eligible, nil
 	}
 	eligible = preferStableQoE(eligible)
 	best := 0.0
