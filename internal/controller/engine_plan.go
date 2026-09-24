@@ -138,10 +138,7 @@ func candidateReferencesFromPlan(encoded []byte) []string {
 	}
 	references := make([]string, 0, len(plan.Outbounds))
 	for _, outbound := range plan.Outbounds {
-		candidateID := outbound.ID
-		if marker := strings.Index(candidateID, "-profile-"); marker > 0 {
-			candidateID = candidateID[:marker]
-		}
+		candidateID := candidateIDFromHandler(outbound.ID, "")
 		if strings.HasPrefix(candidateID, "cand_") {
 			references = append(references, candidateID)
 		}
@@ -467,15 +464,16 @@ func (engine *Engine) outbound(
 	}
 	switch candidate.Kind {
 	case sources.KindVLESS:
-		if _, exists := outbounds[candidateID]; !exists {
-			config, err := xrayconfig.VLESSOutbound(payload, candidateID)
+		outboundID := sources.VLESSHandlerID(candidateID, payload)
+		if _, exists := outbounds[outboundID]; !exists {
+			config, err := xrayconfig.VLESSOutbound(payload, outboundID)
 			if err != nil {
 				return "", err
 			}
 			encoded, _ := json.Marshal(config)
-			outbounds[candidateID] = dataplane.Outbound{ID: candidateID, Protocol: dataplane.ProtocolVLESS, Config: encoded}
+			outbounds[outboundID] = dataplane.Outbound{ID: outboundID, Protocol: dataplane.ProtocolVLESS, Config: encoded}
 		}
-		return candidateID, nil
+		return outboundID, nil
 	case sources.KindTorBridge:
 		profile, exists := profiles[candidateID]
 		if !exists {

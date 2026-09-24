@@ -79,6 +79,44 @@ func TestEngineUnchangedPlanDoesNotWriteApplyOrIncrementAcrossRestart(t *testing
 	}
 }
 
+func TestVisionUDP443UsesNewHandlerWithoutChangingCandidateIdentity(t *testing.T) {
+	candidateID := "cand_10f2c5080e9a741a"
+	engine := &Engine{}
+	candidates := map[string]store.Candidate{candidateID: {ID: candidateID, Kind: sources.KindVLESS}}
+	link := "vless://12345678-1234-1234-1234-123456789abc@example.org:443?security=tls&flow=xtls-rprx-vision"
+	outbounds := make(map[string]dataplane.Outbound)
+	handlerID, err := engine.outbound("alice", candidateID, candidates, map[string]string{candidateID: link}, nil, outbounds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if handlerID != candidateID+"-vision-udp443-v1" {
+		t.Fatalf("Vision handler %q reuses immutable candidate ID", handlerID)
+	}
+	if got := candidateIDFromHandler(handlerID, "alice"); got != candidateID {
+		t.Fatalf("handler candidate=%q, want %q", got, candidateID)
+	}
+	if _, ok := outbounds[handlerID]; !ok {
+		t.Fatalf("versioned handler %q not materialized", handlerID)
+	}
+	if !bytes.Contains(outbounds[handlerID].Config, []byte(`"flow":"xtls-rprx-vision-udp443"`)) ||
+		!bytes.Contains(outbounds[handlerID].Config, []byte(`"tag":"`+handlerID+`"`)) {
+		t.Fatalf("versioned handler has stale Xray config: %s", outbounds[handlerID].Config)
+	}
+	encoded, err := json.Marshal(dataplane.DesiredPlan{Outbounds: []dataplane.Outbound{outbounds[handlerID]}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := candidateReferencesFromPlan(encoded); !slices.Equal(got, []string{candidateID}) {
+		t.Fatalf("plan references=%v", got)
+	}
+	plainID, err := engine.outbound("alice", candidateID, candidates,
+		map[string]string{candidateID: "vless://12345678-1234-1234-1234-123456789abc@example.org:443?security=tls"},
+		nil, make(map[string]dataplane.Outbound))
+	if err != nil || plainID != candidateID {
+		t.Fatalf("non-Vision handler=%q err=%v", plainID, err)
+	}
+}
+
 func TestEnginePendingIdenticalPlanRetriesPersistedGenerationAndBytes(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "state.db")

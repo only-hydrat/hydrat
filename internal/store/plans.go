@@ -34,7 +34,6 @@ type CandidatePlanExpectation struct {
 	EvidenceDigest string
 }
 
-
 func (store *Store) SaveDesiredPlan(ctx context.Context, generation int64, plan []byte) error {
 	return store.SaveDesiredPlanWithReason(ctx, generation, plan, "legacy")
 }
@@ -212,7 +211,7 @@ func validateDesiredPlanReserveBindings(
 	for _, outbound := range plan.Outbounds {
 		switch outbound.Protocol {
 		case dataplane.ProtocolVLESS:
-			candidate, exists := expectedCandidates[outbound.ID]
+			candidate, exists := expectedCandidates[sources.CandidateIDFromVLESSHandler(outbound.ID)]
 			if !exists || candidate.Kind != sources.KindVLESS {
 				return dataplane.DesiredPlan{}, errors.New("desired VLESS handler is not bound to its candidate")
 			}
@@ -260,7 +259,7 @@ func persistedPlanHandlers(
 		switch outbound.Protocol {
 		case dataplane.ProtocolVLESS:
 			handlers[outbound.ID] = planHandlerBinding{
-				candidateID: outbound.ID, protocol: outbound.Protocol,
+				candidateID: sources.CandidateIDFromVLESSHandler(outbound.ID), protocol: outbound.Protocol,
 			}
 		case dataplane.ProtocolTor:
 			candidateID, clientID, ok := parseTorPlanHandler(outbound.ID)
@@ -368,7 +367,7 @@ func validateAndEncodeDesiredAssignmentSnapshotTx(
 	for _, outbound := range plan.Outbounds {
 		switch outbound.Protocol {
 		case dataplane.ProtocolVLESS:
-			candidate, exists := expectedCandidates[outbound.ID]
+			candidate, exists := expectedCandidates[sources.CandidateIDFromVLESSHandler(outbound.ID)]
 			if exists && candidate.Kind == sources.KindVLESS {
 				handlers[outbound.ID] = planHandlerBinding{
 					candidateID: candidate.ID, protocol: outbound.Protocol,
@@ -466,7 +465,7 @@ func validatePersistedAssignmentSnapshot(
 		switch outbound.Protocol {
 		case dataplane.ProtocolVLESS:
 			handlers[outbound.ID] = planHandlerBinding{
-				candidateID: outbound.ID, protocol: outbound.Protocol,
+				candidateID: sources.CandidateIDFromVLESSHandler(outbound.ID), protocol: outbound.Protocol,
 			}
 		case dataplane.ProtocolTor:
 			candidateID, clientID, ok := parseTorPlanHandler(outbound.ID)
@@ -940,7 +939,6 @@ func assignmentMigrationReason(desiredReason string) string {
 	}
 }
 
-
 func (store *Store) PlanGenerations(ctx context.Context) (desired, applied int64, err error) {
 	err = store.db.QueryRowContext(ctx, `SELECT desired_generation, applied_generation FROM plan_state WHERE singleton=1`).Scan(&desired, &applied)
 	return desired, applied, err
@@ -981,4 +979,3 @@ func (store *Store) LoadPlanState(ctx context.Context) (PlanState, error) {
 	)
 	return state, err
 }
-

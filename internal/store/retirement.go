@@ -922,7 +922,7 @@ func normalizePersistedCandidateID(outboundID string) string {
 	if marker := strings.Index(outboundID, "-profile-"); marker > 0 {
 		return outboundID[:marker]
 	}
-	return outboundID
+	return sources.CandidateIDFromVLESSHandler(outboundID)
 }
 
 func deleteCandidateRetirementStateTx(

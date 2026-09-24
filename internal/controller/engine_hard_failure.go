@@ -713,7 +713,7 @@ func candidateIDFromHandler(handlerID, clientID string) string {
 	}
 	candidateID, suffix, tor := strings.Cut(handlerID, "-profile-")
 	if !tor {
-		return handlerID
+		return sources.CandidateIDFromVLESSHandler(handlerID)
 	}
 	_, boundClientID, valid := strings.Cut(suffix, "-client-")
 	if candidateID == "" || !valid || boundClientID == "" ||

@@ -29,6 +29,45 @@ func TestParseTorPlanHandlerAcceptsVersionedProfileIdentity(t *testing.T) {
 	}
 }
 
+func TestVisionUDP443HandlerPreservesCandidateBindingsAndBackup(t *testing.T) {
+	ctx := context.Background()
+	database, candidates := candidateStateTestStore(t, []CandidateInput{
+		{Kind: sources.KindVLESS, Label: "primary", Fingerprint: "primary", Payload: "vless://primary@example.net:443?flow=xtls-rprx-vision"},
+		{Kind: sources.KindVLESS, Label: "reserve", Fingerprint: "reserve", Payload: "vless://reserve@example.net:443"},
+	})
+	if err := database.PutClient(ctx, ClientRecord{ID: "alice", Name: "Alice", Address: "10.44.0.2/32", PublicKey: "alice-key"}, "secret"); err != nil {
+		t.Fatal(err)
+	}
+	primary := candidates["primary"].ID
+	reserve := candidates["reserve"].ID
+	versioned := primary + "-vision-udp443-v1"
+	plan := vlessReservePlanBytes(t, 1, "alice", versioned, versioned, reserve, reserve)
+	epoch, err := database.InventoryEpoch(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = database.SaveDesiredPlanSnapshotForCandidatesAndReserves(ctx, 1, plan, epoch,
+		[]CandidatePlanExpectation{{Candidate: candidates["primary"]}, {Candidate: candidates["reserve"]}},
+		[]RouteReserveMapping{{ClientID: "alice", TCPPrimaryCandidateID: primary, UDPPrimaryCandidateID: primary, TCPReserveCandidateID: reserve, UDPReserveCandidateID: reserve}},
+		[]AssignmentRecord{{ClientID: "alice", TCPOutbound: primary, UDPOutbound: primary}})
+	if err != nil {
+		t.Fatalf("save versioned plan: %v", err)
+	}
+	if err := database.MarkAppliedPlan(ctx, 1, plan); err != nil {
+		t.Fatalf("apply versioned plan: %v", err)
+	}
+	if got := normalizePersistedCandidateID(versioned); got != primary {
+		t.Fatalf("retirement candidate=%q, want %q", got, primary)
+	}
+	backup := filepath.Join(t.TempDir(), "vision.db")
+	if err := database.Backup(ctx, backup); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateBackup(backup, database.box); err != nil {
+		t.Fatalf("versioned plan backup: %v", err)
+	}
+}
+
 func TestMarkAppliedPlanAtomicallyRecordsTransportMigrationReason(t *testing.T) {
 	ctx := context.Background()
 	database, candidates := candidateStateTestStore(t, []CandidateInput{

@@ -1545,6 +1545,26 @@ func TestReconcileRejectsChangedImmutableOutboundBeforeSideEffects(t *testing.T)
 	}
 }
 
+func TestReconcileMigratesVersionedVisionHandlerWithoutChangingLiveID(t *testing.T) {
+	adapter := &recordingAdapter{}
+	reconciler, err := NewReconciler(adapter, filepath.Join(t.TempDir(), "applied.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldID := "cand_10f2c5080e9a741a"
+	newID := oldID + "-vision-udp443-v1"
+	if err := reconciler.Apply(context.Background(), singleRoutePlan(1, oldID, json.RawMessage(`{"tag":"cand_10f2c5080e9a741a","flow":"xtls-rprx-vision"}`))); err != nil {
+		t.Fatal(err)
+	}
+	adapter.operations = nil
+	if err := reconciler.Apply(context.Background(), singleRoutePlan(2, newID, json.RawMessage(`{"tag":"cand_10f2c5080e9a741a-vision-udp443-v1","flow":"xtls-rprx-vision-udp443"}`))); err != nil {
+		t.Fatalf("versioned migration: %v", err)
+	}
+	if got := strings.Join(adapter.operations, ","); !strings.Contains(got, "add:"+newID) || !strings.Contains(got, "remove:"+oldID) {
+		t.Fatalf("versioned migration operations: %s", got)
+	}
+}
+
 func singleRoutePlan(generation int64, outboundID string, config json.RawMessage) DesiredPlan {
 	return DesiredPlan{
 		Generation: generation,

@@ -514,7 +514,7 @@ func backupPlanHandlers(
 		kind, exists := candidates[binding.candidateID]
 		switch binding.protocol {
 		case dataplane.ProtocolVLESS:
-			if !exists || kind != sources.KindVLESS || outboundID != binding.candidateID {
+			if !exists || kind != sources.KindVLESS || sources.CandidateIDFromVLESSHandler(outboundID) != binding.candidateID {
 				return nil, errors.New("persisted VLESS handler is not bound to its candidate")
 			}
 		case dataplane.ProtocolTor:
