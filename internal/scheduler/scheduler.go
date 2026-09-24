@@ -793,6 +793,10 @@ func (scheduler *Scheduler) excluded(now time.Time, clientID, candidateID string
 	return excluded
 }
 
+func (scheduler *Scheduler) IsExcluded(now time.Time, clientID, candidateID string) bool {
+	return scheduler.excluded(now, clientID, candidateID)
+}
+
 func (scheduler *Scheduler) resetStreak(clientID, network string) {
 	prefix := clientID + ":" + network + ":"
 	for key := range scheduler.streaks {

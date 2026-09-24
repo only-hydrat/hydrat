@@ -485,7 +485,10 @@ func (engine *Engine) cycleOnce(
 	degradedAvailabilityRecovery := canRecoverStaticallyBlockedAppliedTransport(
 		state, scheduleClients, allScheduleCandidates,
 		engine.activeCriticalRouteLimit,
-	) || canRecoverDegradedAssignedTransport(scheduleClients, allScheduleCandidates)
+	) || canRecoverDegradedAssignedTransport(scheduleClients, allScheduleCandidates) ||
+		(reason == PlacementManual && canRecoverManualAssignedTransport(
+			now, placementScheduler, scheduleClients, allScheduleCandidates,
+		))
 	scheduleCandidates, err = engine.scheduleCandidatesForCycle(
 		ctx, now, placementScheduler, scheduleClients, scheduleCandidates,
 	)

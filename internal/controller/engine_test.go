@@ -6062,6 +6062,46 @@ func TestEngineQoEFailoverProceedsWithoutCompleteReserveCoverage(t *testing.T) {
 	}
 }
 
+func TestEngineManualReassignProceedsWithoutCompleteReserveCoverage(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(1_900_000_000, 0)
+	database, candidates := newEngineQoEFixture(t, now, []engineQoECandidateSpec{
+		{name: "current", kind: sources.KindVLESS, score: 100, tcp: true, udp: true, failureDomain: "domain-a"},
+		{name: "alternative", kind: sources.KindVLESS, score: 90, tcp: true, udp: true, failureDomain: "domain-b"},
+	})
+	qualifyEngineCandidateSet(t, database, now, []store.Candidate{candidates["current"], candidates["alternative"]})
+	putEngineQoEClient(t, database, "alice", "10.44.0.2/32", now, true, candidates["current"].ID, candidates["current"].ID)
+	seedEngineQoEState(t, database, candidates["current"], qoe.StatusHealthy, time.Second, now)
+	seedEngineQoEState(t, database, candidates["alternative"], qoe.StatusHealthy, time.Second, now)
+	setEngineActiveObservationAt(t, database, candidates["alternative"], now)
+
+	placement := scheduler.New(scheduler.PolicyDefaults())
+	placement.Exclude("alice", candidates["current"].ID, now.Add(30*time.Minute))
+	engine := NewEngine(database, &engineAgent{}, nil, placement, []byte("secret"),
+		WithActiveCriticalRouteLimit(16), WithActiveProbeInterval(2*time.Second))
+	if err := engine.CycleForReason(ctx, now, PlacementManual); err != nil {
+		t.Fatalf("manual reassignment was blocked by reserve coverage: %v", err)
+	}
+	assignment := engineQoEAssignment(t, database, "alice")
+	if assignment.TCPOutbound != candidates["alternative"].ID || assignment.UDPOutbound != candidates["alternative"].ID {
+		t.Fatalf("manual reassignment did not move to healthy alternative: %+v", assignment)
+	}
+}
+
+func TestManualReassignDoesNotRelaxReserveCoverageWithoutProvenReplacement(t *testing.T) {
+	now := time.Unix(1_900_000_000, 0)
+	placement := scheduler.New(scheduler.PolicyDefaults())
+	placement.Exclude("alice", "current", now.Add(time.Hour))
+	clients := []scheduler.Client{{ID: "alice", Assignment: scheduler.Assignment{TCP: "current"}}}
+	candidates := []scheduler.Candidate{
+		{ID: "current", TCPQualified: true, QoEStatus: qoe.StatusHealthy, QoEFresh: true},
+		{ID: "unproved", TCPQualified: true, QoEStatus: qoe.StatusHealthy, QoEFresh: true},
+	}
+	if canRecoverManualAssignedTransport(now, placement, clients, candidates) {
+		t.Fatal("manual reassignment relaxed reserve cover without active proof")
+	}
+}
+
 func TestDegradedQualityDoesNotBypassIncompleteReserveCoverage(t *testing.T) {
 	clients := []scheduler.Client{{
 		ID: "alice",

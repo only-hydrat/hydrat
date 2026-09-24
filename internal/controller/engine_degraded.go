@@ -3,12 +3,55 @@ package controller
 import (
 	"encoding/json"
 	"sort"
+	"time"
 
 	"github.com/only-hydrat/hydrat/internal/dataplane"
 	"github.com/only-hydrat/hydrat/internal/qoe"
 	"github.com/only-hydrat/hydrat/internal/scheduler"
 	"github.com/only-hydrat/hydrat/internal/store"
 )
+
+// A manual exclusion may intentionally make a complete reserve cover
+// impossible. Allow the bounded fallback only when an active-proven, healthy
+// replacement exists for every excluded assigned transport.
+func canRecoverManualAssignedTransport(
+	now time.Time,
+	placement *scheduler.Scheduler,
+	clients []scheduler.Client,
+	candidates []scheduler.Candidate,
+) bool {
+	found := false
+	for _, client := range clients {
+		for _, current := range []struct {
+			id      string
+			network string
+		}{{client.Assignment.TCP, "tcp"}, {client.Assignment.UDP, "udp"}} {
+			if current.id == "" || !placement.IsExcluded(now, client.ID, current.id) {
+				continue
+			}
+			found = true
+			replacement := false
+			for _, candidate := range candidates {
+				qualified := candidate.TCPQualified
+				if current.network == "udp" {
+					qualified = candidate.Protocol == scheduler.ProtocolVLESS && candidate.UDPQualified
+				}
+				if candidate.ID != current.id && qualified && candidate.ReserveEligible &&
+					!candidate.CircuitOpen && !candidate.Retiring &&
+					(!candidate.QoETracked || (candidate.QoEStatus == qoe.StatusHealthy && candidate.QoEFresh)) &&
+					candidate.ActiveEligible && candidate.ActiveFresh &&
+					!placement.IsExcluded(now, client.ID, candidate.ID) {
+					replacement = true
+					break
+				}
+			}
+			if !replacement {
+				return false
+			}
+		}
+	}
+	return found
+}
 
 func activeCriticalPlanCandidateCount(plan dataplane.DesiredPlan) int {
 	ids := make(map[string]struct{})
