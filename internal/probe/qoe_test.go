@@ -68,6 +68,22 @@ func TestQoEMeasurerReturnsTTFBAndSustainedThroughput(t *testing.T) {
 	}
 }
 
+func TestQoEMeasurerDefaultSamplesSustainedTransfer(t *testing.T) {
+	client := &http.Client{Transport: qoeRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if got := request.URL.Query().Get("bytes"); got != "262144" {
+			t.Fatalf("requested bytes=%s, want 262144", got)
+		}
+		httptrace.ContextClientTrace(request.Context()).GotFirstResponseByte()
+		return qoeResponse(http.StatusOK, bytes.Repeat([]byte{'x'}, 262144)), nil
+	})}
+	measurer := NewQoEMeasurer(QoEMeasurerConfig{
+		ClientFactory: func(string) *http.Client { return client }, DirectClient: client,
+	})
+	if got := measurer.Measure(context.Background(), "candidate", "127.0.0.1:1080"); !got.Success || got.Bytes != 262144 {
+		t.Fatalf("observation=%+v", got)
+	}
+}
+
 func TestQoEMeasurerReportsVLESSQUICIndependentlyFromHealthyTCP(t *testing.T) {
 	checks := 0
 	measurer := NewQoEMeasurer(QoEMeasurerConfig{

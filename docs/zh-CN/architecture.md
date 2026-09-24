@@ -65,30 +65,30 @@ Active probe 使用独立高优先级 Xray slot、1900 ms deadline 和 75 ms res
 
 ## QoE 控制循环
 
-QoE 在独立的串行运行循环中执行，不占用 qualification 或 active liveness 队列。Agent 为其分配 4 个独立 Xray slot 和最多 4 个 worker。VLESS 通过隔离的 probe outbound 测量；Tor 为同一候选使用独立探测进程、SOCKS 端口和数据目录，不使用客户端的 serving warm 配置。QoE 不使用 explorer，也不会替换 serving warm 配置。每次探测从 Cloudflare 测速端点精确下载 65,536 字节，deadline 为 10 秒。压缩和缓存关闭，查询参数加入不可预测的加密随机 nonce，响应体仅在固定边界内读取。
+QoE 在独立的串行运行循环中执行，不占用 qualification 或 active liveness 队列。Agent 为其分配 4 个独立 Xray slot 和最多 4 个 worker。VLESS 通过隔离的 probe outbound 测量；Tor 为同一候选使用独立探测进程、SOCKS 端口和数据目录，不使用客户端的 serving warm 配置。QoE 不使用 explorer，也不会替换 serving warm 配置。每次探测从 Cloudflare 测速端点精确下载 262,144 字节，deadline 为 10 秒。压缩和缓存关闭，查询参数加入不可预测的加密随机 nonce，响应体仅在固定边界内读取。
 
 调度以候选而非客户端为单位：
 
 - 每轮 QoE 前刷新 WireGuard 字节计数，避免新流量等待五分钟 placement 周期。
-- 最近两分钟有客户端流量的已分配路由使用 `qoe.active_interval`（production 为 15 秒）。
+- 最近两分钟有客户端流量的已分配路由使用 `qoe.active_interval`（production 为 30 秒）。
 - 已分配的空闲路由每 5 分钟探测一次。
 - `degraded` 分配使用适用 active/idle 与 degraded 间隔中较短者。
 - 无客户端的 `degraded` 路由每分钟探测一次。
-- 每种协议最多 3 个 qualified standby VLESS，以及所有已 reconcile 且未分配的 warm Tor，每 15 秒探测一次，直到形成质量晋升所需的完整干净窗口。
+- 每种协议最多 3 个 qualified standby VLESS，以及所有已 reconcile 且未分配的 warm Tor，每 30 秒探测一次，直到形成质量晋升所需的完整干净窗口。
 
-TCP/UDP 重叠按 candidate ID 去重，同一候选的第二个 in-flight probe 会合并。下一轮从本轮完成后重新计时，因此慢探测不会积压过期 tick。持续 active 的单条路由约使用 360 MiB/天，idle 路由约 18 MiB/天，promotion standby 约 360 MiB/天，`degraded` recovery 最多 90 MiB/天。同一路由上的客户端数量不会倍增这些估算。
+TCP/UDP 重叠按 candidate ID 去重，同一候选的第二个 in-flight probe 会合并。下一轮从本轮完成后重新计时，因此慢探测不会积压过期 tick。持续 active 的单条路由约使用 720 MiB/天，idle 路由约 72 MiB/天，promotion standby 约 720 MiB/天，未分配的 `degraded` 路由恢复探测最多 360 MiB/天。同一路由上的客户端数量不会倍增这些估算。
 
-持久化状态机包含 `learning`、`healthy`、`degraded`。前 5 次成功测量建立中位数 baseline。在此之前，TTFB >3 秒或吞吐量 <0.256 Mbit/s 为严重样本。建立 baseline 后，候选连接/TLS/请求/超时/响应体失败，或 TTFB 同时 >1500 ms 且 >2.5 倍 baseline，或吞吐量 <35% baseline，均为坏样本。基础设施样本不进入窗口。最近 5 个有效样本中 3 个坏样本进入 `degraded`，5 个中 4 个好样本恢复。并行的 20 个有效样本可用性窗口在出现两次路由/服务失败后退化，即使失败之间有成功；恢复需等待计数降至 2 以下。好样本以 EWMA 0.1 更新 healthy baseline，`degraded` 时冻结。历史保留 168 小时并分批删除；状态与触发样本在同一 SQLite 事务写入。
+持久化状态机包含 `learning`、`healthy`、`degraded`。前 5 次成功测量建立中位数 baseline。无论是否已建立 baseline，吞吐量 <1 Mbit/s 都是坏样本；建立前，TTFB >3 秒也属于严重样本。建立后，候选连接/TLS/请求/超时/响应体失败，或 TTFB 同时 >1500 ms 且 >2.5 倍 baseline，或吞吐量 <35% baseline，均为坏样本。基础设施样本不进入窗口。最近 5 个有效样本中 3 个坏样本进入 `degraded`，5 个中 4 个好样本恢复。并行的 20 个有效样本可用性窗口在出现两次路由/服务失败后退化，即使失败之间有成功；恢复需等待计数降至 2 以下。好样本以 EWMA 0.1 更新 healthy baseline，`degraded` 时冻结。历史保留 168 小时并分批删除；状态与触发样本在同一 SQLite 事务写入。
 
 对于 VLESS，QoE 会与 TCP 测量并行通过 SOCKS5 UDP association 对 YouTube 执行两次 QUIC/TLS 检查。标准 `xtls-rprx-vision` 的客户端 outbound 使用 flow `xtls-rprx-vision-udp443`。连续两次失败只移除 `UDPQualified`，保留 TCP 评分、可用性和新鲜度；连续三次成功恢复 UDP 资格。每次变化立即触发 UDP 重规划，但不迁移正常 TCP，也不重连 WireGuard peer。独立迟滞循环可避免单个数据包丢失引发切换。
 
 端点隔离用于区分路由退化与测量器故障。错误 HTTP 状态、异常长度和 malformed response 会立即归类为基础设施问题。路由 transport/TLS/request 错误后执行有界 direct control：直连成功即可确认候选失败。并发 control request 会合并为 single-flight，健康结果复用 30 秒。如果 direct control 失败同时伴随 30 秒内至少三个不同候选的错误，circuit 打开。打开的 circuit 会跳过 QoE 工作且不改变窗口，并在端点恢复前每分钟最多发起一次 direct recovery。服务特定的 active liveness 继续运行。
 
-QoE 迁移目标必须健康状态正常、可用、对所需协议完全 qualified 且处于 `healthy`。其最后有效样本对 active 流量不得超过 2 分钟，对 idle 流量不得超过 10 分钟。TTFB/吞吐量退化使用质量改进迁移：中位有效时间 `TTFB + 64 KiB / throughput` 必须比当前路由至少好 30%，还需 30 分钟最短 dwell、连续 3 个 snapshot 确认和通用 planned-move 限制。单个退化样本或边界抖动会重置 streak。
+QoE 迁移目标必须健康状态正常、可用、对所需协议完全 qualified 且处于 `healthy`。其最后有效样本对 active 流量不得超过 2 分钟，对 idle 流量不得超过 10 分钟。TTFB/相对吞吐量退化使用质量改进迁移：中位有效时间 `TTFB + 256 KiB / throughput` 必须比当前路由至少好 30%，还需 30 分钟最短 dwell、连续 3 个 snapshot 确认和通用 planned-move 限制。单个退化样本或边界抖动会重置 streak。
 
-晋升还要求 5 个干净的 active-cadence 样本：最后一点不超过 40 秒，窗口起点不超过 85 秒，相邻点最大间隔不超过 25 秒。旧的或稀疏的 standby 样本不能证明新主路由稳定。
+晋升还要求 5 个干净的 active-cadence 样本：最后一点不超过 70 秒，窗口起点不超过 160 秒，相邻点最大间隔不超过 40 秒。旧的或稀疏的 standby 样本不能证明新主路由稳定。
 
-单次 application gate 失败不会改变分配。QoE 窗口确认且原因为 `qoe_application_gates` 的退化表示客户端服务不可用，而不仅是速度下降。该路由上的所有客户端会立即迁移到具有新鲜 `healthy` QoE 的完全 qualified 替代项，并优先选择 active proof 新鲜的目标；此路径绕过 speedup、dwell、snapshot streak、planned-move 限制，也不受不完整 bounded reserve cover 阻塞。TTFB/吞吐量退化仍使用普通迟滞策略。
+单次 application gate 失败不会改变分配。QoE 窗口确认且原因为 `qoe_application_gates` 的退化表示客户端服务不可用，而不仅是速度下降。该路由上的所有客户端会立即迁移到具有新鲜 `healthy` QoE 的完全 qualified 替代项，并优先选择 active proof 新鲜的目标；此路径绕过 speedup、dwell、snapshot streak、planned-move 限制，也不受不完整 bounded reserve cover 阻塞。吞吐量持续低于 1 Mbit/s 并在最近 5 次中出现 3 次坏样本后，也会立即迁移。TTFB/相对吞吐量退化仍使用普通迟滞策略。
 
 主路由、备用路由和紧急选择首先将集合缩小到具有新鲜 `healthy` QoE 的候选。仅在不存在稳定集合时使用 `learning` 作为后备。因此缺少 QoE 容量不会导致 fail-closed，但新发现的高分路由也不会替换已验证路由。
 

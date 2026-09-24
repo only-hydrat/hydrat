@@ -16,15 +16,15 @@ import (
 
 func TestQoEDefaultsMatchApprovedPolicy(t *testing.T) {
 	cfg := Defaults()
-	if !cfg.QoE.Enabled || cfg.QoE.ActiveInterval != 15*time.Second ||
+	if !cfg.QoE.Enabled || cfg.QoE.ActiveInterval != 30*time.Second ||
 		cfg.QoE.IdleInterval != 5*time.Minute || cfg.QoE.DegradedInterval != time.Minute ||
 		cfg.QoE.Deadline != 10*time.Second || cfg.QoE.Workers != 4 ||
-		cfg.QoE.StandbyCandidates != 3 || cfg.QoE.SampleBytes != 65536 ||
+		cfg.QoE.StandbyCandidates != 3 || cfg.QoE.SampleBytes != 262144 ||
 		cfg.QoE.WindowSize != 5 || cfg.QoE.BadSamples != 3 ||
 		cfg.QoE.RecoveryGoodSamples != 4 || cfg.QoE.AvailabilityWindow != 20 ||
 		cfg.QoE.AvailabilityFailures != 2 || cfg.QoE.InitialTTFBLimit != 3*time.Second ||
 		cfg.QoE.TTFBFloor != 1500*time.Millisecond || cfg.QoE.TTFBMultiplier != 2.5 ||
-		cfg.QoE.InitialThroughputMbps != 0.256 || cfg.QoE.ThroughputRatio != 0.35 ||
+		cfg.QoE.InitialThroughputMbps != 1.0 || cfg.QoE.ThroughputRatio != 0.35 ||
 		cfg.QoE.AlternativeSpeedup != 1.3 || cfg.QoE.Retention != 168*time.Hour {
 		t.Fatalf("qoe defaults=%+v", cfg.QoE)
 	}
@@ -371,14 +371,14 @@ func TestActiveProofFreshnessUsesConfiguredGrace(t *testing.T) {
 
 func TestQoEPromotionFreshnessCoversTwoCadencesAndProbe(t *testing.T) {
 	cfg := Defaults()
-	if got := cfg.QoEPromotionFreshness(); got != 40*time.Second {
-		t.Fatalf("QoE promotion freshness=%s want=40s", got)
+	if got := cfg.QoEPromotionFreshness(); got != 70*time.Second {
+		t.Fatalf("QoE promotion freshness=%s want=70s", got)
 	}
-	if got := cfg.QoEPromotionWindowFreshness(); got != 85*time.Second {
-		t.Fatalf("QoE promotion window freshness=%s want=85s", got)
+	if got := cfg.QoEPromotionWindowFreshness(); got != 160*time.Second {
+		t.Fatalf("QoE promotion window freshness=%s want=160s", got)
 	}
-	if got := cfg.QoEPromotionMaximumSampleGap(); got != 25*time.Second {
-		t.Fatalf("QoE promotion maximum sample gap=%s want=25s", got)
+	if got := cfg.QoEPromotionMaximumSampleGap(); got != 40*time.Second {
+		t.Fatalf("QoE promotion maximum sample gap=%s want=40s", got)
 	}
 	cfg.QoE.ActiveInterval = time.Duration(math.MaxInt64)
 	if got := cfg.QoEPromotionFreshness(); got != maxDuration {

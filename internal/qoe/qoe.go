@@ -16,6 +16,7 @@ const (
 	ReasonRouteTimeout               = "qoe_route_timeout"
 	ReasonRouteTLS                   = "qoe_route_tls"
 	ReasonRouteTransport             = "qoe_route_transport"
+	ReasonSustainedThroughput        = "qoe_sustained_throughput"
 	StatusLearning            Status = "learning"
 	StatusHealthy             Status = "healthy"
 	StatusDegraded            Status = "degraded"
@@ -106,6 +107,12 @@ func AvailabilityFailure(reason string) bool {
 	}
 }
 
+// RequiresEvacuation is applied only after the QoE window confirms degradation.
+// Sustained low throughput needs three bad samples, unlike route outages.
+func RequiresEvacuation(reason string) bool {
+	return AvailabilityFailure(reason) || reason == ReasonSustainedThroughput
+}
+
 func (transition Transition) Changed() bool { return transition.From != transition.To }
 
 type Decision struct {
@@ -121,12 +128,12 @@ func DefaultPolicy() Policy {
 		RecoveryGoodSamples:   4,
 		AvailabilityWindow:    20,
 		AvailabilityFailures:  2,
-		SampleBytes:           65536,
+		SampleBytes:           262144,
 		Deadline:              10 * time.Second,
 		InitialTTFBLimit:      3 * time.Second,
 		TTFBFloor:             1500 * time.Millisecond,
 		TTFBMultiplier:        2.5,
-		InitialThroughputMbps: 0.256,
+		InitialThroughputMbps: 1.0,
 		ThroughputRatio:       0.35,
 		EWMAWeight:            0.1,
 	}
@@ -279,15 +286,19 @@ func sampleFromObservation(policy Policy, state State, observation Observation) 
 			sample.Reason = "qoe_ttfb"
 		case sample.ThroughputMbps < policy.InitialThroughputMbps:
 			sample.Bad = true
-			sample.Reason = "qoe_throughput"
+			sample.Reason = ReasonSustainedThroughput
 		}
 		return sample
 	}
 
 	slowTTFB := sample.TTFB > policy.TTFBFloor &&
 		float64(sample.TTFB) > float64(state.BaselineTTFB)*policy.TTFBMultiplier
+	sustainedSlow := sample.ThroughputMbps < policy.InitialThroughputMbps
 	slowThroughput := sample.ThroughputMbps < state.BaselineThroughputMbps*policy.ThroughputRatio
 	switch {
+	case sustainedSlow:
+		sample.Bad = true
+		sample.Reason = ReasonSustainedThroughput
 	case slowTTFB:
 		sample.Bad = true
 		sample.Reason = "qoe_ttfb"

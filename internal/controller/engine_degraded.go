@@ -29,7 +29,6 @@ func activeCriticalPlanCandidateCount(plan dataplane.DesiredPlan) int {
 	return len(ids)
 }
 
-
 func canRecoverStaticallyBlockedAppliedTransport(
 	state store.PlanState,
 	clients []scheduler.Client,
@@ -85,7 +84,7 @@ func canRecoverDegradedAssignedTransport(
 	canReplace := func(network, currentID string) bool {
 		current, exists := byID[currentID]
 		if !exists || current.QoEStatus != qoe.StatusDegraded ||
-			!qoe.AvailabilityFailure(current.QoEReason) {
+			!qoe.RequiresEvacuation(current.QoEReason) {
 			return false
 		}
 		for _, candidate := range candidates {
@@ -179,4 +178,3 @@ func boundedDegradedAvailabilityCandidates(
 	}
 	return result
 }
-

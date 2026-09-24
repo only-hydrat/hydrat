@@ -54,14 +54,14 @@ func TestQoEMonitorAssignedAndDegradedCadence(t *testing.T) {
 		degradedInterval time.Duration
 		wantProbes       int
 	}{
-		{name: "active due at fifteen seconds", assigned: true, active: true, lastAge: 15 * time.Second, wantProbes: 1},
-		{name: "active not due early", assigned: true, active: true, lastAge: 14 * time.Second},
+		{name: "active due at thirty seconds", assigned: true, active: true, lastAge: 30 * time.Second, wantProbes: 1},
+		{name: "active not due early", assigned: true, active: true, lastAge: 29 * time.Second},
 		{name: "idle due at five minutes", assigned: true, lastAge: 5 * time.Minute, wantProbes: 1},
 		{name: "idle not due early", assigned: true, lastAge: 5*time.Minute - time.Second},
 		{name: "assigned idle degraded due at one minute", assigned: true, degraded: true, lastAge: time.Minute, wantProbes: 1},
 		{name: "assigned idle degraded not due early", assigned: true, degraded: true, lastAge: time.Minute - time.Second},
-		{name: "assigned active degraded due at fifteen seconds", assigned: true, active: true, degraded: true, lastAge: 15 * time.Second, wantProbes: 1},
-		{name: "assigned active degraded not due early", assigned: true, active: true, degraded: true, lastAge: 14 * time.Second},
+		{name: "assigned active degraded due at thirty seconds", assigned: true, active: true, degraded: true, lastAge: 30 * time.Second, wantProbes: 1},
+		{name: "assigned active degraded not due early", assigned: true, active: true, degraded: true, lastAge: 29 * time.Second},
 		{name: "degraded due at one minute", degraded: true, lastAge: time.Minute, wantProbes: 1},
 		{name: "degraded not due early", degraded: true, lastAge: time.Minute - time.Second},
 		{name: "custom active degraded uses shorter degraded interval", assigned: true, active: true, degraded: true, lastAge: time.Minute, activeInterval: 2 * time.Minute, idleInterval: 5 * time.Minute, degradedInterval: time.Minute, wantProbes: 1},
@@ -786,8 +786,8 @@ func TestQoEMonitorEmitsDegradationTransitionAndSignalsOnce(t *testing.T) {
 	candidate := candidates["assigned"]
 	now := time.Unix(1_800_000_000, 0)
 	assignQoECandidate(t, database, candidate.ID, now, true)
-	seedHealthyBaseline(t, database, candidate, now.Add(-30*time.Second))
-	seedQoEObservation(t, database, candidate, failedQoE(now.Add(-17*time.Second), "qoe_route_timeout"))
+	seedHealthyBaseline(t, database, candidate, now.Add(-60*time.Second))
+	seedQoEObservation(t, database, candidate, failedQoE(now.Add(-31*time.Second), "qoe_route_timeout"))
 	trigger := make(chan struct{}, 2)
 	agent := &recordingQoEAgent{now: now, response: candidateFailureResponse(now, "qoe_route_timeout"), customResponse: true}
 	monitor := &QoEMonitor{Store: database, Agent: agent, Policy: qoe.DefaultPolicy(), Workers: 1, Trigger: trigger}
@@ -833,8 +833,8 @@ func TestQoEMonitorRollsBackTransitionWhenEventWriteFailsAndRetries(t *testing.T
 	candidate := candidates["assigned"]
 	now := time.Unix(1_800_000_000, 0)
 	assignQoECandidate(t, database, candidate.ID, now, true)
-	seedHealthyBaseline(t, database, candidate, now.Add(-30*time.Second))
-	seedQoEObservation(t, database, candidate, failedQoE(now.Add(-17*time.Second), "qoe_route_timeout"))
+	seedHealthyBaseline(t, database, candidate, now.Add(-60*time.Second))
+	seedQoEObservation(t, database, candidate, failedQoE(now.Add(-31*time.Second), "qoe_route_timeout"))
 	beforeState := mustSingleQoEState(t, database)
 	beforeSamples := mustQoESampleCount(t, database, candidate.ID, 20)
 

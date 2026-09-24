@@ -134,8 +134,8 @@ func TestApplyUsesInitialSevereThresholds(t *testing.T) {
 	}{
 		{name: "ttfb above limit", ttfb: 3*time.Second + time.Nanosecond, throughput: 1, wantBad: true},
 		{name: "ttfb at limit", ttfb: 3 * time.Second, throughput: 1},
-		{name: "throughput below limit", ttfb: time.Second, throughput: 0.255, wantBad: true},
-		{name: "throughput at limit", ttfb: time.Second, throughput: 0.256},
+		{name: "throughput below limit", ttfb: time.Second, throughput: 0.999, wantBad: true},
+		{name: "throughput at limit", ttfb: time.Second, throughput: 1.0},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -182,6 +182,26 @@ func TestApplyUsesRelativeThresholds(t *testing.T) {
 				t.Fatalf("sample=%+v want bad=%t", decision.Sample, test.wantBad)
 			}
 		})
+	}
+}
+
+func TestApplyDegradesPersistentlySlowRouteAfterLearningItsBaseline(t *testing.T) {
+	policy := DefaultPolicy()
+	state := State{
+		Status: StatusHealthy, BaselineSamples: policy.WindowSize,
+		BaselineTTFB: 500 * time.Millisecond, BaselineThroughputMbps: 0.7,
+	}
+	recent := []Sample{
+		{Valid: true, Success: true, Bad: true, Reason: ReasonSustainedThroughput},
+		{Valid: true, Success: true, Bad: true, Reason: ReasonSustainedThroughput},
+	}
+	decision := Apply(policy, state, recent, nil, Observation{
+		At: time.Unix(1_800_000_009, 0), Success: true,
+		TTFB: 500 * time.Millisecond, Bytes: 262144, ThroughputMbps: 0.7,
+	})
+	if decision.Sample == nil || !decision.Sample.Bad || decision.Sample.Reason != ReasonSustainedThroughput ||
+		decision.State.Status != StatusDegraded {
+		t.Fatalf("slow learned route stayed healthy: %+v", decision)
 	}
 }
 
@@ -253,10 +273,13 @@ func TestAvailabilityFailureSeparatesOutageFromQualityDegradation(t *testing.T) 
 			t.Fatalf("reason %q was not classified as availability failure", reason)
 		}
 	}
-	for _, reason := range []string{"", "qoe_ttfb", "qoe_throughput"} {
+	for _, reason := range []string{"", "qoe_ttfb", "qoe_throughput", ReasonSustainedThroughput} {
 		if AvailabilityFailure(reason) {
 			t.Fatalf("quality reason %q was classified as availability failure", reason)
 		}
+	}
+	if !RequiresEvacuation(ReasonSustainedThroughput) || RequiresEvacuation("qoe_throughput") {
+		t.Fatal("sustained low throughput must evacuate only after QoE degradation")
 	}
 }
 

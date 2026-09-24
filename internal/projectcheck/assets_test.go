@@ -1094,7 +1094,7 @@ func TestProductionEnvironmentAndComposeContract(t *testing.T) {
 		"fast_deadline: 6s", "full_deadline: 20s", "active_deadline: 1900ms",
 		"active_interval: 2s", "active_response_slack: 75ms",
 		"active_proof_grace: 15s",
-		"active_interval: 15s", "window_size: 5", "bad_samples: 3",
+		"active_interval: 30s", "window_size: 5", "bad_samples: 3",
 		"recovery_good_samples: 4", "availability_window: 20",
 		"availability_failures: 2",
 		"hard_failover_budget: 800ms", "placement_preempt_timeout: 100ms",

@@ -71,13 +71,13 @@ probe_runtime:
 
 qoe:
   enabled: true
-  active_interval: 15s
+  active_interval: 30s
   idle_interval: 5m
   degraded_interval: 1m
   deadline: 10s
   workers: 4
   standby_candidates: 3
-  sample_bytes: 65536
+  sample_bytes: 262144
   window_size: 5
   bad_samples: 3
   recovery_good_samples: 4
@@ -86,7 +86,7 @@ qoe:
   initial_ttfb_limit: 3s
   ttfb_floor: 1500ms
   ttfb_multiplier: 2.5
-  initial_throughput_mbps: 0.256
+  initial_throughput_mbps: 1.0
   throughput_ratio: 0.35
   alternative_speedup: 1.3
   retention: 168h

@@ -188,7 +188,7 @@ slots и не более четырёх workers. VLESS измеряется че
 outbound, Tor — через отдельный probe Tor-процесс того же кандидата с отдельными
 SOCKS-портом и data directory; serving warm-профиль клиента не используется.
 Explorer и замена serving warm-профиля для QoE не используются. Каждая probe загружает
-ровно 65 536 байт с Cloudflare speed endpoint и имеет deadline 10s. Compression
+ровно 262 144 байта с Cloudflare speed endpoint и имеет deadline 10s. Compression
 и cache отключены, к query добавляется криптографически непредсказуемый nonce,
 а тело читается только в bounded пределах.
 
@@ -197,26 +197,27 @@ Explorer и замена serving warm-профиля для QoE не испол�
 - перед каждым QoE sweep обновляются WireGuard byte counters, чтобы новый трафик
   не ждал пятиминутного placement-цикла;
 - назначенный маршрут с трафиком клиента за последние 2 минуты — с
-  `qoe.active_interval` (15s в production);
+  `qoe.active_interval` (30s в production);
 - назначенный idle-маршрут — каждые 5m;
 - `degraded` назначение — с более коротким из применимого active/idle и degraded
   интервалов;
 - `degraded`, оставшийся без клиентов, — каждую 1m;
 - до трёх qualified standby VLESS на каждый протокол и все reconciled
-  unassigned warm Tor — каждые 15s до полного чистого окна, обязательного для
+  unassigned warm Tor — каждые 30s до полного чистого окна, обязательного для
   quality-promotion.
 
 TCP/UDP overlap дедуплицируется по candidate ID, а второй in-flight probe того
 же кандидата coalesce. После завершения прохода следующий отсчитывается заново,
 поэтому медленная probe не создаёт очередь просроченных ticks. Трафик одного
-непрерывно active маршрута составляет примерно 360 МиБ/сутки, idle или одного
-idle — 18 МиБ/сутки, promotion-standby — 360 МиБ/сутки, `degraded` recovery — до
-90 МиБ/сутки. Число клиентов
+непрерывно active маршрута составляет примерно 720 МиБ/сутки, idle —
+72 МиБ/сутки, promotion-standby — 720 МиБ/сутки, unassigned `degraded`
+recovery — до 360 МиБ/сутки. Число клиентов
 на одном маршруте эти оценки не умножает.
 
 Persisted state machine использует `learning`, `healthy`, `degraded`. Первые
-пять успешных измерений устанавливают median baseline. До него severe sample —
-TTFB >3s либо throughput <0,256 Мбит/с. После него sample плохой при candidate
+пять успешных измерений устанавливают median baseline. Sample с throughput
+<1 Мбит/с считается плохим и до, и после обучения baseline; до него severe
+sample также возникает при TTFB >3s. После него sample плохой при candidate
 connect/TLS/request/timeout/body failure, либо TTFB одновременно >1500ms и
 >2,5x baseline, либо throughput <35% baseline. Infrastructure samples не входят
 в окно. Три bad из последних пяти valid переводят маршрут в `degraded`, четыре
@@ -249,14 +250,14 @@ control requests объединяются в single-flight, а healthy result п
 
 QoE migration разрешён только к normal-health available и полностью qualified
 для нужного протокола кандидату в `healthy`. Его last valid sample должен быть
-не старше 2m для active либо 10m для idle. Деградация TTFB/throughput считается
-улучшением качества: median effective time `TTFB + 64 КиБ / throughput` должна
+не старше 2m для active либо 10m для idle. Деградация TTFB/относительного throughput считается
+улучшением качества: median effective time `TTFB + 256 КиБ / throughput` должна
 быть минимум на 30% лучше текущей, а переход проходит minimum dwell 30m,
 подтверждение на трёх последовательных snapshots и общий planned-move limit. Единичная деградация
 или колебание у границы сбрасывают streak.
 Promotion дополнительно требует пять чистых active-cadence samples: последняя
-точка не старше 40s, начало окна не старше 85s, максимальный разрыв между
-соседними точками не более 25s. Старые или разреженные standby samples не
+точка не старше 70s, начало окна не старше 160s, максимальный разрыв между
+соседними точками не более 40s. Старые или разреженные standby samples не
 доказывают стабильность нового primary.
 
 Единичный отказ application gates не меняет назначение. Подтверждённая QoE-окном
@@ -265,8 +266,10 @@ Promotion дополнительно требует пять чистых active
 переходят на полностью qualified альтернативу со свежим `healthy` QoE,
 предпочитая цель со свежим active-proof, без speedup, dwell, snapshot streak,
 planned-move limit и без
-блокировки из-за неполного bounded reserve cover. Деградация TTFB/throughput
-по-прежнему использует обычную гистерезисную политику.
+блокировки из-за неполного bounded reserve cover. Подтверждённый QoE-окном
+throughput ниже 1 Mbit/s также требует немедленной пересадки после трёх плохих
+из пяти samples. Деградация TTFB/относительного throughput по-прежнему
+использует обычную гистерезисную политику.
 
 Primary, reserve и emergency selection сначала сужают пригодный набор до
 кандидатов со свежим `healthy` QoE. `learning` остаётся fallback только когда

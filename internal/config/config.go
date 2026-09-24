@@ -340,7 +340,7 @@ func Defaults() Config {
 		},
 		QoE: QoEConfig{
 			Enabled:               true,
-			ActiveInterval:        15 * time.Second,
+			ActiveInterval:        30 * time.Second,
 			IdleInterval:          5 * time.Minute,
 			DegradedInterval:      time.Minute,
 			Deadline:              qoePolicy.Deadline,

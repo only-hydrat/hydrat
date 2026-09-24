@@ -70,7 +70,7 @@ If 50 subscription entries point to the same server or CDN front, that server go
 ### 6. Quality of Experience and configurable service gates
 Active monitoring continuously evaluates the real user experience:
 
-- Measures actual TTFB and the throughput of a 64 KiB sample download.
+- Measures actual TTFB and sustained throughput with a 256 KiB sample download.
 - Checks key services by default: YouTube, Instagram, Telegram Web/MTProto, ChatGPT, and the OpenAI API.
 - **Configurable endpoints and custom gates:** `probes.gate_endpoints` and `probes.custom_gates` in `config.yml` can override probe addresses and add APIs or websites with specified acceptable HTTP statuses.
 - Verifies QUIC / HTTP/3 over SOCKS5 UDP.

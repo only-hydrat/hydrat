@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	defaultQoEActiveInterval   = 15 * time.Second
+	defaultQoEActiveInterval   = 30 * time.Second
 	defaultQoEIdleInterval     = 5 * time.Minute
 	defaultQoEDegradedInterval = time.Minute
 	defaultQoERetention        = 7 * 24 * time.Hour

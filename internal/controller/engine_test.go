@@ -5991,53 +5991,74 @@ func TestEngineActiveCriticalCapacityRejectsEmptyPlanBeforePublish(t *testing.T)
 }
 
 func TestEngineQoEFailoverProceedsWithoutCompleteReserveCoverage(t *testing.T) {
-	ctx := context.Background()
-	now := time.Unix(1_900_000_000, 0)
-	database, candidates := newEngineQoEFixture(t, now, []engineQoECandidateSpec{
-		{name: "broken", kind: sources.KindVLESS, score: 100, tcp: true, udp: true, failureDomain: "domain-a"},
-		{name: "replacement", kind: sources.KindVLESS, score: 90, tcp: true, udp: true, failureDomain: "domain-b"},
-	})
-	qualifyEngineCandidateSet(t, database, now, []store.Candidate{
-		candidates["broken"], candidates["replacement"],
-	})
-	putEngineQoEClient(
-		t, database, "alice", "10.44.0.2/32", now, true,
-		candidates["broken"].ID, candidates["broken"].ID,
-	)
-	for index := 2; index >= 0; index-- {
-		state, _, err := database.RecordCandidateQoE(
-			ctx, candidates["broken"], qoe.Observation{
-				At:        now.Add(-time.Duration(index) * time.Second),
-				ErrorCode: qoe.ReasonRouteTimeout,
-			}, qoe.DefaultPolicy(),
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if index == 0 && state.Status != qoe.StatusDegraded {
-			t.Fatalf("broken status=%s", state.Status)
-		}
-	}
-	seedEngineQoEState(
-		t, database, candidates["replacement"], qoe.StatusHealthy, 2*time.Second, now,
-	)
-	setEngineActiveObservationAt(t, database, candidates["replacement"], now)
+	for _, mode := range []string{"route timeout", "sustained low throughput"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx := context.Background()
+			now := time.Unix(1_900_000_000, 0)
+			database, candidates := newEngineQoEFixture(t, now, []engineQoECandidateSpec{
+				{name: "broken", kind: sources.KindVLESS, score: 100, tcp: true, udp: true, failureDomain: "domain-a"},
+				{name: "replacement", kind: sources.KindVLESS, score: 90, tcp: true, udp: true, failureDomain: "domain-b"},
+			})
+			qualifyEngineCandidateSet(t, database, now, []store.Candidate{
+				candidates["broken"], candidates["replacement"],
+			})
+			putEngineQoEClient(
+				t, database, "alice", "10.44.0.2/32", now, true,
+				candidates["broken"].ID, candidates["broken"].ID,
+			)
+			if mode == "sustained low throughput" {
+				for index := 7; index >= 3; index-- {
+					_, _, err := database.RecordCandidateQoE(ctx, candidates["broken"], qoe.Observation{
+						At: now.Add(-time.Duration(index) * time.Second), Success: true,
+						TTFB: 200 * time.Millisecond, Bytes: 262144, ThroughputMbps: 10,
+					}, qoe.DefaultPolicy())
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			for index := 2; index >= 0; index-- {
+				observation := qoe.Observation{
+					At: now.Add(-time.Duration(index) * time.Second), ErrorCode: qoe.ReasonRouteTimeout,
+				}
+				if mode == "sustained low throughput" {
+					observation = qoe.Observation{
+						At: now.Add(-time.Duration(index) * time.Second), Success: true,
+						TTFB: 500 * time.Millisecond, Bytes: 262144, ThroughputMbps: 0.7,
+					}
+				}
+				state, _, err := database.RecordCandidateQoE(
+					ctx, candidates["broken"], observation, qoe.DefaultPolicy(),
+				)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if index == 0 && state.Status != qoe.StatusDegraded {
+					t.Fatalf("broken status=%s", state.Status)
+				}
+			}
+			seedEngineQoEState(
+				t, database, candidates["replacement"], qoe.StatusHealthy, 2*time.Second, now,
+			)
+			setEngineActiveObservationAt(t, database, candidates["replacement"], now)
 
-	agent := &engineAgent{}
-	engine := NewEngine(
-		database, agent, nil, scheduler.New(scheduler.PolicyDefaults()), []byte("secret"),
-		WithActiveCriticalRouteLimit(16),
-	)
-	if err := engine.CycleForReason(ctx, now, PlacementQoEDegraded); err != nil {
-		t.Fatalf("QoE failover was blocked by reserve coverage: %v", err)
-	}
-	assignment := engineQoEAssignment(t, database, "alice")
-	if assignment.TCPOutbound != candidates["replacement"].ID ||
-		assignment.UDPOutbound != candidates["replacement"].ID {
-		t.Fatalf("assignment=%+v want replacement", assignment)
-	}
-	if len(agent.plans) != 1 {
-		t.Fatalf("applied plans=%d want 1", len(agent.plans))
+			agent := &engineAgent{}
+			engine := NewEngine(
+				database, agent, nil, scheduler.New(scheduler.PolicyDefaults()), []byte("secret"),
+				WithActiveCriticalRouteLimit(16),
+			)
+			if err := engine.CycleForReason(ctx, now, PlacementQoEDegraded); err != nil {
+				t.Fatalf("QoE failover was blocked by reserve coverage: %v", err)
+			}
+			assignment := engineQoEAssignment(t, database, "alice")
+			if assignment.TCPOutbound != candidates["replacement"].ID ||
+				assignment.UDPOutbound != candidates["replacement"].ID {
+				t.Fatalf("assignment=%+v want replacement", assignment)
+			}
+			if len(agent.plans) != 1 {
+				t.Fatalf("applied plans=%d want 1", len(agent.plans))
+			}
+		})
 	}
 }
 
@@ -6060,6 +6081,21 @@ func TestDegradedQualityDoesNotBypassIncompleteReserveCoverage(t *testing.T) {
 	}
 	if canRecoverDegradedAssignedTransport(clients, candidates) {
 		t.Fatal("ordinary quality degradation bypassed incomplete reserve coverage")
+	}
+}
+
+func TestConfirmedSustainedSlowRouteCanBypassIncompleteReserveCoverage(t *testing.T) {
+	clients := []scheduler.Client{{
+		ID: "alice", Assignment: scheduler.Assignment{TCP: "slow"},
+	}}
+	candidates := []scheduler.Candidate{
+		{ID: "slow", TCPQualified: true, QoEStatus: qoe.StatusDegraded,
+			QoEReason: qoe.ReasonSustainedThroughput},
+		{ID: "fast", TCPQualified: true, QoEStatus: qoe.StatusHealthy,
+			QoEFresh: true, QoEEffective: time.Second},
+	}
+	if !canRecoverDegradedAssignedTransport(clients, candidates) {
+		t.Fatal("confirmed sustained slow route remained pinned by incomplete reserve coverage")
 	}
 }
 
@@ -7450,8 +7486,16 @@ func seedEngineQoEState(
 	count := 5
 	throughput := 100.0
 	if status == qoe.StatusDegraded {
+		for index := 4; index >= 0; index-- {
+			_, _, err := database.RecordCandidateQoE(context.Background(), candidate, qoe.Observation{
+				At:      lastValidAt.Add(-time.Duration(index+5) * time.Second),
+				Success: true, TTFB: 200 * time.Millisecond, ThroughputMbps: 100,
+			}, qoe.DefaultPolicy())
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
 		count = 3
-		throughput = 0.1
 	}
 	for index := count - 1; index >= 0; index-- {
 		observation := qoe.Observation{

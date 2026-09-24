@@ -70,7 +70,7 @@
 ### 6. 体验质量与可配置服务关卡
 主动监控会持续评估真实用户体验：
 
-- 测量真实 TTFB 和下载 64 KiB 样本时的吞吐量。
+- 通过下载 256 KiB 样本测量真实 TTFB 和持续吞吐量。
 - 默认检查 YouTube、Instagram、Telegram Web/MTProto、ChatGPT 和 OpenAI API。
 - **可配置端点和自定义关卡：**可在 `config.yml` 的 `probes.gate_endpoints` 与 `probes.custom_gates` 中覆盖探测地址，并添加自定义 API 或网站及其允许的 HTTP 状态码。
 - 通过 SOCKS5 UDP 验证 QUIC / HTTP/3。

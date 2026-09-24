@@ -1492,6 +1492,24 @@ func TestDegradedCurrentDoesNotBypassMinimumDwell(t *testing.T) {
 	}
 }
 
+func TestConfirmedSustainedSlowRouteBypassesMinimumDwell(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	result := New(PolicyDefaults()).Schedule(now, []Client{{
+		ID: "client", LastTraffic: now,
+		Assignment: Assignment{TCP: "slow", TCPSince: now.Add(-time.Minute)},
+	}}, []Candidate{
+		{ID: "slow", Protocol: ProtocolVLESS, Score: 99, TCPQualified: true,
+			QoEStatus: qoe.StatusDegraded, QoEEffective: 4 * time.Second, QoEFresh: true,
+			QoEReason: qoe.ReasonSustainedThroughput},
+		{ID: "healthy", Protocol: ProtocolVLESS, Score: 90, TCPQualified: true,
+			QoEStatus: qoe.StatusHealthy, QoEEffective: time.Second, QoEFresh: true,
+			ActiveEligible: true, ActiveFresh: true},
+	})
+	if result.Assignments["client"].TCP != "healthy" || result.QoEMoves != 1 {
+		t.Fatalf("confirmed sustained slow route did not fail over: %+v", result)
+	}
+}
+
 func TestDegradedMovesRespectGlobalPlannedMoveBudget(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	policy := PolicyDefaults()

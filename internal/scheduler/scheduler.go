@@ -610,16 +610,16 @@ func (scheduler *Scheduler) choose(
 		return preferred
 	}
 	if current.QoEStatus == qoe.StatusDegraded {
-		availabilityFailure := qoe.AvailabilityFailure(current.QoEReason)
+		requiresEvacuation := qoe.RequiresEvacuation(current.QoEReason)
 		alternative := scheduler.qoeAlternative(
 			now, client.ID, network, current, candidates, domainLoad,
-			!availabilityFailure,
+			!requiresEvacuation,
 		)
 		if alternative == "" {
 			scheduler.resetStreak(client.ID, network)
 			return currentID
 		}
-		if availabilityFailure {
+		if requiresEvacuation {
 			if !shareQualityMoveBudget {
 				result.PlannedMoves++
 			}

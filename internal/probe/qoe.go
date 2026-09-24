@@ -25,7 +25,7 @@ import (
 
 const (
 	defaultQoEEndpoint      = "https://speed.cloudflare.com/__down"
-	defaultQoEBytes         = int64(65536)
+	defaultQoEBytes         = int64(262144)
 	defaultQoEDeadline      = 10 * time.Second
 	directReserve           = 2 * time.Second
 	applicationGateDeadline = 3 * time.Second
