@@ -54,23 +54,6 @@ func TestVLESSOutboundSupportsRawTransport(t *testing.T) {
 	}
 }
 
-func TestVLESSOutboundUsesUDP443FlowForStandardVisionOnly(t *testing.T) {
-	for _, test := range []struct{ flow, want string }{
-		{"xtls-rprx-vision", "xtls-rprx-vision-udp443"},
-		{"xtls-rprx-vision-udp443", "xtls-rprx-vision-udp443"},
-		{"", ""},
-	} {
-		config, err := VLESSOutbound("vless://id@example.net:443?flow="+test.flow, "tag")
-		if err != nil {
-			t.Fatal(err)
-		}
-		user := config["settings"].(map[string]any)["vnext"].([]any)[0].(map[string]any)["users"].([]any)[0].(map[string]any)
-		if got, _ := user["flow"].(string); got != test.want {
-			t.Errorf("flow=%q got %q want %q", test.flow, got, test.want)
-		}
-	}
-}
-
 func TestVLESSOutboundRejectsMissingRealityKeyAndUnsupportedTransport(t *testing.T) {
 	if _, err := VLESSOutbound("vless://id@example.net:443?security=reality", "tag"); err == nil {
 		t.Fatal("Reality without public key must fail")

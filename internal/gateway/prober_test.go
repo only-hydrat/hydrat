@@ -735,11 +735,12 @@ func TestVLESSFullProbeRuntimeDrainIsInfrastructureFailure(t *testing.T) {
 	}
 }
 
-func TestVLESSFullProbeUsesQUICForStandardVision(t *testing.T) {
+func TestVLESSFullProbePassesVisionFlowToUDPQualification(t *testing.T) {
 	runner := &recordingProbeXrayRunner{}
 	control := probexray.New("xray", "127.0.0.1:10086", TotalProbeSlots, runner)
 	control.Reset(7)
 	quicChecks := 0
+	dnsUDPChecks := 0
 	client := &http.Client{Transport: probeRoundTripFunc(func(request *http.Request) (*http.Response, error) {
 		status := http.StatusOK
 		if request.URL.Host == "api.openai.com" {
@@ -760,6 +761,10 @@ func TestVLESSFullProbeUsesQUICForStandardVision(t *testing.T) {
 				quicChecks++
 				return false
 			},
+			VisionUDPCheck: func(context.Context, string) bool {
+				dnsUDPChecks++
+				return true
+			},
 		},
 		portBase: 11080, fullSlots: slotPool(fullSlotStart, fullSlotCount),
 		fastSlots: slotPool(fastSlotStart, fastSlotCount), activeSlots: slotPool(activeSlotStart, activeSlotCount),
@@ -771,8 +776,8 @@ func TestVLESSFullProbeUsesQUICForStandardVision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.Evaluation.UDPQualified || quicChecks != 1 {
-		t.Fatalf("response=%+v QUIC checks=%d", response, quicChecks)
+	if !response.Evaluation.UDPQualified || quicChecks != 0 || dnsUDPChecks != 1 {
+		t.Fatalf("response=%+v QUIC checks=%d DNS UDP checks=%d", response, quicChecks, dnsUDPChecks)
 	}
 }
 
