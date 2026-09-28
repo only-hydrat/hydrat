@@ -2,6 +2,9 @@ package probe
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"time"
 
@@ -26,6 +29,8 @@ func (liveness Liveness) Observe(ctx context.Context, socksAddress string) healt
 	type result struct {
 		primary bool
 		ok      bool
+		failure string
+		elapsed int64
 	}
 	primaryURL := liveness.PrimaryURL
 	if primaryURL == "" {
@@ -37,21 +42,51 @@ func (liveness Liveness) Observe(ctx context.Context, socksAddress string) healt
 	}
 	results := make(chan result, 2)
 	go func() {
-		results <- result{primary: true, ok: requestOK(ctx, client, primaryURL)}
+		ok, failure, elapsed := livenessRequest(ctx, client, primaryURL)
+		results <- result{primary: true, ok: ok, failure: failure, elapsed: elapsed}
 	}()
 	go func() {
-		results <- result{ok: requestOK(ctx, client, confirmationURL)}
+		ok, failure, elapsed := livenessRequest(ctx, client, confirmationURL)
+		results <- result{ok: ok, failure: failure, elapsed: elapsed}
 	}()
 	var observation health.Observation
 	for range 2 {
 		item := <-results
 		if item.primary {
 			observation.PrimaryOK = item.ok
+			observation.PrimaryFailure = item.failure
+			observation.PrimaryElapsedMS = item.elapsed
 		} else {
 			observation.ConfirmationOK = item.ok
+			observation.ConfirmationFailure = item.failure
+			observation.ConfirmationElapsedMS = item.elapsed
 		}
 	}
 	return observation
+}
+
+func livenessRequest(ctx context.Context, client *http.Client, endpoint string) (bool, string, int64) {
+	started := time.Now()
+	elapsed := func() int64 { return time.Since(started).Milliseconds() }
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return false, "request_error", elapsed()
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		var networkError net.Error
+		if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &networkError) && networkError.Timeout() {
+			return false, "timeout", elapsed()
+		}
+		return false, "network_error", elapsed()
+	}
+	if _, err := discardBody(ctx, response.Body, 4096); err != nil {
+		return false, "body_error", elapsed()
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 400 {
+		return false, fmt.Sprintf("http_%d", response.StatusCode), elapsed()
+	}
+	return true, "", elapsed()
 }
 
 func (liveness Liveness) client(ctx context.Context, socksAddress string) *http.Client {

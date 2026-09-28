@@ -78,6 +78,11 @@ func clamp(value float64) float64 {
 type Observation struct {
 	PrimaryOK      bool
 	ConfirmationOK bool
+	// Failure codes and timings contain no candidate URL or transport secret.
+	PrimaryFailure        string `json:"primary_failure,omitempty"`
+	ConfirmationFailure   string `json:"confirmation_failure,omitempty"`
+	PrimaryElapsedMS      int64  `json:"primary_elapsed_ms,omitempty"`
+	ConfirmationElapsedMS int64  `json:"confirmation_elapsed_ms,omitempty"`
 }
 
 type State struct {

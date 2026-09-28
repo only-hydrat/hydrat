@@ -31,6 +31,25 @@ func TestLivenessChecksPrimaryAndIndependentConfirmation(t *testing.T) {
 	}
 }
 
+func TestLivenessReportsSafeFailureCodesAndDurations(t *testing.T) {
+	observer := Liveness{ClientFactory: func(string) *http.Client {
+		return &http.Client{Transport: gateRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			if request.URL.Host == "www.google.com" {
+				return nil, context.DeadlineExceeded
+			}
+			return &http.Response{StatusCode: http.StatusServiceUnavailable,
+				Body: io.NopCloser(bytes.NewReader(nil)), Header: make(http.Header)}, nil
+		})}
+	}}
+	result := observer.Observe(context.Background(), "127.0.0.1:11080")
+	if result.PrimaryOK || result.ConfirmationOK ||
+		result.PrimaryFailure != "timeout" ||
+		result.ConfirmationFailure != "http_503" ||
+		result.PrimaryElapsedMS < 0 || result.ConfirmationElapsedMS < 0 {
+		t.Fatalf("liveness diagnostics=%+v", result)
+	}
+}
+
 func TestLivenessDefaultsUseIndependentProviders(t *testing.T) {
 	hosts := make(chan string, 2)
 	observer := Liveness{ClientFactory: func(string) *http.Client {

@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -104,6 +105,35 @@ func TestActiveMonitorFirstCompleteFailureIsOnlySuspect(t *testing.T) {
 	assertNoActiveHardFailure(t, database, trigger, hardFailures)
 }
 
+func TestActiveMonitorFirstCompleteFailureRecordsDiagnosticWithoutFailover(t *testing.T) {
+	database, _ := activeMonitorStore(t)
+	candidate := mustActiveMonitorCandidate(t, database)
+	base := time.Unix(1_900_000_000, 0)
+	monitor := &ActiveMonitor{Store: database}
+	applyTimestampedActiveObservation(t, monitor, database, candidate,
+		health.Observation{PrimaryFailure: "timeout", PrimaryElapsedMS: 1830,
+			ConfirmationFailure: "timeout", ConfirmationElapsedMS: 1840},
+		base, base.Add(time.Second))
+	if row := mustCandidateHealth(t, database)[0]; !row.Available || row.ActiveHardFailure {
+		t.Fatalf("first suspect prematurely failed route: %+v", row)
+	}
+	events, err := database.ListEvents(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Kind != "candidate_liveness_suspect" {
+			continue
+		}
+		if !strings.Contains(event.Message, "primary=timeout/1830ms") ||
+			!strings.Contains(event.Message, "confirmation=timeout/1840ms") {
+			t.Fatalf("suspect omitted diagnostic: %q", event.Message)
+		}
+		return
+	}
+	t.Fatal("suspect diagnostic event missing")
+}
+
 func TestActiveMonitorProductionConfirmsHardFailureInsideOneProbeCycle(t *testing.T) {
 	database, candidateID := activeMonitorStore(t)
 	candidate := mustActiveMonitorCandidate(t, database)
@@ -126,6 +156,122 @@ func TestActiveMonitorProductionConfirmsHardFailureInsideOneProbeCycle(t *testin
 	if !ok || event.CandidateID != candidateID {
 		t.Fatalf("hard failure event=%+v ok=%t", event, ok)
 	}
+}
+
+func TestActiveMonitorFullRequalificationClearsOldActiveQuarantine(t *testing.T) {
+	database, candidateID := activeMonitorStore(t)
+	candidate := mustActiveMonitorCandidate(t, database)
+	base := time.Unix(1_900_000_000, 0)
+	monitor := &ActiveMonitor{Store: database, ConfirmCompleteFailureInCycle: true}
+	applyTimestampedActiveObservation(t, monitor, database, candidate,
+		health.Observation{}, base, base.Add(time.Second))
+	if row := mustCandidateHealth(t, database)[0]; row.Available {
+		t.Fatalf("hard failed route is still available: %+v", row)
+	}
+	full, err := database.ReserveCandidateObservation(context.Background(), candidate, store.ObservationFull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	qualifiedAt := base.Add(2 * time.Second)
+	_, commit, err := database.CommitCandidateProbeObservation(context.Background(), candidate, full,
+		store.ProbeTransition{Fingerprint: candidate.Fingerprint, CandidateID: candidateID,
+			SourceID: candidate.SourceID, Full: true, Success: true, Score: 90, At: qualifiedAt},
+		&store.CandidateHealth{CandidateID: candidateID, Score: 90, TCPQualified: true,
+			Available: true, UpdatedAt: qualifiedAt}, nil)
+	if err != nil || !commit.Accepted {
+		t.Fatalf("full requalification=%+v err=%v", commit, err)
+	}
+	applyTimestampedActiveObservation(t, monitor, database, candidate,
+		health.Observation{PrimaryOK: true, ConfirmationOK: true},
+		base.Add(3*time.Second), base.Add(4*time.Second))
+	if row := mustCandidateHealth(t, database)[0]; !row.Available || row.ActiveHardFailure {
+		t.Fatalf("old quarantine reversed fresh full proof: %+v", row)
+	}
+}
+
+func TestActiveMonitorCannotBypassNewerFailedFullServiceGate(t *testing.T) {
+	database, _ := activeMonitorStore(t)
+	candidate := mustActiveMonitorCandidate(t, database)
+	base := time.Unix(1_900_000_000, 0)
+	monitor := &ActiveMonitor{Store: database, ConfirmCompleteFailureInCycle: true}
+	applyTimestampedActiveObservation(t, monitor, database, candidate,
+		health.Observation{}, base, base.Add(time.Second))
+	full, err := database.ReserveCandidateObservation(context.Background(), candidate, store.ObservationFull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failedAt := base.Add(2 * time.Second)
+	_, commit, err := database.CommitCandidateProbeObservation(context.Background(), candidate, full,
+		store.ProbeTransition{Fingerprint: candidate.Fingerprint, CandidateID: candidate.ID,
+			SourceID: candidate.SourceID, Full: true, Success: false,
+			ErrorCode: "youtube_gate_failed", At: failedAt},
+		&store.CandidateHealth{CandidateID: candidate.ID, Score: 0,
+			Available: false, UpdatedAt: failedAt}, nil)
+	if err != nil || !commit.Accepted {
+		t.Fatalf("failed full gate=%+v err=%v", commit, err)
+	}
+	for index := 0; index < 3; index++ {
+		at := base.Add(6*time.Minute + time.Duration(index)*time.Second)
+		applyTimestampedActiveObservation(t, monitor, database, candidate,
+			health.Observation{PrimaryOK: true, ConfirmationOK: true},
+			at, at.Add(500*time.Millisecond))
+	}
+	if row := mustCandidateHealth(t, database)[0]; row.Available {
+		t.Fatalf("active liveness bypassed failed full service gate: %+v", row)
+	}
+}
+
+func TestActiveMonitorHardFailureEventRecordsSafeHTTPDiagnostics(t *testing.T) {
+	database, _ := activeMonitorStore(t)
+	candidate := mustActiveMonitorCandidate(t, database)
+	base := time.Unix(1_900_000_000, 0)
+	monitor := &ActiveMonitor{Store: database, ConfirmCompleteFailureInCycle: true}
+	applyTimestampedActiveObservation(t, monitor, database, candidate,
+		health.Observation{PrimaryFailure: "timeout", PrimaryElapsedMS: 1850,
+			ConfirmationFailure: "http_503", ConfirmationElapsedMS: 23},
+		base, base.Add(time.Second))
+	events, err := database.ListEvents(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Kind != "candidate_hard_failure" {
+			continue
+		}
+		if !strings.Contains(event.Message, "primary=timeout/1850ms") ||
+			!strings.Contains(event.Message, "confirmation=http_503/23ms") {
+			t.Fatalf("event omitted safe liveness diagnostics: %q", event.Message)
+		}
+		return
+	}
+	t.Fatal("hard failure event missing")
+}
+
+func TestActiveMonitorHardFailureEventRejectsUntrustedDiagnosticText(t *testing.T) {
+	database, _ := activeMonitorStore(t)
+	candidate := mustActiveMonitorCandidate(t, database)
+	base := time.Unix(1_900_000_000, 0)
+	monitor := &ActiveMonitor{Store: database, ConfirmCompleteFailureInCycle: true}
+	applyTimestampedActiveObservation(t, monitor, database, candidate,
+		health.Observation{PrimaryFailure: "secret.example/api-key", PrimaryElapsedMS: -3,
+			ConfirmationFailure: "http_503", ConfirmationElapsedMS: 99999999},
+		base, base.Add(time.Second))
+	events, err := database.ListEvents(context.Background(), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Kind != "candidate_hard_failure" {
+			continue
+		}
+		if strings.Contains(event.Message, "secret.example") ||
+			!strings.Contains(event.Message, "primary=unknown/0ms") ||
+			!strings.Contains(event.Message, "confirmation=http_503/30000ms") {
+			t.Fatalf("untrusted diagnostics in event: %q", event.Message)
+		}
+		return
+	}
+	t.Fatal("hard failure event missing")
 }
 
 func TestActiveMonitorRoutedDNSFailuresDoNotQuarantineLiveRoute(t *testing.T) {
@@ -408,7 +554,9 @@ func TestActiveMonitorNonOverlappingCompleteFailureConfirms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 || events[0].CandidateID != candidateID ||
+	if len(events) != 2 || events[0].Kind != "candidate_hard_failure" ||
+		events[1].Kind != "candidate_liveness_suspect" ||
+		events[0].CandidateID != candidateID ||
 		!events[0].CreatedAt.Equal(confirmCompletedAt) {
 		t.Fatalf("hard failure completion events=%+v want=%s", events, confirmCompletedAt)
 	}

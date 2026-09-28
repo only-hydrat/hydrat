@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/only-hydrat/hydrat/internal/health"
@@ -102,6 +104,24 @@ func (monitor *ActiveMonitor) applyReservedObservations(
 			proofFreshAfter = completedAt.Add(-monitor.ProofFreshness)
 		}
 		tracker := monitor.trackers[candidateID]
+		if tracker != nil && !row.Available {
+			state, err := monitor.Store.CandidateProbeState(ctx, candidate.Fingerprint)
+			if err != nil {
+				return err
+			}
+			if state.LastErrorCode != "active_hard_failure" {
+				// A newer full/fast qualification result superseded the active
+				// outage. Liveness alone must not bypass failed service gates.
+				monitor.clearCandidateActiveStateLocked(candidateID)
+				continue
+			}
+		}
+		if tracker != nil && row.Available && !row.ActiveHardFailure &&
+			!tracker.State(completedAt).Available {
+			// A newer full qualification restored the route. Do not let the
+			// previous active-only quarantine overwrite that fresh proof.
+			tracker = health.NewTracker(5*time.Minute, 3)
+		}
 		if tracker == nil && !row.Available {
 			// Only full qualification can restore a candidate that failed
 			// YouTube/ChatGPT/Telegram gates. Liveness recovers quarantines that it
@@ -150,6 +170,14 @@ func (monitor *ActiveMonitor) applyReservedObservations(
 				}
 				if commit.Accepted && !suspected {
 					monitor.hardFailureSuspects[candidateID] = completedAt
+					message := "first complete liveness failure; awaiting confirmation"
+					if details := safeLivenessFailureSummary(reserved.observation); details != "" {
+						message += "; " + details
+					}
+					_ = monitor.Store.AppendEvent(ctx, store.Event{
+						Kind: "candidate_liveness_suspect", CandidateID: candidateID,
+						Message: message, CreatedAt: completedAt,
+					})
 				}
 				continue
 			}
@@ -200,6 +228,9 @@ func (monitor *ActiveMonitor) applyReservedObservations(
 						monitor.availabilityFailureThreshold(),
 					)
 					delete(monitor.availabilityFailures, candidateID)
+				}
+				if details := safeLivenessFailureSummary(reserved.observation); details != "" {
+					message += "; " + details
 				}
 				_ = monitor.Store.AppendEvent(ctx, store.Event{
 					Kind: "candidate_hard_failure", CandidateID: candidateID,
@@ -284,6 +315,31 @@ func (monitor *ActiveMonitor) applyReservedObservations(
 		}
 	}
 	return nil
+}
+
+func safeLivenessFailureSummary(observation health.Observation) string {
+	if observation.PrimaryFailure == "" && observation.ConfirmationFailure == "" {
+		return ""
+	}
+	return fmt.Sprintf("primary=%s/%dms confirmation=%s/%dms",
+		safeLivenessFailureCode(observation.PrimaryFailure),
+		min(30_000, max(0, observation.PrimaryElapsedMS)),
+		safeLivenessFailureCode(observation.ConfirmationFailure),
+		min(30_000, max(0, observation.ConfirmationElapsedMS)))
+}
+
+func safeLivenessFailureCode(code string) string {
+	switch code {
+	case "timeout", "request_error", "network_error", "body_error":
+		return code
+	}
+	if strings.HasPrefix(code, "http_") && len(code) == len("http_503") {
+		if status, err := strconv.Atoi(code[len("http_"):]); err == nil &&
+			status >= 100 && status <= 599 {
+			return code
+		}
+	}
+	return "unknown"
 }
 
 // clearCandidateActiveStateLocked removes all in-memory observation state for

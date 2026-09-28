@@ -281,6 +281,19 @@ func recordCandidateProbeTx(
 			state.FullSuccessStreak = 0
 			state.Stale = true
 		}
+	case !transition.Success && transition.ErrorCode == "active_hard_failure" &&
+		state.Status == CandidateQualified:
+		// An active outage removes routing eligibility immediately, but one
+		// fresh full qualification is enough to confirm a previously proven
+		// route again. The health row remains unavailable until that proof.
+		state.Status = CandidatePreflight
+		state.FullSuccessStreak = 1
+		state.FailureStreak = 1
+		state.LastFastProbeAt = transition.At
+		state.LastFailureAt = transition.At
+		state.LastErrorCode = transition.ErrorCode
+		state.LastErrorMessage = transition.SafeErrorMessage
+		state.Stale = true
 	case !transition.Success:
 		if transition.Full {
 			state.LastFullProbeAt = transition.At

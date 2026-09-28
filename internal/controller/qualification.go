@@ -413,10 +413,7 @@ func (service QualificationService) runAgent(ctx context.Context, now time.Time)
 					attemptedPromotions[job.candidate.Fingerprint] = struct{}{}
 				}
 			}
-			sort.SliceStable(promotionJobs, func(i, j int) bool {
-				return udpQualified[promotionJobs[i].candidate.ID] &&
-					!udpQualified[promotionJobs[j].candidate.ID]
-			})
+			sortPromotionJobs(promotionJobs, udpQualified)
 			if err := service.runProbeJobs(
 				laneCtx, now, promotionJobs, tournament.ProbeFull, service.FullWorkers,
 			); err != nil {
@@ -519,6 +516,16 @@ func (service QualificationService) runAgent(ctx context.Context, now time.Time)
 			)
 		},
 	)
+}
+
+func sortPromotionJobs(jobs []qualificationJob, udpQualified map[string]bool) {
+	sort.SliceStable(jobs, func(i, j int) bool {
+		if jobs[i].recoveringActiveFailure != jobs[j].recoveringActiveFailure {
+			return jobs[i].recoveringActiveFailure
+		}
+		return udpQualified[jobs[i].candidate.ID] &&
+			!udpQualified[jobs[j].candidate.ID]
+	})
 }
 
 func runConcurrentQualificationLanes(

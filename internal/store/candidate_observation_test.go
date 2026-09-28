@@ -1712,6 +1712,68 @@ func TestObservationOrderingDelayedFullSuccessRejectedAfterActiveHardFailure(t *
 	}
 }
 
+func TestActiveFailureNeedsOneFreshFullProofToRestoreQualifiedRoute(t *testing.T) {
+	ctx := context.Background()
+	database, candidates := observationTestStore(t)
+	candidate := candidates["candidate"]
+	base := time.Unix(1_900_000_000, 0)
+	for index := 0; index < 2; index++ {
+		at := base.Add(time.Duration(index) * time.Second)
+		reservation, err := database.ReserveCandidateObservation(ctx, candidate, ObservationFull)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, commit, err := database.CommitCandidateProbeObservation(ctx, candidate, reservation,
+			ProbeTransition{Fingerprint: candidate.Fingerprint, CandidateID: candidate.ID,
+				SourceID: candidate.SourceID, Full: true, Success: true, Score: 90, At: at},
+			&CandidateHealth{CandidateID: candidate.ID, Score: 90, TCPQualified: true,
+				Available: true, UpdatedAt: at}, nil)
+		if err != nil || !commit.Accepted {
+			t.Fatalf("full commit=%+v err=%v", commit, err)
+		}
+	}
+	active, err := database.ReserveCandidateObservation(ctx, candidate, ObservationActive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, commit, err := database.CommitActiveVLESSHardFailureObservation(ctx, candidate, active, base.Add(2*time.Second))
+	if err != nil || !commit.Accepted {
+		t.Fatalf("active failure=%+v err=%v", commit, err)
+	}
+	state, err := database.CandidateProbeState(ctx, candidate.Fingerprint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := database.ListCandidateHealth(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != CandidatePreflight || state.FullSuccessStreak != 1 ||
+		len(rows) != 1 || rows[0].Available || !rows[0].ActiveHardFailure {
+		t.Fatalf("active failure state=%+v health=%+v", state, rows)
+	}
+	full, err := database.ReserveCandidateObservation(ctx, candidate, ObservationFull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := base.Add(3 * time.Second)
+	state, commit, err = database.CommitCandidateProbeObservation(ctx, candidate, full,
+		ProbeTransition{Fingerprint: candidate.Fingerprint, CandidateID: candidate.ID,
+			SourceID: candidate.SourceID, Full: true, Success: true, Score: 91, At: at},
+		&CandidateHealth{CandidateID: candidate.ID, Score: 91, TCPQualified: true,
+			Available: true, UpdatedAt: at}, nil)
+	if err != nil || !commit.Accepted {
+		t.Fatalf("recovery commit=%+v err=%v", commit, err)
+	}
+	rows, err = database.ListCandidateHealth(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Status != CandidateQualified || len(rows) != 1 || !rows[0].Available || rows[0].ActiveHardFailure {
+		t.Fatalf("recovered state=%+v health=%+v", state, rows)
+	}
+}
+
 func TestObservationOrderingDelayedActiveSuccessRejectedByNewerActiveFailure(t *testing.T) {
 	ctx := context.Background()
 	database, candidates := observationTestStore(t)

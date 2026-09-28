@@ -21,6 +21,64 @@ import (
 	"github.com/only-hydrat/hydrat/internal/tournament"
 )
 
+func TestQualificationPrioritizesActiveRecoveryBeforeCachedUDP(t *testing.T) {
+	jobs := []qualificationJob{
+		{candidate: store.Candidate{ID: "cached-udp"}},
+		{candidate: store.Candidate{ID: "active-recovery"}, recoveringActiveFailure: true},
+		{candidate: store.Candidate{ID: "ordinary"}},
+	}
+	sortPromotionJobs(jobs, map[string]bool{"cached-udp": true, "active-recovery": true})
+	if jobs[0].candidate.ID != "active-recovery" ||
+		jobs[1].candidate.ID != "cached-udp" || jobs[2].candidate.ID != "ordinary" {
+		t.Fatalf("promotion order=%+v", jobs)
+	}
+}
+
+func TestQualificationQueuesActiveHardFailureForFullRecovery(t *testing.T) {
+	ctx := context.Background()
+	database, candidates := qualificationStore(t, []store.CandidateInput{{
+		Kind: sources.KindVLESS, Label: "route", Fingerprint: "route",
+		Payload: "vless://route@example.net:443?security=tls", FailureDomain: "domain-route",
+	}})
+	candidate := candidates["route"]
+	base := time.Unix(1_900_000_000, 0)
+	if err := database.SaveCandidateHealth(ctx, store.CandidateHealth{
+		CandidateID: candidate.ID, Score: 90, TCPQualified: true,
+		UDPQualified: true, Available: true, UpdatedAt: base,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 2; index++ {
+		_, err := database.RecordCandidateProbe(ctx, store.ProbeTransition{
+			Fingerprint: candidate.Fingerprint, CandidateID: candidate.ID,
+			SourceID: candidate.SourceID, Full: true, Success: true,
+			Score: 90, At: base.Add(time.Duration(index) * time.Second),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	active, err := database.ReserveCandidateObservation(ctx, candidate, store.ObservationActive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, commit, err := database.CommitActiveVLESSHardFailureObservation(ctx, candidate, active, base.Add(2*time.Second))
+	if err != nil || !commit.Accepted {
+		t.Fatalf("hard failure=%+v err=%v", commit, err)
+	}
+	jobs, err := (QualificationService{Store: database, ResetWindow: 5 * time.Hour}).discoveryJobs(ctx,
+		[]store.Candidate{candidate}, base.Add(3*time.Second), tournament.ProbeFull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(jobs) != 1 || jobs[0].candidate.ID != candidate.ID ||
+		!jobs[0].recoveringActiveFailure || !jobs[0].oneSuccess {
+		state, _ := database.CandidateProbeState(ctx, candidate.Fingerprint)
+		domains, _ := database.ListFailureDomainStates(ctx)
+		t.Fatalf("active recovery jobs=%+v state=%+v domains=%+v", jobs, state, domains)
+	}
+}
+
 func TestQualificationObservationReservationOccursBeforeAgentRPC(t *testing.T) {
 	for _, stage := range []tournament.ProbeStage{
 		tournament.ProbeFast,

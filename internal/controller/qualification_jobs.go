@@ -14,12 +14,13 @@ import (
 )
 
 type qualificationJob struct {
-	candidate           store.Candidate
-	payload             string
-	reservation         store.ObservationReservation
-	priority            tournament.Priority
-	oneSuccess          bool
-	retryInfrastructure bool
+	candidate               store.Candidate
+	payload                 string
+	reservation             store.ObservationReservation
+	priority                tournament.Priority
+	oneSuccess              bool
+	recoveringActiveFailure bool
+	retryInfrastructure     bool
 }
 
 type qualificationResult struct {
@@ -136,7 +137,8 @@ func (service QualificationService) discoveryJobs(
 		}
 		jobs = append(jobs, qualificationJob{
 			candidate: candidate, payload: payload, priority: queuedJob.Priority,
-			oneSuccess: stateByFingerprint[candidate.Fingerprint].FullSuccessStreak == 1,
+			oneSuccess:              stateByFingerprint[candidate.Fingerprint].FullSuccessStreak == 1,
+			recoveringActiveFailure: stateByFingerprint[candidate.Fingerprint].LastErrorCode == "active_hard_failure",
 		})
 	}
 	if stage == tournament.ProbeFull {
