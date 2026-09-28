@@ -164,7 +164,7 @@ func Apply(policy Policy, current State, recent, learningSuccesses []Sample, obs
 	sample := sampleFromObservation(policy, current, observation)
 	window := latestWindow(policy.WindowSize, recent, sample)
 	availabilityWindow := latestWindow(policy.AvailabilityWindow, recent, sample)
-	availabilityFailures := countAvailabilityFailures(availabilityWindow)
+	availabilityFailures := countAvailabilityFailures(availabilityWindow, current.RecoveredAt)
 	availabilityDegraded := policy.AvailabilityFailures > 0 &&
 		availabilityFailures >= policy.AvailabilityFailures
 	current.WindowValid, current.WindowBad = windowCounts(window)
@@ -180,15 +180,16 @@ func Apply(policy Policy, current State, recent, learningSuccesses []Sample, obs
 	current.UpdatedAt = sample.At
 
 	nextStatus := previousStatus
-	if current.WindowBad >= policy.BadSamples || availabilityDegraded {
-		nextStatus = StatusDegraded
-	} else if previousStatus == StatusDegraded &&
-		current.WindowValid-current.WindowBad >= policy.RecoveryGoodSamples {
+	if previousStatus == StatusDegraded &&
+		current.WindowValid-current.WindowBad >= policy.RecoveryGoodSamples &&
+		current.WindowBad < policy.BadSamples {
 		if current.BaselineSamples >= policy.WindowSize {
 			nextStatus = StatusHealthy
 		} else {
 			nextStatus = StatusLearning
 		}
+	} else if current.WindowBad >= policy.BadSamples || availabilityDegraded {
+		nextStatus = StatusDegraded
 	}
 
 	if previousStatus != StatusDegraded && nextStatus != StatusDegraded {
@@ -233,10 +234,11 @@ func Apply(policy Policy, current State, recent, learningSuccesses []Sample, obs
 	}
 }
 
-func countAvailabilityFailures(window []Sample) int {
+func countAvailabilityFailures(window []Sample, recoveredAt time.Time) int {
 	count := 0
 	for _, sample := range window {
-		if sample.Bad && AvailabilityFailure(sample.Reason) {
+		if sample.Bad && AvailabilityFailure(sample.Reason) &&
+			(recoveredAt.IsZero() || sample.At.After(recoveredAt)) {
 			count++
 		}
 	}

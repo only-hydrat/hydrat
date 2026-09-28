@@ -338,7 +338,7 @@ func TestApplyRequiresTwoConfirmedDNSRouteFailures(t *testing.T) {
 	}
 }
 
-func TestApplyKeepsAvailabilityIncidentDegradedUntilLongWindowClears(t *testing.T) {
+func TestApplyKeepsAvailabilityIncidentDegradedUntilCleanRecoveryStreak(t *testing.T) {
 	policy := DefaultPolicy()
 	policy.WindowSize = 3
 	policy.BadSamples = 2
@@ -363,5 +363,40 @@ func TestApplyKeepsAvailabilityIncidentDegradedUntilLongWindowClears(t *testing.
 			TTFB: 180 * time.Millisecond, ThroughputMbps: 22, Bytes: 65536})
 	if recovered.State.Status != StatusHealthy {
 		t.Fatalf("cleared availability incident did not recover: %+v", recovered)
+	}
+}
+
+func TestApplyRecoversAfterFourCleanSamplesWithoutReusingOldAvailabilityFailures(t *testing.T) {
+	policy := DefaultPolicy()
+	now := time.Unix(1_800_000_200, 0)
+	state := State{Status: StatusDegraded, LastReason: ReasonRouteTimeout,
+		BaselineTTFB: 200 * time.Millisecond, BaselineThroughputMbps: 20,
+		BaselineSamples: policy.WindowSize}
+	recent := []Sample{
+		{At: now.Add(-6 * time.Minute), Valid: true, Bad: true, Reason: ReasonRouteTimeout},
+		{At: now.Add(-5 * time.Minute), Valid: true, Bad: true, Reason: ReasonRouteTimeout},
+	}
+	for minutes := 4; minutes >= 2; minutes-- {
+		recent = append(recent, Sample{At: now.Add(-time.Duration(minutes) * time.Minute), Valid: true, Success: true})
+	}
+	good := func(at time.Time) Observation {
+		return Observation{At: at, Success: true, TTFB: 180 * time.Millisecond,
+			ThroughputMbps: 22, Bytes: 65536}
+	}
+	recovered := Apply(policy, state, recent, nil, good(now))
+	if recovered.State.Status != StatusHealthy || recovered.State.LastReason != "" {
+		t.Fatalf("four clean samples did not recover route: %+v", recovered.State)
+	}
+	recent = append(recent, *recovered.Sample)
+	first := Apply(policy, recovered.State, recent, nil,
+		Observation{At: now.Add(time.Minute), ErrorCode: ReasonRouteTimeout})
+	if first.State.Status != StatusHealthy {
+		t.Fatalf("old failures caused immediate re-degradation: %+v", first.State)
+	}
+	recent = append(recent, *first.Sample)
+	second := Apply(policy, first.State, recent, nil,
+		Observation{At: now.Add(2 * time.Minute), ErrorCode: ReasonRouteTimeout})
+	if second.State.Status != StatusDegraded {
+		t.Fatalf("two new route failures were ignored: %+v", second.State)
 	}
 }

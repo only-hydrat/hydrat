@@ -939,7 +939,7 @@ func TestQoEMonitorEmitsRecoveryWithoutPlacementSignal(t *testing.T) {
 	for index := 0; index < 3; index++ {
 		seedQoEObservation(t, database, candidate, failedQoE(now.Add(-10*time.Minute+time.Duration(index)*time.Second), "qoe_route_timeout"))
 	}
-	for index := 0; index < 18; index++ {
+	for index := 0; index < 3; index++ {
 		seedQoEObservation(t, database, candidate, healthyQoE(now.Add(-3*time.Minute+time.Duration(index)*time.Second)))
 	}
 	beforeEvents, err := database.ListEvents(context.Background(), 10)
