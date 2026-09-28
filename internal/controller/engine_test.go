@@ -4218,6 +4218,51 @@ func TestEngineHardFailurePreservesEveryDNSOutboundWhileUsingMappedReserve(t *te
 	}
 }
 
+func TestEngineHardFailureOmitsClientDeletedAfterAppliedPlan(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(1_900_000_000, 0)
+	database, candidates := newEngineQoEFixture(t, now, []engineQoECandidateSpec{
+		{name: "primary", kind: sources.KindVLESS, score: 100, tcp: true, udp: true, failureDomain: "domain-a"},
+		{name: "reserve", kind: sources.KindVLESS, score: 90, tcp: true, udp: true, failureDomain: "domain-b"},
+	})
+	qualifyEngineReserveCandidates(t, database, now, candidates)
+	for _, client := range []struct{ id, address string }{
+		{"alice", "10.44.0.2/32"}, {"bob", "10.44.0.3/32"},
+	} {
+		putEngineQoEClient(t, database, client.id, client.address, now, false,
+			candidates["primary"].ID, candidates["primary"].ID)
+	}
+	agent := &engineAgent{}
+	engine := NewEngine(database, agent, nil, scheduler.New(scheduler.PolicyDefaults()),
+		[]byte("secret"), WithQoEEnabled(false), WithDNSResolver("9.9.9.9"),
+		WithActiveProbeInterval(time.Minute))
+	if err := engine.Cycle(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.plans) != 1 || len(agent.plans[0].Clients) != 2 {
+		t.Fatalf("initial plan clients=%+v", agent.plans)
+	}
+	if err := database.DeleteClient(ctx, "bob"); err != nil {
+		t.Fatal(err)
+	}
+	failure, err := database.ReserveCandidateObservation(ctx, candidates["primary"], store.ObservationActive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, commit, err := database.CommitCandidateActiveHardFailureObservation(
+		ctx, candidates["primary"], failure, now.Add(time.Second),
+	); err != nil || !commit.Accepted {
+		t.Fatalf("hard failure commit=%+v err=%v", commit, err)
+	}
+	if err := engine.CycleForReason(ctx, now.Add(2*time.Second), PlacementHardFailure); err != nil {
+		t.Fatal(err)
+	}
+	if len(agent.plans) != 2 || len(agent.plans[1].Clients) != 1 ||
+		agent.plans[1].Clients[0].ClientID != "alice" {
+		t.Fatalf("hard plan retained deleted client: %+v", agent.plans)
+	}
+}
+
 func TestRewritePlanDNSRepairsLegacyPlanWithMissingDNS(t *testing.T) {
 	legacy := dataplane.DesiredPlan{
 		Generation: 4,

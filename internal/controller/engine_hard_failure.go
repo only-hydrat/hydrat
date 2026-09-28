@@ -71,6 +71,20 @@ func (engine *Engine) hardFailureCycle(
 	if err != nil {
 		return err
 	}
+	currentClients := make(map[string]bool, len(clients))
+	for _, client := range clients {
+		currentClients[client.ID] = true
+	}
+	removedClientRoutes := false
+	remainingRoutes := plan.Clients[:0]
+	for _, route := range plan.Clients {
+		if currentClients[route.ClientID] {
+			remainingRoutes = append(remainingRoutes, route)
+		} else {
+			removedClientRoutes = true
+		}
+	}
+	plan.Clients = remainingRoutes
 	assignments, err := engine.store.ListAssignments(ctx)
 	if err != nil {
 		return err
@@ -89,7 +103,7 @@ func (engine *Engine) hardFailureCycle(
 	for index, route := range plan.Clients {
 		routeByClient[route.ClientID] = index
 	}
-	changed := false
+	changed := removedClientRoutes
 	requiresTorFence := false
 	for clientID, assignment := range assignmentByClient {
 		routeIndex, routed := routeByClient[clientID]
