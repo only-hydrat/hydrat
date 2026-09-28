@@ -547,6 +547,10 @@ func (scheduler *Scheduler) choose(
 	}
 	if currentID == "" {
 		if preferred != "" {
+			if alternative := scheduler.measuredAlternative(now, client.ID, network,
+				byID[preferred], eligible, domainLoad); alternative != "" {
+				return alternative
+			}
 			return preferred
 		}
 		return preferredOpen
@@ -613,7 +617,7 @@ func (scheduler *Scheduler) choose(
 		requiresEvacuation := qoe.RequiresEvacuation(current.QoEReason)
 		alternative := scheduler.qoeAlternative(
 			now, client.ID, network, current, candidates, domainLoad,
-			!requiresEvacuation,
+			!requiresEvacuation, true,
 		)
 		if alternative == "" {
 			scheduler.resetStreak(client.ID, network)
@@ -658,6 +662,12 @@ func (scheduler *Scheduler) choose(
 		qualityEligible = append(qualityEligible, candidate)
 	}
 	preferred = rendezvous(client.ID+":"+network, qualityEligible, load, domainLoad)
+	measuredImprovement := false
+	if alternative := scheduler.measuredAlternative(now, client.ID, network, current,
+		qualityEligible, domainLoad); alternative != "" {
+		preferred = alternative
+		measuredImprovement = true
+	}
 	if preferred == "" {
 		scheduler.resetStreak(client.ID, network)
 		return currentID
@@ -667,7 +677,8 @@ func (scheduler *Scheduler) choose(
 		return currentID
 	}
 	target := byID[preferred]
-	if current.Score <= 0 || target.Score < current.Score*(1+scheduler.policy.MinimumImprovement) || now.Sub(since) < scheduler.policy.MinimumDwell {
+	if (!measuredImprovement && (current.Score <= 0 || target.Score < current.Score*(1+scheduler.policy.MinimumImprovement))) ||
+		now.Sub(since) < scheduler.policy.MinimumDwell {
 		scheduler.resetStreak(client.ID, network)
 		return currentID
 	}
@@ -683,6 +694,23 @@ func (scheduler *Scheduler) choose(
 	}
 	scheduler.resetStreak(client.ID, network)
 	return preferred
+}
+
+func (scheduler *Scheduler) measuredAlternative(
+	now time.Time, clientID, network string, current Candidate,
+	eligible []Candidate, domainLoad map[string]int,
+) string {
+	if current.QoEStatus != qoe.StatusHealthy || !current.QoEFresh || current.QoEEffective <= 0 {
+		return ""
+	}
+	measured := make([]Candidate, 0, len(eligible))
+	for _, candidate := range eligible {
+		if candidate.QoEPromotionReady && candidate.ActiveEligible &&
+			candidate.ActiveFresh && candidate.Score >= current.Score*scheduler.policy.QualityTier {
+			measured = append(measured, candidate)
+		}
+	}
+	return scheduler.qoeAlternative(now, clientID, network, current, measured, domainLoad, true, false)
 }
 
 func (scheduler *Scheduler) candidateUsable(now time.Time, clientID, network string, candidate Candidate) bool {

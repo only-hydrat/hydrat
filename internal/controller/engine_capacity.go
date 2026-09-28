@@ -604,6 +604,16 @@ func (engine *Engine) cappedProspectiveScheduleCandidates(
 			&engine.bootstrapCoverageMu, &engine.bootstrapCoverageSearch,
 		)
 	}
+	engine.bootstrapCoverageMu.Lock()
+	searchPending := engine.bootstrapCoverageSearch != nil && !engine.bootstrapCoverageSearch.completed
+	engine.bootstrapCoverageMu.Unlock()
+	if searchPending {
+		return engine.cappedCriticalCandidates(
+			ctx, now, placement, clients, candidates,
+			&engine.bootstrapCoverageMu, &engine.bootstrapCoverageSearch,
+			evaluate, true, false, nil,
+		)
+	}
 	required := criticalCoverageRequirements(clients)
 	preferred := orderCriticalCoverageCandidates(clients, candidates)
 	if len(preferred) > engine.activeCriticalRouteLimit {
@@ -616,7 +626,11 @@ func (engine *Engine) cappedProspectiveScheduleCandidates(
 	cancelPreferred()
 	if preferredErr != nil {
 		if errors.Is(preferredErr, context.DeadlineExceeded) && ctx.Err() == nil {
-			return nil, (&criticalCoverageBudget{limit: engine.activeCriticalRouteLimit}).exhaustedError(nil)
+			return engine.cappedCriticalCandidates(
+				ctx, now, placement, clients, candidates,
+				&engine.bootstrapCoverageMu, &engine.bootstrapCoverageSearch,
+				evaluate, true, false, nil,
+			)
 		}
 		return nil, preferredErr
 	}

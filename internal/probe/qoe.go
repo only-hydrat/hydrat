@@ -276,8 +276,8 @@ func (measurer *QoEMeasurer) measure(
 				observation.ErrorCode = qoeDNSUnavailable
 				return observation
 			}
-			observation.ErrorCode = qoe.ReasonDNSRoute
-			return observation
+			// Client DNS exits directly from the gateway. Proxy-only DNS failure
+			// does not prove this candidate cannot serve HTTPS traffic.
 		}
 	}
 	var udpResult <-chan bool

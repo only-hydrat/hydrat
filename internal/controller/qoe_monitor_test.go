@@ -238,6 +238,38 @@ func TestQoEMonitorSelectsTopThreeTCPAndUDPStandbyVLESSDeduplicated(t *testing.T
 	}
 }
 
+func TestQoEMonitorRotatesStandbyBeyondTopThree(t *testing.T) {
+	database, candidates := qoeMonitorStore(t, []qoeCandidateSpec{
+		{name: "first", tcp: true, score: 100},
+		{name: "second", tcp: true, score: 95},
+		{name: "third", tcp: true, score: 90},
+		{name: "fourth", tcp: true, score: 85},
+	})
+	now := time.Unix(1_800_000_000, 0)
+	agent := &recordingQoEAgent{now: now}
+	monitor := &QoEMonitor{Store: database, Agent: agent, Policy: qoe.DefaultPolicy(),
+		Workers: 1, StandbyCandidates: 3}
+	for cycle := 0; cycle < 6; cycle++ {
+		agent.now = now.Add(time.Duration(cycle) * 31 * time.Second)
+		if err := monitor.Run(context.Background(), agent.now); err != nil {
+			t.Fatal(err)
+		}
+		if cycle < 5 {
+			for _, id := range agent.callIDs() {
+				if id == candidates["fourth"].ID {
+					t.Fatalf("rotated before third standby's full QoE window: cycle=%d calls=%v", cycle, agent.callIDs())
+				}
+			}
+		}
+	}
+	if got := mustQoESampleCount(t, database, candidates["third"].ID, 10); got < 5 {
+		t.Fatalf("third standby received only %d of 5 QoE samples", got)
+	}
+	if got := mustQoESampleCount(t, database, candidates["fourth"].ID, 10); got != 1 {
+		t.Fatalf("fourth standby samples=%d want 1", got)
+	}
+}
+
 func TestQoEMonitorSelectsAssignedAndWarmTorOnly(t *testing.T) {
 	database, candidates := qoeMonitorStore(t, []qoeCandidateSpec{
 		{name: "assigned-missing-warm", kind: sources.KindTorBridge, tcp: true, score: 100},

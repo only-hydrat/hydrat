@@ -231,7 +231,7 @@ Agent 分别管理后台 qualification 与 active-critical Xray 进程。服务 
 
 轮换会关闭新任务准入、排空或取消旧 lease，只停止受影响的子进程，启动替代进程，等待 API ready，递增 epoch 并重置探测控制状态。携带旧 epoch 的更改会故障关闭。安全轮换原因包括仅用于后台的 `probe_limit`，以及两个运行时均可能出现的 `rss_limit`、`fd_limit`、`readiness_failure`、`child_exit` 和 `cleanup_failure`。
 
-第一个目标快照在 ready 前同步规划。之后每个 active 周期立即探测最后一个有效快照，同时用一个有界 450 ms refresh 并行准备下一快照。刷新失败时保留最后有效快照。快照受 applied generation 栅栏保护；主路由或备用路由变化后，即使 full refresh 仍在运行，也会在下一 tick 从已提交 assignments 提升到 critical lane。两个重叠 generation 和 32 个 worker slot 可覆盖最多 16 条关键路由且不丢失 2 秒 tick。每个周期已执行两个独立 HTTP 检查；routed DNS 需要连续两个 active 周期。DNS 最坏有界流水线为两个 2 秒调度间隔 + 1900 ms 服务端 deadline + 75 ms response slack + 1 秒规划 + 800 ms hard placement = 7775 ms。双端点 HTTP 完全失败只需一个调度间隔，上限 5775 ms。重复 VLESS observation 会复用预热 slot；只有载荷变化、驱逐或 Xray epoch 变化才会重新配置。
+第一个目标快照在 ready 前同步规划。之后每个 active 周期立即探测最后一个有效快照，同时用一个有界 450 ms refresh 并行准备下一快照。刷新失败时保留最后有效快照。快照受 applied generation 栅栏保护；主路由或备用路由变化后，即使 full refresh 仍在运行，也会在下一 tick 从已提交 assignments 提升到 critical lane。两个重叠 generation 和 32 个 worker slot 可覆盖最多 16 条关键路由且不丢失 2 秒 tick。每个周期已执行两个独立 HTTP 检查；routed DNS 信号需要连续两个 active 周期确认，但单独的 DNS 失败不会触发 hard failover。当两个 HTTP 检查也失败时，DNS 最坏有界流水线为两个 2 秒调度间隔 + 1900 ms 服务端 deadline + 75 ms response slack + 1 秒规划 + 800 ms hard placement = 7775 ms。双端点 HTTP 完全失败只需一个调度间隔，上限 5775 ms。重复 VLESS observation 会复用预热 slot；只有载荷变化、驱逐或 Xray epoch 变化才会重新配置。
 
 Hard-placement deadline 到期会将 readiness 锁定为红色，并安排有界启动 normalization，而不会终止 controller。永久 apply invariant 失败或忽略取消的低优先级 placement 仍属致命错误，因为继续运行会允许不安全的并发更改。
 

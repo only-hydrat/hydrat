@@ -12,7 +12,7 @@ import (
 // Liveness performs two independent, small HTTP checks. A candidate is only
 // considered hard-down when both the primary and confirmation checks fail.
 type Liveness struct {
-	ClientFactory   func(string) *http.Client
+	ClientFactory func(string) *http.Client
 	// ResponseBudget leaves time in the caller deadline to serialize and return
 	// an observation. Zero preserves the background-probe default.
 	ResponseBudget  time.Duration
@@ -33,7 +33,7 @@ func (liveness Liveness) Observe(ctx context.Context, socksAddress string) healt
 	}
 	confirmationURL := liveness.ConfirmationURL
 	if confirmationURL == "" {
-		confirmationURL = "https://www.gstatic.com/generate_204"
+		confirmationURL = "https://cp.cloudflare.com/generate_204"
 	}
 	results := make(chan result, 2)
 	go func() {

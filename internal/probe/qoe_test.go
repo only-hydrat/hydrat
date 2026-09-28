@@ -293,7 +293,7 @@ func TestQoEMeasurerRejectsRouteWhenApplicationMajorityFailsButDirectControlPass
 	}
 }
 
-func TestQoEMeasurerRejectsRouteWhenClientDNSFailsButDirectControlPasses(t *testing.T) {
+func TestQoEMeasurerKeepsWorkingHTTPSWhenProxyDNSFails(t *testing.T) {
 	routeClient := qoeSuccessClient()
 	dnsFailure := errors.New("route DNS timeout")
 	var routeChecks, directChecks int
@@ -319,7 +319,7 @@ func TestQoEMeasurerRejectsRouteWhenClientDNSFailsButDirectControlPasses(t *test
 
 	got := measurer.Measure(context.Background(), "candidate", "127.0.0.1:1080")
 
-	if got.Success || got.Infrastructure || got.ErrorCode != qoe.ReasonDNSRoute {
+	if !got.Success || got.Infrastructure || got.ErrorCode != "" {
 		t.Fatalf("observation=%+v", got)
 	}
 	if routeChecks != 1 || directChecks != 1 {
@@ -327,6 +327,22 @@ func TestQoEMeasurerRejectsRouteWhenClientDNSFailsButDirectControlPasses(t *test
 	}
 	if _, exists := measurer.recentFailures["candidate"]; exists {
 		t.Fatal("DNS failure polluted bulk-endpoint circuit state")
+	}
+}
+
+func TestQoEMeasurerAcceptsHTTPSWhenAuxiliaryProxyDNSFails(t *testing.T) {
+	measurer := NewQoEMeasurer(QoEMeasurerConfig{
+		ClientFactory: func(string) *http.Client { return qoeSuccessClient() },
+		SampleBytes:   65536,
+		DNSResolver:   "1.1.1.1",
+		DNSRouteCheck: func(context.Context, string, string) error {
+			return errors.New("proxy blocks DNS-over-TCP")
+		},
+		DNSDirectCheck: func(context.Context, string) error { return nil },
+	})
+	got := measurer.Measure(context.Background(), "candidate", "127.0.0.1:1080")
+	if !got.Success || got.Infrastructure || got.ErrorCode != "" || got.Bytes != 65536 {
+		t.Fatalf("working HTTPS route rejected by auxiliary DNS check: %+v", got)
 	}
 }
 
@@ -359,7 +375,7 @@ func TestQoEMeasurerTreatsSharedDNSFailureAsInfrastructure(t *testing.T) {
 	}
 }
 
-func TestQoEMeasurerRejectsRouteWhenSelectedResolverAndRouteFailButAlternateControlPasses(t *testing.T) {
+func TestQoEMeasurerKeepsHTTPSWhenAlternateDirectResolverPasses(t *testing.T) {
 	resolvers := []string{"1.1.1.1", "8.8.8.8", "9.9.9.9"}
 	var selected string
 	var directResolvers []string
@@ -385,7 +401,7 @@ func TestQoEMeasurerRejectsRouteWhenSelectedResolverAndRouteFailButAlternateCont
 
 	got := measurer.Measure(context.Background(), "candidate", "127.0.0.1:1080")
 
-	if got.Success || got.Infrastructure || got.ErrorCode != qoe.ReasonDNSRoute {
+	if !got.Success || got.Infrastructure || got.ErrorCode != "" {
 		t.Fatalf("observation=%+v", got)
 	}
 	if selected == "" || len(directResolvers) != len(resolvers) {
@@ -393,7 +409,7 @@ func TestQoEMeasurerRejectsRouteWhenSelectedResolverAndRouteFailButAlternateCont
 	}
 }
 
-func TestQoEMeasurerChecksDNSBeforeBulkTransfer(t *testing.T) {
+func TestQoEMeasurerChecksHTTPSAfterProxyDNSFailure(t *testing.T) {
 	var bulkRequests atomic.Int32
 	routeClient := &http.Client{Transport: qoeRoundTripFunc(func(*http.Request) (*http.Response, error) {
 		bulkRequests.Add(1)
@@ -401,6 +417,8 @@ func TestQoEMeasurerChecksDNSBeforeBulkTransfer(t *testing.T) {
 	})}
 	measurer := NewQoEMeasurer(QoEMeasurerConfig{
 		ClientFactory: func(string) *http.Client { return routeClient },
+		DirectClient:  qoeSuccessClient(),
+		SampleBytes:   65536,
 		DNSResolvers:  []string{"1.1.1.1", "8.8.8.8"},
 		DNSRouteCheck: func(context.Context, string, string) error {
 			return errors.New("route DNS timeout")
@@ -410,11 +428,11 @@ func TestQoEMeasurerChecksDNSBeforeBulkTransfer(t *testing.T) {
 
 	got := measurer.Measure(context.Background(), "candidate", "127.0.0.1:1080")
 
-	if got.Infrastructure || got.ErrorCode != qoe.ReasonDNSRoute {
+	if got.Infrastructure || got.ErrorCode != qoe.ReasonRouteTransport {
 		t.Fatalf("observation=%+v", got)
 	}
-	if bulkRequests.Load() != 0 {
-		t.Fatalf("bulk requests=%d want DNS gate first", bulkRequests.Load())
+	if bulkRequests.Load() != 1 {
+		t.Fatalf("bulk requests=%d want real HTTPS evidence", bulkRequests.Load())
 	}
 }
 

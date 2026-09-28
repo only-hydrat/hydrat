@@ -1113,6 +1113,72 @@ func TestHealthyOptimizationNeedsThreeSnapshotsThirtyPercentAndMovesOneClient(t 
 	}
 }
 
+func TestHealthyOptimizationUsesMeasuredSpeedAfterThreeSnapshots(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	placement := New(PolicyDefaults())
+	client := Client{ID: "client", LastTraffic: now,
+		Assignment: Assignment{TCP: "slow", TCPSince: now.Add(-time.Hour)}}
+	candidates := []Candidate{
+		{ID: "slow", Protocol: ProtocolVLESS, Score: 84, TCPQualified: true,
+			ActiveEligible: true, ActiveFresh: true, QoETracked: true,
+			QoEStatus: qoe.StatusHealthy, QoEFresh: true, QoEEffective: 2 * time.Second,
+			QoEPromotionReady: true},
+		{ID: "fast", Protocol: ProtocolVLESS, Score: 82, TCPQualified: true,
+			ActiveEligible: true, ActiveFresh: true, QoETracked: true,
+			QoEStatus: qoe.StatusHealthy, QoEFresh: true, QoEEffective: 500 * time.Millisecond,
+			QoEPromotionReady: true},
+	}
+	for snapshot := 1; snapshot <= 3; snapshot++ {
+		client.LastTraffic = now.Add(time.Duration(snapshot) * time.Second)
+		result := placement.Schedule(client.LastTraffic, []Client{client}, candidates)
+		want := "slow"
+		if snapshot == 3 {
+			want = "fast"
+		}
+		if got := result.Assignments[client.ID].TCP; got != want {
+			t.Fatalf("snapshot %d selected %q, want %q: %+v", snapshot, got, want, result)
+		}
+	}
+}
+
+func TestNewAssignmentPrefersMeasuredFastRoute(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	candidates := []Candidate{
+		{ID: "slow", Protocol: ProtocolVLESS, Score: 84, TCPQualified: true,
+			ActiveEligible: true, ActiveFresh: true, QoETracked: true,
+			QoEStatus: qoe.StatusHealthy, QoEFresh: true, QoEEffective: 2 * time.Second,
+			QoEPromotionReady: true},
+		{ID: "fast", Protocol: ProtocolVLESS, Score: 82, TCPQualified: true,
+			ActiveEligible: true, ActiveFresh: true, QoETracked: true,
+			QoEStatus: qoe.StatusHealthy, QoEFresh: true, QoEEffective: 500 * time.Millisecond,
+			QoEPromotionReady: true},
+	}
+	result := New(PolicyDefaults()).Schedule(now, []Client{{ID: "client"}}, candidates)
+	if got := result.Assignments["client"].TCP; got != "fast" {
+		t.Fatalf("new route=%q want fast", got)
+	}
+}
+
+func TestHealthyQualityMovePrefersFastestProvenRouteAcrossDomains(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	policy := PolicyDefaults()
+	policy.RequiredSnapshots = 1
+	placement := New(policy)
+	client := Client{ID: "client", LastTraffic: now,
+		Assignment: Assignment{TCP: "slow", TCPSince: now.Add(-time.Hour)}}
+	base := Candidate{Protocol: ProtocolVLESS, Score: 82, TCPQualified: true,
+		ActiveEligible: true, ActiveFresh: true, QoETracked: true,
+		QoEStatus: qoe.StatusHealthy, QoEFresh: true, QoEPromotionReady: true}
+	slow, sameDomain, otherDomain := base, base, base
+	slow.ID, slow.FailureDomain, slow.QoEEffective = "slow", "domain-a", 3*time.Second
+	sameDomain.ID, sameDomain.FailureDomain, sameDomain.QoEEffective = "fast", "domain-a", 500*time.Millisecond
+	otherDomain.ID, otherDomain.FailureDomain, otherDomain.QoEEffective = "medium", "domain-b", 2*time.Second
+	result := placement.Schedule(now, []Client{client}, []Candidate{slow, sameDomain, otherDomain})
+	if got := result.Assignments[client.ID].TCP; got != "fast" {
+		t.Fatalf("selected %q instead of fastest proven route", got)
+	}
+}
+
 func TestSuppressedQualityCyclePreservesPeriodicImprovementEvidence(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	policy := PolicyDefaults()

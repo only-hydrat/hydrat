@@ -275,7 +275,8 @@ primary or reserve is promoted to the critical lane from the committed
 assignments on the next tick even while a full refresh is still running. Two
 overlapping generations and 32 worker slots cover up to 16 critical routes
 without dropping a 2-second tick. Each cycle already performs two independent
-HTTP checks; routed DNS requires two consecutive active cycles. The bounded
+HTTP checks; routed DNS requires two consecutive active cycles but cannot
+trigger hard failover by itself. When both HTTP checks also fail, the bounded
 worst-case DNS pipeline envelope is two 2-second scheduling intervals +
 1900 ms server deadline + 75 ms response slack + 1 second planning +
 800 ms hard placement = 7775 ms. A complete two-endpoint HTTP failure needs

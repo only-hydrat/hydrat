@@ -1916,6 +1916,39 @@ func TestProspectiveCoverageUsesPreferredBoundedPoolBeforeSubsetSearch(t *testin
 	}
 }
 
+func TestProspectiveCoverageResumesAfterPreferredPoolTimesOut(t *testing.T) {
+	now := time.Unix(1_900_000_000, 0)
+	clients := []scheduler.Client{{ID: "alice"}}
+	candidates := make([]scheduler.Candidate, 37)
+	for index := range candidates {
+		candidates[index] = scheduler.Candidate{
+			ID: fmt.Sprintf("route-%03d", index), Protocol: scheduler.ProtocolVLESS,
+			TCPQualified: true, UDPQualified: true, ReserveEligible: true,
+		}
+	}
+	engine := NewEngine(nil, nil, nil, nil, nil, WithActiveCriticalRouteLimit(16))
+	engine.bootstrapCoverageEvaluate = func(ctx context.Context, _ time.Time, _ *scheduler.Scheduler,
+		_ []scheduler.Client, pool []scheduler.Candidate, required []string,
+	) (criticalCoverageEvaluation, error) {
+		if len(pool) == 16 {
+			<-ctx.Done()
+			return criticalCoverageEvaluation{}, ctx.Err()
+		}
+		satisfied := make(map[string]bool, len(required))
+		for _, requirement := range required {
+			satisfied[requirement] = true
+		}
+		return criticalCoverageEvaluation{satisfied: satisfied,
+			witnessIDs: []string{"route-000", "route-001"}}, nil
+	}
+	pool, err := engine.cappedProspectiveScheduleCandidates(
+		context.Background(), now, scheduler.New(scheduler.PolicyDefaults()), clients, candidates,
+	)
+	if err != nil || len(pool) != 2 {
+		t.Fatalf("preferred timeout prevented retained coverage: pool=%d err=%v", len(pool), err)
+	}
+}
+
 func TestEngineCycleReusesFullEvaluationWhenWitnessExceedsLimit(t *testing.T) {
 	now := time.Unix(1_900_000_000, 0)
 	candidates := []scheduler.Candidate{{ID: "a"}, {ID: "b"}, {ID: "c"}}
@@ -3484,7 +3517,7 @@ func TestProspectiveCoverageCachesCompletedIDsAndRevalidatesEvidenceOrCardinalit
 		pool []scheduler.Candidate,
 		required []string,
 	) (criticalCoverageEvaluation, error) {
-		if calls.Add(1) == 1 {
+		if calls.Add(1) <= 2 {
 			select {
 			case <-time.After(470 * time.Millisecond):
 			case <-ctx.Done():

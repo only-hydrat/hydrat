@@ -357,6 +357,7 @@ func (scheduler *Scheduler) qoeAlternative(
 	candidates []Candidate,
 	domainLoad map[string]int,
 	requireSpeedup bool,
+	preferDistinctDomain bool,
 ) string {
 	qualified := make([]Candidate, 0, len(candidates))
 	currentDomain := candidateDomain(current)
@@ -379,9 +380,11 @@ func (scheduler *Scheduler) qoeAlternative(
 		qualified = proved
 	}
 	hasDistinctDomain := false
-	for _, candidate := range qualified {
-		hasDistinctDomain = hasDistinctDomain ||
-			candidateDomain(candidate) != currentDomain
+	if preferDistinctDomain {
+		for _, candidate := range qualified {
+			hasDistinctDomain = hasDistinctDomain ||
+				candidateDomain(candidate) != currentDomain
+		}
 	}
 	selected := ""
 	var selectedEffective time.Duration

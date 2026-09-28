@@ -51,10 +51,13 @@ type QoEMonitor struct {
 	runMu sync.Mutex
 	mu    sync.Mutex
 
-	inFlight    map[string]bool
-	lastAttempt map[string]time.Time
-	lastPrune   time.Time
-	udpSignals  map[string]udpSignalState
+	inFlight         map[string]bool
+	lastAttempt      map[string]time.Time
+	lastPrune        time.Time
+	udpSignals       map[string]udpSignalState
+	standbyRotation  int
+	standbySamples   int
+	standbyExploring string
 }
 
 type udpSignalState struct {
@@ -240,10 +243,33 @@ func (monitor *QoEMonitor) Run(ctx context.Context, now time.Time) error {
 		return standby[left].Score > standby[right].Score
 	})
 	standbyLimit := monitor.standbyCandidates()
-	tcpSelected, udpSelected := 0, 0
+	tcpTotal, udpTotal := 0, 0
 	for _, health := range standby {
-		eligibleTCP := health.TCPQualified && tcpSelected < standbyLimit
-		eligibleUDP := health.UDPQualified && udpSelected < standbyLimit
+		if health.TCPQualified {
+			tcpTotal++
+		}
+		if health.UDPQualified {
+			udpTotal++
+		}
+	}
+	rotation := monitor.standbyRotation
+	tcpRank, udpRank := 0, 0
+	tcpSelected, udpSelected := 0, 0
+	explorationKey := ""
+	explorationScheduled := true
+	for _, health := range standby {
+		eligibleTCP := health.TCPQualified && tcpSelected < standbyLimit &&
+			(tcpRank < standbyLimit-1 ||
+				tcpRank == standbyLimit-1+rotation%max(1, tcpTotal-standbyLimit+1))
+		eligibleUDP := health.UDPQualified && udpSelected < standbyLimit &&
+			(udpRank < standbyLimit-1 ||
+				udpRank == standbyLimit-1+rotation%max(1, udpTotal-standbyLimit+1))
+		if health.TCPQualified {
+			tcpRank++
+		}
+		if health.UDPQualified {
+			udpRank++
+		}
 		if !eligibleTCP && !eligibleUDP {
 			continue
 		}
@@ -253,9 +279,27 @@ func (monitor *QoEMonitor) Run(ctx context.Context, now time.Time) error {
 		if eligibleUDP {
 			udpSelected++
 		}
+		exploring := (eligibleTCP && tcpRank >= standbyLimit) ||
+			(eligibleUDP && udpRank >= standbyLimit)
 		selectCandidate(health.CandidateID, monitor.activeInterval())
+		if exploring {
+			explorationKey += health.CandidateID + "\x00"
+			explorationScheduled = explorationScheduled && seen[health.CandidateID]
+		}
 		if tcpSelected >= standbyLimit && udpSelected >= standbyLimit {
 			break
+		}
+	}
+	if explorationKey != "" && explorationScheduled {
+		if monitor.standbyExploring != explorationKey {
+			monitor.standbyExploring = explorationKey
+			monitor.standbySamples = 0
+		}
+		// Give the explorer a full QoE window before sampling the next route.
+		monitor.standbySamples++
+		if monitor.standbySamples >= monitor.policy().WindowSize {
+			monitor.standbyRotation++
+			monitor.standbySamples = 0
 		}
 	}
 

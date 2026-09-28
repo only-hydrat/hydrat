@@ -276,7 +276,8 @@ primary или reserve на следующем tick переводится из 
 critical lane, даже если полный refresh ещё выполняется. Два перекрывающихся
 generation и 32 worker slot покрывают до 16 critical routes без пропуска
 двухсекундного tick. Каждый цикл уже выполняет две независимые HTTP-проверки;
-routed DNS требует двух последовательных active-циклов. Худший bounded pipeline
+routed DNS требует двух последовательных active-циклов, но сам по себе не
+вызывает hard failover. При одновременном отказе обеих HTTP-проверок худший bounded pipeline
 DNS: два интервала планирования по 2 секунды + server deadline 1900 ms + response
 slack 75 ms + planning 1 секунда + hard placement 800 ms = 7775 ms. Полный
 двухendpointный HTTP failure требует одного интервала и ограничен 5775 ms.

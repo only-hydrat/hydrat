@@ -13,21 +13,37 @@ import (
 func TestLivenessChecksPrimaryAndIndependentConfirmation(t *testing.T) {
 	var requests atomic.Int32
 	observer := Liveness{
-		PrimaryURL: "https://cp.cloudflare.com/generate_204",
+		PrimaryURL: "https://www.google.com/generate_204",
 		ClientFactory: func(string) *http.Client {
-		return &http.Client{Transport: gateRoundTripFunc(func(request *http.Request) (*http.Response, error) {
-			requests.Add(1)
-			status := http.StatusNoContent
-			if request.URL.Host == "cp.cloudflare.com" {
-				status = http.StatusServiceUnavailable
-			}
-			return &http.Response{StatusCode: status, Body: io.NopCloser(bytes.NewReader(nil)), Header: make(http.Header)}, nil
-		})}
-	}}
+			return &http.Client{Transport: gateRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+				requests.Add(1)
+				status := http.StatusNoContent
+				if request.URL.Host == "www.google.com" {
+					status = http.StatusServiceUnavailable
+				}
+				return &http.Response{StatusCode: status, Body: io.NopCloser(bytes.NewReader(nil)), Header: make(http.Header)}, nil
+			})}
+		}}
 
 	result := observer.Observe(context.Background(), "127.0.0.1:11080")
 	if result.PrimaryOK || !result.ConfirmationOK || requests.Load() != 2 {
 		t.Fatalf("observation=%+v requests=%d", result, requests.Load())
+	}
+}
+
+func TestLivenessDefaultsUseIndependentProviders(t *testing.T) {
+	hosts := make(chan string, 2)
+	observer := Liveness{ClientFactory: func(string) *http.Client {
+		return &http.Client{Transport: gateRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+			hosts <- request.URL.Host
+			return &http.Response{StatusCode: http.StatusNoContent,
+				Body: io.NopCloser(bytes.NewReader(nil)), Header: make(http.Header)}, nil
+		})}
+	}}
+	observer.Observe(context.Background(), "127.0.0.1:11080")
+	first, second := <-hosts, <-hosts
+	if first == second || (first != "cp.cloudflare.com" && second != "cp.cloudflare.com") {
+		t.Fatalf("defaults do not include independent Cloudflare confirmation: %q %q", first, second)
 	}
 }
 

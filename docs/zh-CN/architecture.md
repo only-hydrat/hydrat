@@ -13,7 +13,7 @@ Hydrat 由两个运行在不同网络命名空间中的 Go 进程组成。
 
 客户端 DNS 与外部 DNS 上游彼此分离。`wireguard.dns` 将 `10.44.0.1` 写入新客户端配置，`xray.dns_resolvers` 定义公共地址池（`1.1.1.1`、`9.9.9.9`、`8.8.8.8`）；单值 `xray.dns_resolver` 仅为兼容性保留。Gateway 命名空间中的独立受监管 dnsmasq 提供该地址：它并行请求独立上游、缓存响应、快速重试丢失的请求，并可在短暂上游故障时返回旧缓存。DNS 不经过客户端已分配的有状态 Xray handler，因此不会随单个 VLESS/XHTTP 会话一起冻结。代价是 DNS 从 gateway 容器直接出站，与客户端选择的 TCP/Tor 路由无关。拦截和配置仅存在于 gateway 命名空间内的 nftables/dnsmasq，不会修改主机或其他容器的 DNS。上游地址不得指回 WireGuard gateway。
 
-每条 TCP 路由的 QoE 检查仍会通过该路由的独立 SOCKS 代理，向确定选择的上游发送 DNS-over-TCP。发生错误时，直连控制请求会并行检查整个地址池：至少一个上游可达即可证明是路由的用户侧退化；整个池都故障时不会降低单条路由评分。
+QoE 还会通过路由的 SOCKS 代理发送辅助 DNS-over-TCP 请求。失败时，直连控制会检查上游地址池。整个 DNS 池故障属于基础设施问题；如果该路由的 HTTPS 仍正常，仅代理 DNS 失败不会使路由失格，因为客户端 DNS 直接从 gateway 出站。
 
 该命名空间中的透明策略路由使用 Hydrat 专属优先级 `10000`。如果相同优先级存在不兼容的外部规则，bootstrap 会停止，但不会删除或修改该规则。
 
@@ -61,7 +61,7 @@ Tor discovery 使用一个串行 worker，从替换 explorer 到 readiness 和�
 
 Full probe 检查 Cloudflare/GStatic、YouTube、ChatGPT、OpenAI API、Telegram Web、Telegram MTProto、Instagram 和有界测速。对于标准 `xtls-rprx-vision`，Hydrat 将客户端 outbound 的 flow 设为 `xtls-rprx-vision-udp443`，以允许 UDP/443。VLESS 路由只有通过 SOCKS5 UDP association 与 YouTube 完成两次新的 QUIC/TLS 握手后才具备 UDP 资格；DNS-over-UDP 不作为 UDP 资格证明。YouTube 关卡要求 `https://www.youtube.com/generate_204` 成功响应；Instagram 要求 `https://www.instagram.com/` 返回低于 400；ChatGPT 不跟随重定向，接受任意 2xx/3xx 或真实源站 403/429；OpenAI 访问 `https://api.openai.com/v1/models`，接受 401、204 或 200；Telegram 同时要求 Web 可用和有效 MTProto 响应。
 
-Active probe 使用独立高优先级 Xray slot、1900 ms deadline 和 75 ms response slack。后台锦标赛不会阻塞故障切换，网络超时能及时作为候选 hard failure 返回。两个独立 HTTP 检查在一个周期内并行运行，不需要第二个外层周期。同一 active slot 还会并行进行轻量 routed-DNS 检查，不执行大文件下载、应用关卡或 QUIC。相邻两次 DNS 失败且 direct control 成功，即确认路由故障。
+Active probe 使用独立高优先级 Xray slot、1900 ms deadline 和 75 ms response slack。后台锦标赛不会阻塞故障切换，网络超时能及时作为候选 hard failure 返回。Google 和 Cloudflare 的两个独立 HTTP 检查在一个周期内并行运行，不需要第二个外层周期。同一 active slot 还会进行轻量 routed-DNS 检查，不执行大文件下载、应用关卡或 QUIC。单独的 DNS 失败不能证明客户端路由不可用；两个 HTTP 检查也必须失败。
 
 ## QoE 控制循环
 
