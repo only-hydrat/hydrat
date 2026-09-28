@@ -78,9 +78,11 @@ QoE 在独立的串行运行循环中执行，不占用 qualification 或 active
 
 TCP/UDP 重叠按 candidate ID 去重，同一候选的第二个 in-flight probe 会合并。下一轮从本轮完成后重新计时，因此慢探测不会积压过期 tick。持续 active 的单条路由约使用 720 MiB/天，idle 路由约 72 MiB/天，promotion standby 约 720 MiB/天，未分配的 `degraded` 路由恢复探测最多 360 MiB/天。同一路由上的客户端数量不会倍增这些估算。
 
-持久化状态机包含 `learning`、`healthy`、`degraded`。前 5 次成功测量建立中位数 baseline。无论是否已建立 baseline，吞吐量 <1 Mbit/s 都是坏样本；建立前，TTFB >3 秒也属于严重样本。建立后，候选连接/TLS/请求/超时/响应体失败，或 TTFB 同时 >1500 ms 且 >2.5 倍 baseline，或吞吐量 <35% baseline，均为坏样本。基础设施样本不进入窗口。最近 5 个有效样本中 3 个坏样本进入 `degraded`，5 个中 4 个好样本恢复。并行的 20 个有效样本可用性窗口在出现两次路由/服务失败后退化，即使失败之间有成功；恢复需等待计数降至 2 以下。好样本以 EWMA 0.1 更新 healthy baseline，`degraded` 时冻结。历史保留 168 小时并分批删除；状态与触发样本在同一 SQLite 事务写入。
+持久化状态机包含 `learning`、`healthy`、`degraded`。前 5 次成功测量建立中位数 baseline。无论是否已建立 baseline，吞吐量 <1 Mbit/s 都是坏样本；建立前，TTFB >3 秒也属于严重样本。建立后，候选连接/TLS/请求/超时/响应体失败，或 TTFB 同时 >1500 ms 且 >2.5 倍 baseline，或吞吐量 <35% baseline，均为坏样本。基础设施样本不进入窗口。最近 5 个有效样本中 3 个坏样本进入 `degraded`，5 个中 4 个好样本恢复。并行的 20 个有效样本可用性窗口在连续三次路由/服务失败后将路由降级；一次成功测量会重置失败序列。恢复要求最近 5 次中有 4 次好样本。好样本以 EWMA 0.1 更新 healthy baseline，`degraded` 时冻结。历史保留 168 小时并分批删除；状态与触发样本在同一 SQLite 事务写入。
 
 对于 VLESS，QoE 会与 TCP 测量并行通过 SOCKS5 UDP association 对 YouTube 执行两次 QUIC/TLS 检查。标准 `xtls-rprx-vision` 的客户端 outbound 使用 flow `xtls-rprx-vision-udp443`。连续两次失败只移除 `UDPQualified`，保留 TCP 评分、可用性和新鲜度；连续三次成功恢复 UDP 资格。每次变化立即触发 UDP 重规划，但不迁移正常 TCP，也不重连 WireGuard peer。独立迟滞循环可避免单个数据包丢失引发切换。
+
+启用 QoE 时，full probe 中单次 QUIC 检查失败不会取消此前已确认的 UDP 资格；QoE 会独立确认该传输故障。关闭 QoE 时，full probe 仍会立即更新 UDP 资格。
 
 端点隔离用于区分路由退化与测量器故障。错误 HTTP 状态、异常长度和 malformed response 会立即归类为基础设施问题。路由 transport/TLS/request 错误后执行有界 direct control：直连成功即可确认候选失败。并发 control request 会合并为 single-flight，健康结果复用 30 秒。如果 direct control 失败同时伴随 30 秒内至少三个不同候选的错误，circuit 打开。打开的 circuit 会跳过 QoE 工作且不改变窗口，并在端点恢复前每分钟最多发起一次 direct recovery。服务特定的 active liveness 继续运行。
 

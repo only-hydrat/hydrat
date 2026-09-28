@@ -82,7 +82,7 @@ qoe:
   bad_samples: 3
   recovery_good_samples: 4
   availability_window: 20
-  availability_failures: 2
+  availability_failures: 3
   initial_ttfb_limit: 3s
   ttfb_floor: 1500ms
   ttfb_multiplier: 2.5

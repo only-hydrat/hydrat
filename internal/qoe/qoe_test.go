@@ -312,8 +312,30 @@ func TestApplyIgnoresSeparatedAvailabilityFailures(t *testing.T) {
 	}
 }
 
+func TestDefaultPolicyRequiresThreeConsecutiveRouteTimeouts(t *testing.T) {
+	policy := DefaultPolicy()
+	state := State{Status: StatusHealthy, BaselineSamples: policy.WindowSize,
+		BaselineTTFB: time.Second, BaselineThroughputMbps: 10}
+	var recent []Sample
+	for attempt := 1; attempt <= 3; attempt++ {
+		decision := Apply(policy, state, recent, nil, Observation{
+			At:        time.Unix(1_900_000_000+int64(attempt), 0),
+			ErrorCode: ReasonRouteTimeout,
+		})
+		state = decision.State
+		recent = append(recent, *decision.Sample)
+		if attempt < 3 && state.Status != StatusHealthy {
+			t.Fatalf("route degraded after only %d correlated timeouts", attempt)
+		}
+	}
+	if state.Status != StatusDegraded {
+		t.Fatalf("three consecutive timeouts did not degrade route: %+v", state)
+	}
+}
+
 func TestApplyRequiresTwoConfirmedDNSRouteFailures(t *testing.T) {
 	policy := DefaultPolicy()
+	policy.AvailabilityFailures = 2
 	state := State{
 		Status: StatusHealthy, BaselineTTFB: 200 * time.Millisecond,
 		BaselineThroughputMbps: 20, BaselineSamples: policy.WindowSize,
@@ -366,6 +388,7 @@ func TestApplyKeepsAvailabilityIncidentDegradedUntilCleanRecoveryStreak(t *testi
 
 func TestApplyRecoversAfterFourCleanSamplesWithoutReusingOldAvailabilityFailures(t *testing.T) {
 	policy := DefaultPolicy()
+	policy.AvailabilityFailures = 2
 	now := time.Unix(1_800_000_200, 0)
 	state := State{Status: StatusDegraded, LastReason: ReasonRouteTimeout,
 		BaselineTTFB: 200 * time.Millisecond, BaselineThroughputMbps: 20,

@@ -58,11 +58,14 @@ type ProbeTransition struct {
 	Full                  bool
 	Success               bool
 	InfrastructureFailure bool
-	ErrorCode             string
-	SafeErrorMessage      string
-	Score                 float64
-	At                    time.Time
-	ResetWindow           time.Duration
+	// DeferUDPDemotion leaves a previously qualified UDP route in service after
+	// one isolated QUIC miss; the QoE monitor confirms UDP failure separately.
+	DeferUDPDemotion bool
+	ErrorCode        string
+	SafeErrorMessage string
+	Score            float64
+	At               time.Time
+	ResetWindow      time.Duration
 }
 
 type WorkingPoolMembership struct {
@@ -254,6 +257,7 @@ func recordCandidateProbeTx(
 		state.WindowStartedAt = transition.At
 	}
 	softFailureRetained := false
+	wasQualified := state.Status == CandidateQualified || state.Status == CandidateDraining
 
 	switch {
 	case transition.InfrastructureFailure:
@@ -357,6 +361,20 @@ func recordCandidateProbeTx(
 	if health != nil {
 		if health.CandidateID != transition.CandidateID {
 			return CandidateProbeState{}, errors.New("candidate health identity does not match probe transition")
+		}
+		if transition.Full && transition.Success && transition.DeferUDPDemotion &&
+			wasQualified && health.TCPQualified && !health.UDPQualified {
+			var previousUDP bool
+			err := tx.QueryRowContext(ctx, `
+				SELECT udp_qualified FROM candidate_health
+				WHERE candidate_id=? AND observation_placeholder=0
+			`, health.CandidateID).Scan(&previousUDP)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return CandidateProbeState{}, err
+			}
+			if previousUDP {
+				health.UDPQualified = true
+			}
 		}
 		if softFailureRetained && transition.ErrorCode == "score_too_low" {
 			result, err := tx.ExecContext(ctx, `

@@ -127,7 +127,7 @@ func DefaultPolicy() Policy {
 		BadSamples:            3,
 		RecoveryGoodSamples:   4,
 		AvailabilityWindow:    20,
-		AvailabilityFailures:  2,
+		AvailabilityFailures:  3,
 		SampleBytes:           262144,
 		Deadline:              10 * time.Second,
 		InitialTTFBLimit:      3 * time.Second,

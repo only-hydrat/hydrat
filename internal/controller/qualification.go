@@ -39,6 +39,7 @@ type CandidateProbeAgent interface {
 
 type QualificationService struct {
 	Store          *store.Store
+	QoEEnabled     bool
 	Agent          CandidateProbeAgent
 	VLESS          VLESSQualifier
 	Tor            TorProfileAgent
@@ -177,6 +178,7 @@ func (service QualificationService) Run(ctx context.Context, now time.Time) erro
 				ThroughputMbps: result.Metrics.ThroughputMbps, PacketDropRatio: result.Metrics.PacketDropRatio, CreatedAt: now,
 			}
 			transition.Success = available
+			transition.DeferUDPDemotion = service.QoEEnabled && available && !udpQualified
 			transition.ErrorCode = errorCode
 			transition.Score = score
 			_, _, err := service.Store.CommitCandidateProbeObservation(

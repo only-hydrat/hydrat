@@ -462,6 +462,8 @@ func (service QualificationService) recordProbeResult(
 		UpdatedAt:      now,
 	}
 	transition.Success = available
+	transition.DeferUDPDemotion = service.QoEEnabled &&
+		result.job.candidate.Kind == sources.KindVLESS && available && !udpQualified
 	transition.Score = score
 	transition.ErrorCode = errorCode
 	sample := store.ProbeSample{

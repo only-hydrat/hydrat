@@ -487,8 +487,10 @@ func TestQoEMonitorQueuedProbeUsesActualCompletionTime(t *testing.T) {
 		response:       candidateFailureResponse(sweepAt.Add(-24*time.Hour), "qoe_route_timeout"),
 		customResponse: true,
 	}
+	policy := qoe.DefaultPolicy()
+	policy.AvailabilityFailures = 2
 	monitor := &QoEMonitor{
-		Store: database, Agent: agent, Policy: qoe.DefaultPolicy(), Workers: 1,
+		Store: database, Agent: agent, Policy: policy, Workers: 1,
 		StandbyCandidates: 2,
 	}
 	clock := &controlledQoEClock{now: sweepAt}
@@ -822,7 +824,9 @@ func TestQoEMonitorEmitsDegradationTransitionAndSignalsOnce(t *testing.T) {
 	seedQoEObservation(t, database, candidate, failedQoE(now.Add(-31*time.Second), "qoe_route_timeout"))
 	trigger := make(chan struct{}, 2)
 	agent := &recordingQoEAgent{now: now, response: candidateFailureResponse(now, "qoe_route_timeout"), customResponse: true}
-	monitor := &QoEMonitor{Store: database, Agent: agent, Policy: qoe.DefaultPolicy(), Workers: 1, Trigger: trigger}
+	policy := qoe.DefaultPolicy()
+	policy.AvailabilityFailures = 2
+	monitor := &QoEMonitor{Store: database, Agent: agent, Policy: policy, Workers: 1, Trigger: trigger}
 	if err := monitor.Run(context.Background(), now); err != nil {
 		t.Fatal(err)
 	}
@@ -886,7 +890,9 @@ func TestQoEMonitorRollsBackTransitionWhenEventWriteFailsAndRetries(t *testing.T
 
 	trigger := make(chan struct{}, 2)
 	agent := &recordingQoEAgent{now: now, response: candidateFailureResponse(now, "qoe_route_timeout"), customResponse: true}
-	monitor := &QoEMonitor{Store: database, Agent: agent, Policy: qoe.DefaultPolicy(), Workers: 1, Trigger: trigger}
+	policy := qoe.DefaultPolicy()
+	policy.AvailabilityFailures = 2
+	monitor := &QoEMonitor{Store: database, Agent: agent, Policy: policy, Workers: 1, Trigger: trigger}
 	if err := monitor.Run(context.Background(), now); err == nil || !strings.Contains(err.Error(), "forced qoe event failure") {
 		t.Fatalf("Run error=%v, want forced event failure", err)
 	}

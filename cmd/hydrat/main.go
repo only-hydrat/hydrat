@@ -790,6 +790,7 @@ func runController(ctx context.Context, cfg config.Config) error {
 	promotionTrigger := make(chan struct{}, 1)
 	qualification := controller.QualificationService{
 		Store:            database,
+		QoEEnabled:       cfg.QoE.Enabled,
 		Agent:            agent,
 		Tor:              torProfiles,
 		DisallowRUEgress: cfg.Routing.DisallowRUEgress,

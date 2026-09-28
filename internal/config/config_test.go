@@ -22,7 +22,7 @@ func TestQoEDefaultsMatchApprovedPolicy(t *testing.T) {
 		cfg.QoE.StandbyCandidates != 3 || cfg.QoE.SampleBytes != 262144 ||
 		cfg.QoE.WindowSize != 5 || cfg.QoE.BadSamples != 3 ||
 		cfg.QoE.RecoveryGoodSamples != 4 || cfg.QoE.AvailabilityWindow != 20 ||
-		cfg.QoE.AvailabilityFailures != 2 || cfg.QoE.InitialTTFBLimit != 3*time.Second ||
+		cfg.QoE.AvailabilityFailures != 3 || cfg.QoE.InitialTTFBLimit != 3*time.Second ||
 		cfg.QoE.TTFBFloor != 1500*time.Millisecond || cfg.QoE.TTFBMultiplier != 2.5 ||
 		cfg.QoE.InitialThroughputMbps != 1.0 || cfg.QoE.ThroughputRatio != 0.35 ||
 		cfg.QoE.AlternativeSpeedup != 1.3 || cfg.QoE.Retention != 168*time.Hour {

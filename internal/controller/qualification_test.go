@@ -34,6 +34,77 @@ func TestQualificationPrioritizesActiveRecoveryBeforeCachedUDP(t *testing.T) {
 	}
 }
 
+func TestQualifiedUDPRouteWaitsForQoEConfirmationOfSingleQUICMiss(t *testing.T) {
+	ctx := context.Background()
+	database, candidates := qualificationStore(t, []store.CandidateInput{{
+		Kind: sources.KindVLESS, Label: "route", Fingerprint: "route",
+		Payload: "vless://route@example.net:443?security=tls",
+	}})
+	candidate := candidates["route"]
+	base := time.Unix(1_900_000_000, 0)
+	for index := 0; index < 2; index++ {
+		_, err := database.RecordCandidateProbe(ctx, store.ProbeTransition{
+			Fingerprint: candidate.Fingerprint, CandidateID: candidate.ID,
+			SourceID: candidate.SourceID, Full: true, Success: true,
+			Score: 90, At: base.Add(time.Duration(index) * time.Second),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := database.SaveCandidateHealth(ctx, store.CandidateHealth{
+		CandidateID: candidate.ID, Score: 90, TCPQualified: true,
+		UDPQualified: true, Available: true, UpdatedAt: base,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service := QualificationService{Store: database, QoEEnabled: true}
+	response := agentapi.ProbeResponse{Success: true,
+		Evaluation: health.Evaluation{Score: 90, TCPQualified: true, UDPQualified: false},
+	}
+	miss := func(at time.Time) {
+		t.Helper()
+		reservation, err := database.ReserveCandidateObservation(ctx, candidate, store.ObservationFull)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = service.recordProbeResult(ctx, at, qualificationResult{
+			job: qualificationJob{candidate: candidate}, reservation: reservation,
+			response: response,
+		}, tournament.ProbeFull)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	udp := func() bool {
+		t.Helper()
+		rows, err := database.ListCandidateHealth(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rows[0].UDPQualified
+	}
+	miss(base.Add(2 * time.Second))
+	if !udp() {
+		t.Fatal("single full-probe QUIC miss removed qualified UDP route before QoE confirmation")
+	}
+	if _, err := database.UpdateCandidateUDPQualified(ctx, candidate.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	miss(base.Add(3 * time.Second))
+	if udp() {
+		t.Fatal("full probe overrode confirmed QoE UDP failure")
+	}
+	if _, err := database.UpdateCandidateUDPQualified(ctx, candidate.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	service.QoEEnabled = false
+	miss(base.Add(4 * time.Second))
+	if udp() {
+		t.Fatal("without QoE monitor, full-probe UDP failure must disqualify UDP")
+	}
+}
+
 func TestQualificationQueuesActiveHardFailureForFullRecovery(t *testing.T) {
 	ctx := context.Background()
 	database, candidates := qualificationStore(t, []store.CandidateInput{{
