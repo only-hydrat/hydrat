@@ -283,7 +283,7 @@ func TestAvailabilityFailureSeparatesOutageFromQualityDegradation(t *testing.T) 
 	}
 }
 
-func TestApplyDegradesOnSeparatedAvailabilityFailures(t *testing.T) {
+func TestApplyIgnoresSeparatedAvailabilityFailures(t *testing.T) {
 	policy := DefaultPolicy()
 	policy.WindowSize = 3
 	policy.BadSamples = 2
@@ -299,14 +299,12 @@ func TestApplyDegradesOnSeparatedAvailabilityFailures(t *testing.T) {
 		{Valid: true, Success: true},
 		{Valid: true, Success: true},
 		{Valid: true, Success: true},
-		{Valid: true, Bad: true, Reason: ReasonRouteTLS},
+		{Valid: true, Success: true},
 	}
 	decision := Apply(policy, state, recent, nil, Observation{
-		At: time.Unix(1_800_000_100, 0), Success: true,
-		TTFB: 180 * time.Millisecond, ThroughputMbps: 22, Bytes: 65536,
+		At: time.Unix(1_800_000_100, 0), ErrorCode: ReasonRouteTLS,
 	})
-	if decision.State.Status != StatusDegraded ||
-		decision.State.LastReason != ReasonRouteTLS {
+	if decision.State.Status != StatusHealthy || decision.State.LastReason != ReasonRouteTLS {
 		t.Fatalf("decision=%+v", decision)
 	}
 	if decision.State.WindowBad != 1 {

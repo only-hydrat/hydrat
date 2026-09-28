@@ -138,7 +138,7 @@ func TestRecordCandidateQoELoadsLongAvailabilityWindow(t *testing.T) {
 	database, candidate := qoeCandidateStore(t)
 	policy := qoe.DefaultPolicy()
 	policy.WindowSize = 3
-	policy.BadSamples = 2
+	policy.BadSamples = 3
 	policy.RecoveryGoodSamples = 3
 	policy.AvailabilityWindow = 6
 	policy.AvailabilityFailures = 2
@@ -160,8 +160,22 @@ func TestRecordCandidateQoELoadsLongAvailabilityWindow(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if state.Status != qoe.StatusDegraded || state.LastReason != qoe.ReasonRouteTLS {
-		t.Fatalf("state=%+v", state)
+	if state.Status != qoe.StatusHealthy || state.WindowBad != 1 {
+		t.Fatalf("separated failures degraded route: state=%+v", state)
+	}
+	for _, observation := range []qoe.Observation{
+		{At: time.Unix(1_800_000_206, 0), ErrorCode: qoe.ReasonRouteTimeout},
+		{At: time.Unix(1_800_000_207, 0), ErrorCode: qoe.ReasonRouteTLS},
+	} {
+		var err error
+		state, _, err = database.RecordCandidateQoE(context.Background(), candidate, observation, policy)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if state.Status != qoe.StatusDegraded || state.LastReason != qoe.ReasonRouteTLS ||
+		state.WindowBad != 2 {
+		t.Fatalf("consecutive failures did not degrade route: state=%+v", state)
 	}
 }
 

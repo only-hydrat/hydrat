@@ -258,7 +258,8 @@ func (store *Store) CommitCandidateProbeObservation(
 	if reservation.Stage == ObservationFull &&
 		!transition.Success &&
 		!transition.InfrastructureFailure &&
-		!(transition.ErrorCode == "score_too_low" && state.Status == CandidateQualified) {
+		!(softFullFailureCode(transition.ErrorCode) &&
+			(state.Status == CandidateQualified || state.Status == CandidateDraining)) {
 		result, err := tx.ExecContext(ctx, `
 			UPDATE candidate_health
 			SET failure_generation=failure_generation+1

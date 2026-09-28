@@ -253,7 +253,7 @@ func recordCandidateProbeTx(
 	if state.WindowStartedAt.IsZero() {
 		state.WindowStartedAt = transition.At
 	}
-	softScoreRetained := false
+	softFailureRetained := false
 
 	switch {
 	case transition.InfrastructureFailure:
@@ -265,16 +265,19 @@ func recordCandidateProbeTx(
 		state.LastErrorCode = transition.ErrorCode
 		state.LastErrorMessage = transition.SafeErrorMessage
 	case transition.Full && !transition.Success &&
-		transition.ErrorCode == "score_too_low" && state.Status == CandidateQualified:
+		softFullFailureCode(transition.ErrorCode) &&
+		(state.Status == CandidateQualified || state.Status == CandidateDraining):
 		state.FailureStreak++
 		state.LastFullProbeAt = transition.At
 		state.LastFailureAt = transition.At
 		state.LastErrorCode = transition.ErrorCode
 		state.LastErrorMessage = transition.SafeErrorMessage
-		state.LastScore = transition.Score
-		state.ConservativeScore = minFloat(state.ConservativeScore, transition.Score)
+		if transition.ErrorCode == "score_too_low" {
+			state.LastScore = transition.Score
+			state.ConservativeScore = minFloat(state.ConservativeScore, transition.Score)
+		}
 		if state.FailureStreak < 3 {
-			softScoreRetained = true
+			softFailureRetained = true
 		} else {
 			state.Status = CandidateUnknown
 			state.FailureStreak = 0
@@ -355,7 +358,7 @@ func recordCandidateProbeTx(
 		if health.CandidateID != transition.CandidateID {
 			return CandidateProbeState{}, errors.New("candidate health identity does not match probe transition")
 		}
-		if softScoreRetained {
+		if softFailureRetained && transition.ErrorCode == "score_too_low" {
 			result, err := tx.ExecContext(ctx, `
 				UPDATE candidate_health
 				SET score=?, latency_ms=?, throughput_mbps=?, updated_at=?
@@ -368,8 +371,10 @@ func recordCandidateProbeTx(
 			if affected, err := result.RowsAffected(); err != nil || affected != 1 {
 				return CandidateProbeState{}, errors.New("qualified candidate health is missing")
 			}
-		} else if err := saveCandidateHealthTx(ctx, tx, *health); err != nil {
-			return CandidateProbeState{}, err
+		} else if !softFailureRetained {
+			if err := saveCandidateHealthTx(ctx, tx, *health); err != nil {
+				return CandidateProbeState{}, err
+			}
 		}
 	}
 	if sample != nil {
@@ -381,6 +386,17 @@ func recordCandidateProbeTx(
 		}
 	}
 	return state, nil
+}
+
+func softFullFailureCode(code string) bool {
+	switch code {
+	case "score_too_low", "full_probe_failed", "liveness_failed",
+		"chatgpt_web_failed", "openai_api_failed", "telegram_web_failed",
+		"telegram_mtproto_failed", "youtube_web_failed", "instagram_web_failed":
+		return true
+	default:
+		return false
+	}
 }
 
 func (store *Store) ReplaceWorkingPool(ctx context.Context, active, draining []string) error {

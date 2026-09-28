@@ -92,7 +92,10 @@ func livenessRequest(ctx context.Context, client *http.Client, endpoint string) 
 func (liveness Liveness) client(ctx context.Context, socksAddress string) *http.Client {
 	timeout := 3 * time.Second
 	if deadline, ok := ctx.Deadline(); ok {
-		if remaining := time.Until(deadline); remaining > 0 && remaining < timeout {
+		// Critical probes explicitly reserve response time and may use a
+		// deadline longer than the background probe's three-second default.
+		if remaining := time.Until(deadline); remaining > 0 &&
+			(remaining < timeout || liveness.ResponseBudget > 0) {
 			responseBudget := liveness.ResponseBudget
 			if responseBudget <= 0 {
 				responseBudget = 100 * time.Millisecond

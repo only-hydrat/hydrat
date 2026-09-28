@@ -2168,6 +2168,66 @@ func TestQualifiedRouteSurvivesTwoLowScoreFullProbes(t *testing.T) {
 	}
 }
 
+func TestQualifiedRouteSurvivesTransientFullServiceGateFailure(t *testing.T) {
+	ctx := context.Background()
+	database, candidates := observationTestStore(t)
+	candidate := candidates["candidate"]
+	base := time.Unix(1_900_000_000, 0)
+	commit := func(at time.Time, success bool, code string) CandidateProbeState {
+		t.Helper()
+		reservation, err := database.ReserveCandidateObservation(ctx, candidate, ObservationFull)
+		if err != nil {
+			t.Fatal(err)
+		}
+		score := 90.0
+		if !success {
+			score = 0
+		}
+		state, result, err := database.CommitCandidateProbeObservation(ctx, candidate, reservation,
+			ProbeTransition{Fingerprint: candidate.Fingerprint, CandidateID: candidate.ID,
+				SourceID: candidate.SourceID, Full: true, Success: success,
+				ErrorCode: code, Score: score, At: at},
+			&CandidateHealth{CandidateID: candidate.ID, Score: score,
+				TCPQualified: success, UDPQualified: success, Available: success,
+				UpdatedAt: at}, nil)
+		if err != nil || !result.Accepted {
+			t.Fatalf("commit=%+v err=%v", result, err)
+		}
+		return state
+	}
+	commit(base, true, "")
+	commit(base.Add(time.Minute), true, "")
+	for attempt := 1; attempt <= 2; attempt++ {
+		state := commit(base.Add(time.Duration(attempt+1)*time.Minute), false,
+			"chatgpt_web_failed")
+		health, generation := observationHealth(t, database, candidate.ID)
+		if state.Status != CandidateQualified || state.FailureStreak != attempt ||
+			state.LastScore != 90 || state.ConservativeScore != 90 || health.Score != 90 ||
+			!health.Available || !health.TCPQualified || !health.UDPQualified ||
+			generation != 0 {
+			t.Fatalf("transient gate failure #%d: state=%+v health=%+v generation=%d",
+				attempt, state, health, generation)
+		}
+	}
+	state := commit(base.Add(4*time.Minute), false, "chatgpt_web_failed")
+	health, generation := observationHealth(t, database, candidate.ID)
+	if state.Status == CandidateQualified || health.Available || generation != 1 {
+		t.Fatalf("confirmed gate failure: state=%+v health=%+v generation=%d",
+			state, health, generation)
+	}
+	commit(base.Add(5*time.Minute), true, "")
+	state = commit(base.Add(6*time.Minute), true, "")
+	if state.Status != CandidateQualified {
+		t.Fatalf("route did not requalify: %+v", state)
+	}
+	state = commit(base.Add(7*time.Minute), false, "invalid_candidate")
+	health, generation = observationHealth(t, database, candidate.ID)
+	if state.Status == CandidateQualified || health.Available || generation != 2 {
+		t.Fatalf("invalid candidate was retained: state=%+v health=%+v generation=%d",
+			state, health, generation)
+	}
+}
+
 func observationHealth(
 	t *testing.T,
 	database *Store,

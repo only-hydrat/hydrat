@@ -92,8 +92,8 @@ type Transition struct {
 }
 
 // AvailabilityFailure reports reasons that prove the assigned route cannot
-// currently serve required client traffic. They trigger evacuation after the
-// QoE window confirms degradation; performance-only reasons retain hysteresis.
+// currently serve required client traffic. Consecutive failures trigger
+// evacuation; isolated failures separated by healthy samples do not add up.
 func AvailabilityFailure(reason string) bool {
 	switch reason {
 	case ReasonApplicationGates,
@@ -235,12 +235,16 @@ func Apply(policy Policy, current State, recent, learningSuccesses []Sample, obs
 }
 
 func countAvailabilityFailures(window []Sample, recoveredAt time.Time) int {
+	// Count only the trailing outage streak. The wider history window still
+	// bounds the evidence, but old failures must not poison a healthy route.
 	count := 0
-	for _, sample := range window {
-		if sample.Bad && AvailabilityFailure(sample.Reason) &&
-			(recoveredAt.IsZero() || sample.At.After(recoveredAt)) {
-			count++
+	for index := len(window) - 1; index >= 0; index-- {
+		sample := window[index]
+		if !sample.Bad || !AvailabilityFailure(sample.Reason) ||
+			(!recoveredAt.IsZero() && !sample.At.After(recoveredAt)) {
+			break
 		}
+		count++
 	}
 	return count
 }

@@ -111,3 +111,12 @@ func TestLivenessReservesTimeToReportHardFailure(t *testing.T) {
 		t.Fatalf("critical HTTP timeout %s does not reserve a stable response budget before %s", criticalClient.Timeout, deadline)
 	}
 }
+
+func TestCriticalLivenessUsesConfiguredFourSecondDeadline(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	client := (Liveness{ResponseBudget: 25 * time.Millisecond}).client(ctx, "127.0.0.1:1")
+	if client.Timeout < 3900*time.Millisecond || client.Timeout > 4*time.Second {
+		t.Fatalf("critical HTTP timeout=%s, want nearly the full caller deadline", client.Timeout)
+	}
+}
