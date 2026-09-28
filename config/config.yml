@@ -49,8 +49,8 @@ probes:
   full_deadline: 20s
   tor_fast_deadline: 5m
   tor_full_deadline: 6m
-  active_interval: 2s
-  active_deadline: 1900ms
+  active_interval: 3s
+  active_deadline: 4s
   active_response_slack: 75ms
   active_proof_grace: 15s
   gate_endpoints:

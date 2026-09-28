@@ -13,5 +13,5 @@ const (
 	// favors non-overlapping observations and steady client traffic over the
 	// earlier sub-second polling pressure.
 	ActiveTargetPlanning = time.Second
-	EndToEnd             = 8 * time.Second
+	EndToEnd             = 12 * time.Second
 )

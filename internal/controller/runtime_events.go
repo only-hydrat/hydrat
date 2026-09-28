@@ -199,8 +199,10 @@ func (runtime Runtime) watchEvents(
 			nonBlockingSignal(activeSignal)
 		case <-runtime.HardFailures:
 			enqueue(PlacementHardFailure)
+			nonBlockingSignal(qualificationSignal)
 		case <-runtime.HardFailureEvents.Wake():
 			enqueue(PlacementHardFailure)
+			nonBlockingSignal(qualificationSignal)
 		case <-manualReassigns:
 			enqueue(PlacementManual)
 		case <-clientChanges:

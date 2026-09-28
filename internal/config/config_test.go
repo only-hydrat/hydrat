@@ -241,8 +241,8 @@ func TestLoadAppliesHydratV2Defaults(t *testing.T) {
 		loaded.Probes.TorFullDeadline != 6*time.Minute {
 		t.Fatalf("Tor deadlines=%s/%s", loaded.Probes.TorFastDeadline, loaded.Probes.TorFullDeadline)
 	}
-	if loaded.Probes.ActiveInterval != 2*time.Second ||
-		loaded.Probes.ActiveDeadline != 1900*time.Millisecond ||
+	if loaded.Probes.ActiveInterval != 3*time.Second ||
+		loaded.Probes.ActiveDeadline != 4*time.Second ||
 		loaded.Probes.ActiveResponseSlack != 75*time.Millisecond ||
 		loaded.Probes.ActiveProofGrace != 15*time.Second {
 		t.Fatalf("active probe defaults = %+v", loaded.Probes)
@@ -353,8 +353,8 @@ func TestFailoverConfigRejectsUnsafeBudgetAndCapacity(t *testing.T) {
 
 func TestActiveFailureFreshnessCoversValidatedFailoverPipeline(t *testing.T) {
 	cfg := Defaults()
-	if got := cfg.ActiveFailureFreshness(); got != 7775*time.Millisecond {
-		t.Fatalf("active failure freshness=%s want=7.775s", got)
+	if got := cfg.ActiveFailureFreshness(); got != 11875*time.Millisecond {
+		t.Fatalf("active failure freshness=%s want=11.875s", got)
 	}
 }
 
@@ -395,7 +395,7 @@ func TestQoEPromotionFreshnessCoversTwoCadencesAndProbe(t *testing.T) {
 func TestActiveProofFreshnessUsesLongerComputedPipeline(t *testing.T) {
 	cfg := Defaults()
 	cfg.Probes.ActiveInterval = 20 * time.Second
-	want := 43775 * time.Millisecond
+	want := 45875 * time.Millisecond
 	if got := cfg.ActiveFailureFreshness(); got != want {
 		t.Fatalf("active failure freshness=%s want=%s", got, want)
 	}

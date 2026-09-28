@@ -56,6 +56,54 @@ func TestRuntimeClientLifecycleEnqueuesPlacement(t *testing.T) {
 	}
 }
 
+func TestRuntimeHardFailureWakesQualificationAndPlacement(t *testing.T) {
+	for _, typed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("typed=%t", typed), func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			ordinaryGate := make(chan struct{})
+			close(ordinaryGate)
+			legacy := make(chan struct{}, 1)
+			mailbox := NewHardFailureMailbox()
+			qualification := make(chan struct{}, 1)
+			placed := make(chan PlacementReason, 1)
+			runtime := Runtime{
+				SourceRefreshInterval: time.Hour,
+				QualificationInterval: time.Hour,
+				PlacementInterval:     time.Hour,
+				ActiveInterval:        time.Hour,
+			}
+			if typed {
+				runtime.HardFailureEvents = mailbox
+			} else {
+				runtime.HardFailures = legacy
+			}
+			go runtime.watchEvents(ctx, ordinaryGate, make(chan struct{}, 1),
+				qualification, make(chan struct{}, 1),
+				func(reason PlacementReason) { placed <- reason })
+			if typed {
+				mailbox.Publish(HardFailureEvent{CandidateID: "candidate",
+					DetectedAt: time.Now(), Deadline: time.Now().Add(time.Second)})
+			} else {
+				legacy <- struct{}{}
+			}
+			select {
+			case reason := <-placed:
+				if reason != PlacementHardFailure {
+					t.Fatalf("placement reason=%s", reason)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("hard-failure placement not queued")
+			}
+			select {
+			case <-qualification:
+			case <-time.After(time.Second):
+				t.Fatal("hard failure did not wake qualification")
+			}
+		})
+	}
+}
+
 func TestRuntimeRepairsProfilesBeforeStartupAndOnInterval(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -3403,11 +3451,17 @@ func TestRuntimeCancelsPendingHardFailureBackoffOnShutdown(t *testing.T) {
 
 func TestRuntimeFailoverIsNotStarvedByBlockedQualification(t *testing.T) {
 	qualificationStarted := make(chan struct{})
+	requalified := make(chan struct{})
 	releaseQualification := make(chan struct{})
 	hardFailure := make(chan struct{}, 1)
 	placed := make(chan PlacementReason, 4)
+	var qualificationCalls atomic.Int32
 	runtime := Runtime{
 		Qualify: func(ctx context.Context, _ time.Time) error {
+			if qualificationCalls.Add(1) == 2 {
+				close(requalified)
+				return nil
+			}
 			close(qualificationStarted)
 			select {
 			case <-releaseQualification:
@@ -3442,6 +3496,11 @@ func TestRuntimeFailoverIsNotStarvedByBlockedQualification(t *testing.T) {
 		t.Fatal("hard failure placement was starved by qualification")
 	}
 	close(releaseQualification)
+	select {
+	case <-requalified:
+	case <-time.After(time.Second):
+		t.Fatal("qualification did not rerun after hard failure")
+	}
 }
 
 func TestRuntimeRunsMaintenanceBeforeInitialSourceRefresh(t *testing.T) {

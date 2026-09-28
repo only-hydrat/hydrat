@@ -317,8 +317,8 @@ func Defaults() Config {
 			FullDeadline:        20 * time.Second,
 			TorFastDeadline:     5 * time.Minute,
 			TorFullDeadline:     6 * time.Minute,
-			ActiveInterval:      2 * time.Second,
-			ActiveDeadline:      1900 * time.Millisecond,
+			ActiveInterval:      3 * time.Second,
+			ActiveDeadline:      4 * time.Second,
 			ActiveResponseSlack: 75 * time.Millisecond,
 			ActiveProofGrace:    15 * time.Second,
 			GateEndpoints: GateEndpointsConfig{
