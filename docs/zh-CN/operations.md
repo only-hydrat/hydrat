@@ -399,11 +399,11 @@ Canary 必须满足以下不变量：
 - 添加 canary 不改变现有客户端 assignments。
 - 主路由 hard failure 只迁移分配给该路由的客户端。
 - 存在其他可用 Tor/VLESS 时，过期 reserve 不会产生 `BlockTCP`；可用 UDP VLESS 不会产生 `BlockUDP`。
-- 标准 `xtls-rprx-vision` 在客户端 outbound 中使用 flow `xtls-rprx-vision-udp443`。Full 与 QoE 的 UDP 资格检查均要求通过 SOCKS5 UDP association 与 YouTube 完成两次 QUIC/TLS 握手。
+- 客户端 outbound 保留订阅中的 flow。标准 `xtls-rprx-vision` 会拦截 UDP/443，通过 SOCKS5 UDP/53 验证其他 UDP；明确指定的 `xtls-rprx-vision-udp443` 则要求完成两次 YouTube QUIC/TLS 握手。
 - Applied generation 只变化一次，Xray 规则不包含临时 `hydrat-stage-*-block`。
 - 更换 egress 时 canary 的 WireGuard handshake 保持连续。
 
-单客户端 canary 后，持续运行 YouTube/QUIC 并重复 Telegram/OpenAI 请求 30–60 分钟。只有不存在无法解释的 migration event 时才扩大 rollout。DNS 仅在 Hydrat gateway/test namespace 内配置；不要修改主机 DNS 或其他项目的 Compose 配置。
+单客户端 canary 后，使用标准 Vision 时通过 HTTPS/TCP 检查 YouTube（明确指定 `-udp443` 时检查 QUIC），并重复 Telegram/OpenAI 请求 30–60 分钟。只有不存在无法解释的 migration event 时才扩大 rollout。DNS 仅在 Hydrat gateway/test namespace 内配置；不要修改主机 DNS 或其他项目的 Compose 配置。
 
 部署后验证：
 

@@ -79,7 +79,7 @@ func TestEngineUnchangedPlanDoesNotWriteApplyOrIncrementAcrossRestart(t *testing
 	}
 }
 
-func TestVisionUDP443UsesNewHandlerWithoutChangingCandidateIdentity(t *testing.T) {
+func TestStandardVisionRestoresHandlerWithoutChangingCandidateIdentity(t *testing.T) {
 	candidateID := "cand_10f2c5080e9a741a"
 	engine := &Engine{}
 	candidates := map[string]store.Candidate{candidateID: {ID: candidateID, Kind: sources.KindVLESS}}
@@ -89,7 +89,7 @@ func TestVisionUDP443UsesNewHandlerWithoutChangingCandidateIdentity(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if handlerID != candidateID+"-vision-udp443-v1" {
+	if handlerID != candidateID+"-vision-standard-v2" {
 		t.Fatalf("Vision handler %q reuses immutable candidate ID", handlerID)
 	}
 	if got := candidateIDFromHandler(handlerID, "alice"); got != candidateID {
@@ -98,7 +98,7 @@ func TestVisionUDP443UsesNewHandlerWithoutChangingCandidateIdentity(t *testing.T
 	if _, ok := outbounds[handlerID]; !ok {
 		t.Fatalf("versioned handler %q not materialized", handlerID)
 	}
-	if !bytes.Contains(outbounds[handlerID].Config, []byte(`"flow":"xtls-rprx-vision-udp443"`)) ||
+	if !bytes.Contains(outbounds[handlerID].Config, []byte(`"flow":"xtls-rprx-vision"`)) ||
 		!bytes.Contains(outbounds[handlerID].Config, []byte(`"tag":"`+handlerID+`"`)) {
 		t.Fatalf("versioned handler has stale Xray config: %s", outbounds[handlerID].Config)
 	}

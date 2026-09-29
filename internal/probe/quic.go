@@ -17,6 +17,27 @@ const (
 	quicProbeTimeout = 5 * time.Second
 )
 
+// CheckNon443UDP qualifies standard Vision without sending UDP/443, which
+// Xray intentionally intercepts for this flow. The DNS exchange stays routed
+// through the candidate's SOCKS UDP association.
+func CheckNon443UDP(ctx context.Context, socksAddress string) bool {
+	ctx, cancel := context.WithTimeout(ctx, quicProbeTimeout)
+	defer cancel()
+	packet, err := (socks5.Dialer{ProxyAddress: socksAddress}).ListenPacket(ctx)
+	if err != nil {
+		return false
+	}
+	defer packet.Close()
+	stopClose := context.AfterFunc(ctx, func() { _ = packet.Close() })
+	defer stopClose()
+	return checkNon443UDPPacket(ctx, packet)
+}
+
+func checkNon443UDPPacket(ctx context.Context, packet net.PacketConn) bool {
+	_, err := lookupQUICProbeIP(ctx, packet)
+	return err == nil
+}
+
 // CheckQUIC verifies HTTP/3 through a candidate using DNS through that candidate.
 func CheckQUIC(ctx context.Context, socksAddress string) bool {
 	return checkQUIC(ctx, socksAddress, "")

@@ -26,6 +26,36 @@ func TestLookupQUICProbeIPUsesSOCKSUDPAndResolvedAddress(t *testing.T) {
 	}
 }
 
+func TestNon443UDPRequiresValidRoutedDNSReply(t *testing.T) {
+	good := &quicDNSPacketConn{}
+	if !checkNon443UDPPacket(context.Background(), good) || good.destination != "1.1.1.1:53" {
+		t.Fatalf("valid UDP/53 reply failed; destination=%q", good.destination)
+	}
+	if checkNon443UDPPacket(context.Background(), invalidDNSPacketConn{&quicDNSPacketConn{}}) {
+		t.Fatal("invalid DNS response qualified UDP")
+	}
+	if checkNon443UDPPacket(context.Background(), timeoutDNSPacketConn{&quicDNSPacketConn{}}) {
+		t.Fatal("timed-out DNS response qualified UDP")
+	}
+}
+
+type invalidDNSPacketConn struct{ *quicDNSPacketConn }
+
+func (packet invalidDNSPacketConn) ReadFrom(payload []byte) (int, net.Addr, error) {
+	n, source, err := packet.quicDNSPacketConn.ReadFrom(payload)
+	if n >= 2 {
+		payload[0] = 0
+		payload[1] = 0
+	}
+	return n, source, err
+}
+
+type timeoutDNSPacketConn struct{ *quicDNSPacketConn }
+
+func (timeoutDNSPacketConn) ReadFrom([]byte) (int, net.Addr, error) {
+	return 0, nil, context.DeadlineExceeded
+}
+
 func TestCheckQUICResolvesThroughClientDNSBeforeCandidateSOCKS(t *testing.T) {
 	dns, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {

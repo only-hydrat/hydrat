@@ -36,9 +36,6 @@ func VLESSOutbound(link, tag string) (map[string]any, error) {
 	}
 	user := map[string]any{"id": parsed.User.Username(), "encryption": first(query, "encryption", "none")}
 	if flow := first(query, "flow", ""); flow != "" {
-		if flow == "xtls-rprx-vision" {
-			flow = "xtls-rprx-vision-udp443"
-		}
 		user["flow"] = flow
 	}
 	stream := map[string]any{"network": transport}

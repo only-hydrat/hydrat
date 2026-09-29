@@ -73,7 +73,7 @@
 - 通过下载 256 KiB 样本测量真实 TTFB 和持续吞吐量。
 - 默认检查 YouTube、Instagram、Telegram Web/MTProto、ChatGPT 和 OpenAI API。
 - **可配置端点和自定义关卡：**可在 `config.yml` 的 `probes.gate_endpoints` 与 `probes.custom_gates` 中覆盖探测地址，并添加自定义 API 或网站及其允许的 HTTP 状态码。
-- 通过 SOCKS5 UDP 验证 QUIC / HTTP/3。
+- 按 VLESS flow 验证 UDP：标准 Vision 使用 DNS/UDP，其他 flow 使用 QUIC / HTTP/3。
 - 通过迟滞机制避免抖动：短暂的延迟波动不会触发切换；替代路由必须确认具有至少 30% 的吞吐量优势。
 
 ### 7. 智能直连与地理数据

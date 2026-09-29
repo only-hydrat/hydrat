@@ -59,25 +59,31 @@ func TestMeasurerUsesRealQUICForVLESSUDPQualification(t *testing.T) {
 	}
 }
 
-func TestMeasurerUsesQUICForStandardVision(t *testing.T) {
+func TestMeasurerUsesFlowAppropriateUDPProbe(t *testing.T) {
 	for _, test := range []struct {
 		name     string
 		flow     string
 		wantUDP  bool
 		wantQUIC int
+		wantDNS  int
 	}{
-		{name: "standard vision", flow: "xtls-rprx-vision", wantQUIC: 1},
+		{name: "standard vision", flow: "xtls-rprx-vision", wantUDP: true, wantDNS: 1},
 		{name: "vision udp443", flow: "xtls-rprx-vision-udp443", wantQUIC: 1},
 		{name: "empty flow", wantQUIC: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			quicChecks := 0
+			dnsChecks := 0
 			measurer := Measurer{
 				ClientFactory: func(string) *http.Client { return qoeSuccessClient() },
 				MTProtoCheck:  func(context.Context, string) bool { return true },
 				UDPCheck: func(context.Context, string) bool {
 					quicChecks++
 					return false
+				},
+				UDPNon443Check: func(context.Context, string) bool {
+					dnsChecks++
+					return true
 				},
 			}
 			metrics, err := measurer.MeasureVLESS(
@@ -86,8 +92,8 @@ func TestMeasurerUsesQUICForStandardVision(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if metrics.UDP != test.wantUDP || quicChecks != test.wantQUIC {
-				t.Fatalf("UDP=%v QUIC checks=%d", metrics.UDP, quicChecks)
+			if metrics.UDP != test.wantUDP || quicChecks != test.wantQUIC || dnsChecks != test.wantDNS {
+				t.Fatalf("UDP=%v QUIC checks=%d DNS checks=%d", metrics.UDP, quicChecks, dnsChecks)
 			}
 		})
 	}

@@ -73,7 +73,7 @@ Active monitoring continuously evaluates the real user experience:
 - Measures actual TTFB and sustained throughput with a 256 KiB sample download.
 - Checks key services by default: YouTube, Instagram, Telegram Web/MTProto, ChatGPT, and the OpenAI API.
 - **Configurable endpoints and custom gates:** `probes.gate_endpoints` and `probes.custom_gates` in `config.yml` can override probe addresses and add APIs or websites with specified acceptable HTTP statuses.
-- Verifies QUIC / HTTP/3 over SOCKS5 UDP.
+- Checks UDP according to the VLESS flow: DNS/UDP for standard Vision, QUIC / HTTP/3 for other flows.
 - Prevents flapping with hysteresis: a random short-lived latency fluctuation does not trigger a switch, and an alternative must demonstrate at least a 30% confirmed throughput advantage.
 
 ### 7. Smart direct routing and geo data

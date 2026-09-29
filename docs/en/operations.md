@@ -505,14 +505,15 @@ The canary must satisfy these invariants:
 - A primary hard failure moves only clients assigned to it.
 - A stale reserve does not create `BlockTCP` while another working Tor/VLESS
   route exists, and a working UDP VLESS route does not create `BlockUDP`.
-- Standard `xtls-rprx-vision` uses flow `xtls-rprx-vision-udp443` in the client
-  outbound. Full and QoE UDP qualification each require two YouTube QUIC/TLS
-  handshakes over a SOCKS5 UDP association.
+- The client outbound preserves the subscription flow. Standard
+  `xtls-rprx-vision` intercepts UDP/443 and is qualified with SOCKS5 UDP/53;
+  explicit `xtls-rprx-vision-udp443` requires two YouTube QUIC/TLS handshakes.
 - Applied generation changes once, and Xray rules contain no temporary
   `hydrat-stage-*-block`.
 - The canary WireGuard handshake remains continuous during egress replacement.
 
-After the one-client canary, run continuous YouTube/QUIC and repeated
+After the one-client canary, run YouTube over HTTPS/TCP for standard Vision
+(or QUIC for explicit `-udp443`) and repeated
 Telegram/OpenAI requests for 30–60 minutes. Expand the rollout only with zero
 unexplained migration events. Configure DNS only inside the Hydrat gateway/test
 namespace; do not change host DNS or other projects' Compose configuration.

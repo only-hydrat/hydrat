@@ -54,9 +54,9 @@ func TestVLESSOutboundSupportsRawTransport(t *testing.T) {
 	}
 }
 
-func TestVLESSOutboundUsesUDP443FlowForStandardVisionOnly(t *testing.T) {
+func TestVLESSOutboundPreservesSubscriptionFlow(t *testing.T) {
 	for _, test := range []struct{ flow, want string }{
-		{"xtls-rprx-vision", "xtls-rprx-vision-udp443"},
+		{"xtls-rprx-vision", "xtls-rprx-vision"},
 		{"xtls-rprx-vision-udp443", "xtls-rprx-vision-udp443"},
 		{"", ""},
 	} {

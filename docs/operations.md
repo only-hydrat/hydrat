@@ -506,14 +506,16 @@ WireGuard peer. Существующие пользовательские peers 
 - hard failure primary переносит только назначенных ему клиентов;
 - устаревший reserve при наличии другого рабочего Tor/VLESS не создаёт
   `BlockTCP`, а рабочий UDP VLESS не создаёт `BlockUDP`;
-- стандартный `xtls-rprx-vision` в клиентском outbound использует flow
-  `xtls-rprx-vision-udp443`; full- и QoE-проверки подтверждают UDP двумя
-  QUIC/TLS handshakes к YouTube через SOCKS5 UDP association;
+- клиентский outbound сохраняет flow из подписки: стандартный
+  `xtls-rprx-vision` перехватывает UDP/443 и проверяется через SOCKS5 UDP/53;
+  явно заданный `xtls-rprx-vision-udp443` проверяется двумя QUIC/TLS
+  handshakes к YouTube;
 - applied generation меняется один раз, а Xray rules не содержат временный
   `hydrat-stage-*-block`;
 - WireGuard handshake canary остаётся непрерывным во время смены egress.
 
-После one-client canary требуется 30–60 минут непрерывного YouTube/QUIC и
+После one-client canary требуется 30–60 минут проверки YouTube через HTTPS/TCP
+для стандартного Vision (или QUIC для явного `-udp443`) и
 повторных Telegram/OpenAI запросов. Расширение rollout разрешается только при
 нулевом числе необъяснимых migration events. DNS задаётся только внутри Hydrat
 gateway/test namespace; DNS хоста не изменяется и Compose-конфигурации других
