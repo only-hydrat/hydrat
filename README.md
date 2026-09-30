@@ -161,13 +161,13 @@ HYDRAT_ADMIN_PASSWORD=придумайте_сложный_пароль
 
 ### Шаг 3. Запустите Hydrat
 
-По умолчанию Hydrat загружает и запускает официальный публичный образ `ghcr.io/only-hydrat/hydrat:1.0.7`:
+По умолчанию Hydrat загружает и запускает официальный публичный образ `ghcr.io/only-hydrat/hydrat:1.0.8`:
 
 ```bash
 docker compose up -d
 ```
 
-> **Примечание:** образ и версию можно переопределить переменной `HYDRAT_IMAGE` в `.env` (например, `HYDRAT_IMAGE=ghcr.io/only-hydrat/hydrat:1.0.7`).
+> **Примечание:** образ и версию можно переопределить переменной `HYDRAT_IMAGE` в `.env` (например, `HYDRAT_IMAGE=ghcr.io/only-hydrat/hydrat:1.0.8`).
 
 ### Сборка из исходного кода (для разработки)
 
