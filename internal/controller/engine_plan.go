@@ -19,6 +19,10 @@ import (
 	"github.com/only-hydrat/hydrat/internal/xrayconfig"
 )
 
+// ErrTorProfileUnavailable signals that profile repair must finish before a
+// Tor assignment can be rendered. It is not a permanent controller failure.
+var ErrTorProfileUnavailable = errors.New("Tor runtime profile unavailable")
+
 func (engine *Engine) dnsResolverForCandidate(candidateID string) (string, error) {
 	resolver, err := dataplane.SelectDNSResolver(candidateID, engine.dnsResolvers)
 	if err != nil {
@@ -31,13 +35,14 @@ func (engine *Engine) dnsResolverForCandidate(candidateID string) (string, error
 // reserves, but they must not move an already serving transport merely because
 // pool membership changed. Confirmed failures are handled by hardFailureCycle;
 // quality moves are handled by periodic/QoE placement with their dwell and
-// improvement thresholds. The only exception is legacy normalization where
-// the existing primaries alone exceed the runtime's hard route limit.
+// improvement thresholds. Exceptions are missing Tor runtime profiles and legacy
+// normalization where the existing primaries exceed the hard route limit.
 func preserveServingAssignmentsForCapacityEvents(
 	reason PlacementReason,
 	clients []scheduler.Client,
 	assignments map[string]scheduler.Assignment,
 	activeRouteLimit int,
+	unavailableTor map[string]bool,
 ) {
 	if reason != PlacementStartupNormalization && reason != PlacementClientLifecycle {
 		return
@@ -61,7 +66,7 @@ func preserveServingAssignmentsForCapacityEvents(
 		if !exists {
 			continue
 		}
-		if client.Assignment.TCP != "" {
+		if client.Assignment.TCP != "" && !unavailableTor[client.Assignment.TCP] {
 			planned.TCP = client.Assignment.TCP
 			planned.TCPSince = client.Assignment.TCPSince
 		}
@@ -82,6 +87,7 @@ func preserveLastKnownGoodWithoutReplacement(
 	clients []scheduler.Client,
 	assignments map[string]scheduler.Assignment,
 	applied map[string]scheduler.Assignment,
+	unavailableTor map[string]bool,
 ) {
 	for _, client := range clients {
 		planned, exists := assignments[client.ID]
@@ -89,7 +95,7 @@ func preserveLastKnownGoodWithoutReplacement(
 			continue
 		}
 		lastApplied := applied[client.ID]
-		if planned.TCP == "" && client.Assignment.TCP != "" &&
+		if planned.TCP == "" && client.Assignment.TCP != "" && !unavailableTor[client.Assignment.TCP] &&
 			client.Assignment.TCP == lastApplied.TCP {
 			planned.TCP = client.Assignment.TCP
 			planned.TCPSince = client.Assignment.TCPSince
@@ -477,7 +483,7 @@ func (engine *Engine) outbound(
 	case sources.KindTorBridge:
 		profile, exists := profiles[candidateID]
 		if !exists {
-			return "", fmt.Errorf("Tor candidate %s is not warm", candidateID)
+			return "", fmt.Errorf("Tor candidate %s is not warm: %w", candidateID, ErrTorProfileUnavailable)
 		}
 		// Include the warm slot in the handler identity. Promotion from the
 		// explorer to a warm slot changes the SOCKS endpoint; a new tag lets the

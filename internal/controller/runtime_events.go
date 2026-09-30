@@ -55,6 +55,9 @@ func (runtime Runtime) normalizeStartup(
 }
 
 func recoverableCapacityNormalizationError(err error) bool {
+	if errors.Is(err, ErrTorProfileUnavailable) {
+		return true
+	}
 	var coverageErr *ActiveCriticalCoveragePlanError
 	if errors.As(err, &coverageErr) {
 		return true
@@ -132,6 +135,7 @@ func (runtime Runtime) inspectStartupHardFailure(
 
 func retryablePlacementError(err error) bool {
 	if errors.Is(err, dataplane.ErrRuntimeRecovering) ||
+		errors.Is(err, ErrTorProfileUnavailable) ||
 		errors.Is(err, store.ErrCandidateInventoryChanged) {
 		return true
 	}

@@ -10,6 +10,7 @@ import (
 	"github.com/only-hydrat/hydrat/internal/dataplane"
 	"github.com/only-hydrat/hydrat/internal/qoe"
 	"github.com/only-hydrat/hydrat/internal/scheduler"
+	"github.com/only-hydrat/hydrat/internal/sources"
 	"github.com/only-hydrat/hydrat/internal/store"
 	"github.com/only-hydrat/hydrat/internal/torpool"
 	"github.com/only-hydrat/hydrat/internal/wireguard"
@@ -462,6 +463,14 @@ func (engine *Engine) cycleOnce(
 	inventoryEpoch := candidateSnapshot.inventoryEpoch
 	rowByID := candidateSnapshot.rowsByID
 	profileByCandidate := candidateSnapshot.profilesByCandidate
+	unavailableTor := make(map[string]bool)
+	for candidateID, candidate := range rowByID {
+		if candidate.Kind == sources.KindTorBridge {
+			if _, exists := profileByCandidate[candidateID]; !exists {
+				unavailableTor[candidateID] = true
+			}
+		}
+	}
 	scheduleCandidates := candidateSnapshot.placementCandidates
 	scheduleClients := make([]scheduler.Client, 0, len(clients))
 	for _, client := range clients {
@@ -513,11 +522,18 @@ func (engine *Engine) cycleOnce(
 	)
 	preserveServingAssignmentsForCapacityEvents(
 		reason, scheduleClients, placement.Assignments,
-		engine.activeCriticalRouteLimit,
+		engine.activeCriticalRouteLimit, unavailableTor,
 	)
 	preserveLastKnownGoodWithoutReplacement(
-		scheduleClients, placement.Assignments, appliedAssignments,
+		scheduleClients, placement.Assignments, appliedAssignments, unavailableTor,
 	)
+	for _, client := range scheduleClients {
+		if unavailableTor[client.Assignment.TCP] && placement.Assignments[client.ID].TCP == "" {
+			// Keep the durable plan intact while profile repair and qualification
+			// rebuild capacity; never publish a block just because Tor is warming.
+			return fmt.Errorf("Tor candidate %s is not warm: %w", client.Assignment.TCP, ErrTorProfileUnavailable)
+		}
+	}
 	for clientID, assignment := range placement.Assignments {
 		applied := appliedAssignments[clientID]
 		_, tcpExists := rowByID[assignment.TCP]
