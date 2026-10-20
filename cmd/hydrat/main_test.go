@@ -247,7 +247,7 @@ func TestAgentQoEMeasurerUsesConfiguredBounds(t *testing.T) {
 	got := agentQoEMeasurerConfig(cfg)
 	if got.SampleBytes != cfg.QoE.SampleBytes || got.Deadline != cfg.QoE.Deadline ||
 		!reflect.DeepEqual(got.DNSResolvers, cfg.Xray.EffectiveDNSResolvers()) ||
-		got.ApplicationGates == nil || got.ApplicationControl == nil || got.UDPCheck == nil {
+		got.ApplicationGates == nil || got.ApplicationControl != nil || got.ApplicationPolicy == "" || got.UDPCheck == nil {
 		t.Fatalf("QoE measurer config=%+v, want bytes=%d deadline=%s", got, cfg.QoE.SampleBytes, cfg.QoE.Deadline)
 	}
 }
@@ -260,6 +260,7 @@ func TestAgentProbeRuntimeConfigMapsFixedProductionBoundary(t *testing.T) {
 
 	got := agentProbeRuntimeConfig(cfg)
 	want := proberuntime.Config{
+		Role:             "background",
 		Binary:           cfg.Xray.Binary,
 		ConfigPath:       cfg.Xray.ProbeConfig,
 		APIAddress:       cfg.Xray.ProbeAPIAddress,
@@ -279,6 +280,7 @@ func TestAgentActiveProbeRuntimeConfigUsesIsolatedContainerEndpoints(t *testing.
 	cfg := config.Defaults()
 	got := agentActiveProbeRuntimeConfig(cfg)
 	want := agentProbeRuntimeConfig(cfg)
+	want.Role = "active"
 	want.ConfigPath = cfg.Xray.ActiveConfig
 	want.APIAddress = cfg.Xray.ActiveAPIAddress
 	want.MaxProbes = proberuntime.UnlimitedProbes
@@ -818,7 +820,10 @@ func TestRunAgentSeparatesMainSupervisorFromOwnedProbeRuntime(t *testing.T) {
 		"supervised := newXraySupervisor(log.Writer())",
 		"dnsSupervisors, err := startDNSSupervisor(",
 		"defer dnsSupervisors.StopAndWait()",
-		"xraySupervisors := startXraySupervisors(ctx, supervised,",
+		"xraySupervisors := startXraySupervisors(ctx, mainSupervised,",
+		"mainSupervised := flowControlledSupervisor(log.Writer(), flowSocket)",
+		"xray.ConfigureFlowControl(flowSocket)",
+		"xraySupervisors.StartFlowRecovery(reconciler.RetryFlowRecoveries)",
 		"defer xraySupervisors.StopAndWait()",
 		"xraySupervisors.StartRehydration(mainXrayReadiness, reconciler.InvalidateRuntime, reconciler.Rehydrate)",
 		"waitForReadiness(ctx, xraySupervisors.Readiness(mainXrayReadiness), 60*time.Second)",

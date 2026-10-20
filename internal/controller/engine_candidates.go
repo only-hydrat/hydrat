@@ -43,6 +43,11 @@ func (engine *Engine) loadRouteCandidateSnapshotWithProfiles(
 	activeCandidateIDs map[string]bool,
 	profiles ProfileProvider,
 ) (routeCandidateSnapshot, error) {
+	return engine.routeCandidateSnapshot(ctx, now, referencedIDs, activeCandidateIDs, profiles, false)
+}
+
+func (engine *Engine) routeCandidateSnapshot(ctx context.Context, now time.Time, referencedIDs []string, activeCandidateIDs map[string]bool, profiles ProfileProvider, referencesOnly bool) (routeCandidateSnapshot, error) {
+	started := time.Now()
 	result := routeCandidateSnapshot{
 		allByID:             make(map[string]scheduler.Candidate),
 		rowsByID:            make(map[string]store.Candidate),
@@ -51,10 +56,19 @@ func (engine *Engine) loadRouteCandidateSnapshotWithProfiles(
 		payloadByCandidate:  make(map[string]string),
 		evidenceByCandidate: make(map[string]string),
 	}
-	evidence, err := engine.store.LoadRoutingEvidenceSnapshot(ctx, referencedIDs)
+	var evidence store.RoutingEvidenceSnapshot
+	var err error
+	if referencesOnly {
+		evidence, err = engine.store.LoadRoutingReferencesSnapshot(ctx, referencedIDs)
+	} else {
+		evidence, err = engine.store.LoadRoutingEvidenceSnapshot(ctx, referencedIDs)
+	}
 	if err != nil {
 		return result, err
 	}
+	// Preserve the caller's logical clock, but include time spent waiting for
+	// the evidence snapshot. A proof completed during the read is not future.
+	now = snapshotDecisionTime(now, started)
 	result.inventoryEpoch = evidence.InventoryEpoch
 	probeByID := make(map[string]store.CandidateProbeState, len(evidence.Candidates))
 	workingCandidateIDs := make(map[string]bool, len(evidence.Candidates))
@@ -116,14 +130,12 @@ func (engine *Engine) loadRouteCandidateSnapshotWithProfiles(
 			}
 		}
 		qoeState := qoeByID[candidate.ID]
-		freshness := standbyCandidateQoEFreshness
-		if activeCandidateIDs[candidate.ID] {
-			freshness = activeCandidateQoEFreshness
-		}
 		qoeFresh := !qoeState.LastValidAt.IsZero() &&
 			!qoeState.LastValidAt.After(now) &&
-			now.Sub(qoeState.LastValidAt) <= freshness
+			now.Sub(qoeState.LastValidAt) <= qoe.EvidenceMaxAge
 		probe, hasProbe := probeByID[candidate.ID]
+		qoeAfterFailure := probe.LastFailureAt.IsZero() ||
+			qoeState.WindowStartedAt.After(probe.LastFailureAt)
 		reserveEligible := health.Available && hasProbe &&
 			probe.Status == store.CandidateQualified &&
 			probe.InWorkingPool && !probe.Stale && !probe.Draining &&
@@ -147,15 +159,13 @@ func (engine *Engine) loadRouteCandidateSnapshotWithProfiles(
 			CircuitOpen:   openDomains[candidate.FailureDomain],
 			QoEStatus:     qoeState.Status,
 			QoEEffective:  qoeState.MedianEffectiveTime,
-			QoEFresh:      qoeFresh,
+			QoEQuality:    qoeState.Quality(),
+			QoEFresh:      qoeFresh && qoeAfterFailure,
 			QoEReason:     qoeState.LastReason,
 			QoETracked:    engine.qoeEnabled,
-			QoEPromotionReady: promotionQoEReady(
+			QoEPromotionReady: qoeAfterFailure && promotionQoEReady(
 				now, qoeState,
 				engine.qoePromotionWindow,
-				engine.qoePromotionFreshness,
-				engine.qoePromotionWindowFreshness,
-				engine.qoePromotionMaximumSampleGap,
 			),
 		}
 		result.allByID[candidate.ID] = routeCandidate
@@ -181,6 +191,8 @@ func (engine *Engine) loadRouteCandidateSnapshotWithProfiles(
 	return result, nil
 }
 
+func snapshotDecisionTime(at, started time.Time) time.Time { return at.Add(time.Since(started)) }
+
 func (engine *Engine) ActiveTargets(
 	ctx context.Context,
 	now time.Time,
@@ -193,6 +205,7 @@ func (engine *Engine) ActiveTargets(
 	if err != nil {
 		return nil, err
 	}
+	clients = engine.reservationRecords(clients, now)
 	clientByID := make(map[string]store.ClientRecord, len(clients))
 	for _, client := range clients {
 		clientByID[client.ID] = client
@@ -200,6 +213,15 @@ func (engine *Engine) ActiveTargets(
 	assignments, err := engine.store.ListAssignments(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if engine.clientReservations {
+		selected := assignments[:0]
+		for _, assignment := range assignments {
+			if _, exists := clientByID[assignment.ClientID]; exists {
+				selected = append(selected, assignment)
+			}
+		}
+		assignments = selected
 	}
 	assignmentByClient := make(map[string]store.AssignmentRecord, len(assignments))
 	references := make(map[string]bool)
@@ -268,13 +290,13 @@ func (engine *Engine) ActiveTargets(
 	if engine.activeCriticalRouteLimit > 0 &&
 		len(references) > engine.activeCriticalRouteLimit {
 		return engine.bootstrapActiveTargets(
-			ctx, now, selector, clients, assignmentByClient, snapshot,
+			ctx, now, selector, clients, assignmentByClient, snapshot, appliedMappingByClient,
 		)
 	}
 	if engine.activeCriticalRouteLimit > 0 &&
 		(blockedAssignment || incompleteAppliedFailover) {
 		bootstrap, bootstrapErr := engine.bootstrapActiveTargets(
-			ctx, now, selector, clients, assignmentByClient, snapshot,
+			ctx, now, selector, clients, assignmentByClient, snapshot, appliedMappingByClient,
 		)
 		if bootstrapErr == nil {
 			return bootstrap, nil
@@ -309,6 +331,11 @@ func (engine *Engine) ActiveTargets(
 		addTarget(assignment.UDPOutbound, ActiveTargetCritical, false)
 	}
 	for _, mapping := range appliedMappings {
+		if engine.clientReservations {
+			if _, exists := clientByID[mapping.ClientID]; !exists {
+				continue
+			}
+		}
 		reserves := scheduler.ReserveSelection{
 			TCP: mapping.TCPReserveCandidateID,
 			UDP: mapping.UDPReserveCandidateID,
@@ -336,15 +363,18 @@ func (engine *Engine) ActiveTargets(
 				present[candidateID] = true
 			}
 		}
-		prospective := selector.SelectProspectiveReserves(
-			now,
+		prospective, err := selector.SelectProspectiveReservesContext(
+			ctx, now,
 			clientID,
 			scheduler.Assignment{
 				TCP: assignment.TCPOutbound,
 				UDP: assignment.UDPOutbound,
 			},
-			candidates,
+			candidates, reservesForMapping(appliedMappingByClient[clientID]),
 		)
+		if err != nil {
+			return nil, err
+		}
 		for _, candidateID := range []string{prospective.TCP, prospective.UDP} {
 			candidate, exists := snapshot.allByID[candidateID]
 			if !exists {
@@ -352,6 +382,11 @@ func (engine *Engine) ActiveTargets(
 			}
 			needsProof := !candidate.ActiveEligible || !candidate.ActiveFresh
 			addTarget(candidateID, ActiveTargetProspective, needsProof)
+		}
+	}
+	if engine.activeCriticalRouteLimit > 0 {
+		for _, candidateID := range qualityChallengers(snapshot.placementCandidates, targets, engine.activeCriticalRouteLimit) {
+			addTarget(candidateID, ActiveTargetProspective, true)
 		}
 	}
 	ids := make([]string, 0, len(targets))
@@ -366,6 +401,32 @@ func (engine *Engine) ActiveTargets(
 	return result, nil
 }
 
+// At most two spare slots prove candidates that have already completed a
+// clean QoE window. Critical primary/reserve proofs always keep their slots.
+func qualityChallengers(candidates []scheduler.Candidate, targets map[string]ActiveTarget, limit int) []string {
+	available := min(2, max(0, limit-len(targets)))
+	eligible := make([]scheduler.Candidate, 0)
+	for _, candidate := range candidates {
+		if _, exists := targets[candidate.ID]; exists {
+			continue
+		}
+		if candidate.Protocol == scheduler.ProtocolVLESS && candidate.TCPQualified && !candidate.Retiring && !candidate.CircuitOpen && candidate.QoEStatus == qoe.StatusHealthy && candidate.QoEFresh && candidate.QoEPromotionReady {
+			eligible = append(eligible, candidate)
+		}
+	}
+	sort.Slice(eligible, func(i, j int) bool {
+		if eligible[i].QoEQuality != eligible[j].QoEQuality {
+			return eligible[i].QoEQuality > eligible[j].QoEQuality
+		}
+		return eligible[i].ID < eligible[j].ID
+	})
+	result := make([]string, 0, available)
+	for _, candidate := range eligible[:min(available, len(eligible))] {
+		result = append(result, candidate.ID)
+	}
+	return result
+}
+
 func (engine *Engine) bootstrapActiveTargets(
 	ctx context.Context,
 	now time.Time,
@@ -373,6 +434,7 @@ func (engine *Engine) bootstrapActiveTargets(
 	clients []store.ClientRecord,
 	assignmentByClient map[string]store.AssignmentRecord,
 	snapshot routeCandidateSnapshot,
+	appliedMappings map[string]store.RouteReserveMapping,
 ) ([]ActiveTarget, error) {
 	scheduleClients := make([]scheduler.Client, 0, len(clients))
 	for _, client := range clients {
@@ -385,15 +447,21 @@ func (engine *Engine) bootstrapActiveTargets(
 			traffic = time.Unix(*client.LastTrafficAt, 0)
 		}
 		scheduleClients = append(scheduleClients, scheduler.Client{
-			ID: client.ID, LastTraffic: traffic,
+			Dormant:        engine.clientReservations && !client.RouteReserved(now),
+			AppliedReserve: reservesForMapping(appliedMappings[client.ID]),
+			ID:             client.ID, LastTraffic: traffic,
 			Assignment: scheduler.Assignment{
 				TCP: assignment.TCPOutbound, UDP: assignment.UDPOutbound,
 				TCPSince: assignment.TCPSince, UDPSince: assignment.UDPSince,
 			},
 		})
 	}
+	scheduleClients, candidates, err := engine.servingPrimaries(ctx, now, PlacementPromotion, selector, scheduleClients, snapshot)
+	if err != nil {
+		return nil, err
+	}
 	pool, err := engine.cappedProspectiveScheduleCandidates(
-		ctx, now, selector, scheduleClients, snapshot.placementCandidates,
+		ctx, now, selector, scheduleClients, candidates,
 	)
 	if err != nil {
 		return nil, err
@@ -405,7 +473,7 @@ func (engine *Engine) bootstrapActiveTargets(
 	reserves := make(map[string]scheduler.ReserveSelection, len(scheduleClients))
 	for _, client := range scheduleClients {
 		reserve, selectErr := selector.SelectProspectiveReservesContext(
-			ctx, now, client.ID, placement.Assignments[client.ID], pool,
+			ctx, now, client.ID, placement.Assignments[client.ID], pool, client.AppliedReserve,
 		)
 		if selectErr != nil {
 			return nil, selectErr

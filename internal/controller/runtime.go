@@ -40,17 +40,19 @@ func (ticker realRuntimeTicker) Chan() <-chan time.Time {
 }
 
 type Runtime struct {
-	Maintenance        func(context.Context, time.Time) error
-	ProfileRepair      func(context.Context, time.Time) (bool, error)
-	Refresh            func(context.Context) error
-	Qualify            func(context.Context, time.Time) error
-	Active             func(context.Context, time.Time) error
-	QoE                func(context.Context, time.Time) error
-	Place              func(context.Context, time.Time, PlacementReason) error
-	StartupHardFailure func(context.Context, time.Time) (bool, error)
-	StartupNormalize   func(context.Context, time.Time) error
-	RecoveryReady      func(context.Context, time.Time) error
-	CapacityReady      func(context.Context, time.Time) error
+	Reservations        func(context.Context, time.Time) (bool, error)
+	ReservationInterval time.Duration
+	Maintenance         func(context.Context, time.Time) error
+	ProfileRepair       func(context.Context, time.Time) (bool, error)
+	Refresh             func(context.Context) error
+	Qualify             func(context.Context, time.Time) error
+	Active              func(context.Context, time.Time) error
+	QoE                 func(context.Context, time.Time) error
+	Place               func(context.Context, time.Time, PlacementReason) error
+	StartupHardFailure  func(context.Context, time.Time) (bool, error)
+	StartupNormalize    func(context.Context, time.Time) error
+	RecoveryReady       func(context.Context, time.Time) error
+	CapacityReady       func(context.Context, time.Time) error
 
 	HardFailures      <-chan struct{}
 	HardFailureEvents *HardFailureMailbox
@@ -99,7 +101,7 @@ func (runtime Runtime) Start(ctx context.Context) error {
 	}
 	capacityCheckGate := make(chan struct{}, 1)
 	capacityCheckGate <- struct{}{}
-	checkCapacityReady := func(checkCtx context.Context, at time.Time) error {
+	checkCapacityReady := func(checkCtx context.Context, _ time.Time) error {
 		if runtime.CapacityReady == nil {
 			return nil
 		}
@@ -109,7 +111,7 @@ func (runtime Runtime) Start(ctx context.Context) error {
 		case <-capacityCheckGate:
 		}
 		defer func() { capacityCheckGate <- struct{}{} }()
-		return runtime.CapacityReady(checkCtx, at)
+		return runtime.CapacityReady(checkCtx, clock.Now())
 	}
 	runMaintenance := func() {
 		if runtime.Maintenance == nil {
@@ -268,6 +270,37 @@ func (runtime Runtime) Start(ctx context.Context) error {
 		}
 	}
 	var workers sync.WaitGroup
+	if runtime.Reservations != nil {
+		ticker := clock.NewTicker(positiveInterval(runtime.ReservationInterval, time.Second))
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case at := <-ticker.Chan():
+					pollCtx, pollCancel := context.WithTimeout(ctx, 750*time.Millisecond)
+					changed, err := runtime.Reservations(pollCtx, at)
+					pollCancel()
+					if err != nil {
+						if !expectedRuntimeStop(err) {
+							log.Printf("client activity: %v", err)
+						}
+						continue
+					}
+					if changed {
+						if capacityDegraded.Load() {
+							enqueue(PlacementStartupNormalization)
+						} else {
+							enqueue(PlacementClientLifecycle)
+						}
+					}
+				}
+			}
+		}()
+	}
 
 	if runtime.Maintenance != nil {
 		maintenanceTicker := clock.NewTicker(positiveInterval(
@@ -389,20 +422,19 @@ func (runtime Runtime) Start(ctx context.Context) error {
 		go func() {
 			defer workers.Done()
 			interval := positiveInterval(runtime.QoEInterval, 15*time.Second)
-			timer := time.NewTimer(interval)
-			defer timer.Stop()
+			ticker := clock.NewTicker(interval)
+			defer ticker.Stop()
 			for {
 				select {
 				case <-ctx.Done():
 					return
-				case <-timer.C:
-					if err := runtime.QoE(ctx, time.Now()); err != nil && !expectedRuntimeStop(err) {
+				case <-ticker.Chan():
+					if err := runtime.QoE(ctx, clock.Now()); err != nil && !expectedRuntimeStop(err) {
 						log.Printf("QoE cycle: %v", err)
 					}
 					if ctx.Err() != nil {
 						return
 					}
-					timer.Reset(interval)
 				}
 			}
 		}()
@@ -588,9 +620,8 @@ func (runtime Runtime) Start(ctx context.Context) error {
 				state.attempt,
 			)
 			if reason == PlacementStartupNormalization {
-				delay = positiveInterval(
-					runtime.NormalizationRetryInterval, 5*time.Second,
-				)
+				maximum := positiveInterval(runtime.NormalizationRetryInterval, 5*time.Second)
+				delay = placementRetryDelay(min(time.Second, maximum), maximum, state.attempt)
 			}
 			if reason == PlacementHardFailure && state.event != nil &&
 				!state.event.Deadline.IsZero() {

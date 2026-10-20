@@ -30,7 +30,6 @@ type ProbeSample struct {
 	CreatedAt       time.Time
 }
 
-
 func (store *Store) SaveCandidateHealth(ctx context.Context, health CandidateHealth) error {
 	return saveCandidateHealthTx(ctx, store.db, health)
 }
@@ -42,13 +41,20 @@ func (store *Store) UpdateCandidateUDPQualified(
 	ctx context.Context,
 	candidateID string,
 	qualified bool,
+	generation ...int64,
 ) (bool, error) {
+	fence := ""
+	args := []any{qualified, candidateID, qualified}
+	if len(generation) > 0 {
+		fence = " AND failure_generation=? AND available=1"
+		args = append(args, generation[0])
+	}
 	result, err := store.db.ExecContext(ctx, `
 		UPDATE candidate_health
 		SET udp_qualified = ?
 		WHERE candidate_id = ? AND observation_placeholder = 0
 		  AND udp_qualified <> ?
-	`, qualified, candidateID, qualified)
+	`+fence, args...)
 	if err != nil {
 		return false, err
 	}
@@ -138,4 +144,3 @@ func appendProbeSampleTx(ctx context.Context, executor sqlExecutor, sample Probe
     `, sample.CandidateID, sample.Success, sample.LatencyMS, sample.ThroughputMbps, sample.PacketDropRatio, sample.CreatedAt.Unix())
 	return err
 }
-

@@ -255,6 +255,14 @@ func (store *Store) CommitCandidateProbeObservation(
 	if err != nil {
 		return CandidateProbeState{}, ObservationCommitResult{}, err
 	}
+	if reservation.Stage == ObservationFast && !transition.Success && !transition.InfrastructureFailure {
+		// A confirmed fast failure must also invalidate in-flight quality and
+		// full-success evidence for a previously measured route.
+		if _, err := tx.ExecContext(ctx, `UPDATE candidate_health
+			SET failure_generation=failure_generation+1 WHERE candidate_id=?`, candidate.ID); err != nil {
+			return CandidateProbeState{}, ObservationCommitResult{}, err
+		}
+	}
 	if reservation.Stage == ObservationFull &&
 		!transition.Success &&
 		!transition.InfrastructureFailure &&
@@ -283,6 +291,11 @@ func (store *Store) CommitCandidateProbeObservation(
 		ctx, tx, candidate, reservation,
 	); err != nil {
 		return CandidateProbeState{}, ObservationCommitResult{}, err
+	}
+	if reservation.Stage == ObservationFull && transition.Success && !transition.InfrastructureFailure && health != nil && health.Available {
+		if err := clearRecoveredRouteDebtTx(ctx, tx, candidate); err != nil {
+			return CandidateProbeState{}, ObservationCommitResult{}, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return CandidateProbeState{}, ObservationCommitResult{}, err
@@ -413,6 +426,11 @@ func (store *Store) CommitCandidateActiveOutcome(
 	); err != nil {
 		return ObservationCommitResult{}, err
 	}
+	if outcome.ProofSuccess {
+		if err := clearRecoveredRouteDebtTx(ctx, tx, candidate); err != nil {
+			return ObservationCommitResult{}, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return ObservationCommitResult{}, err
 	}
@@ -502,6 +520,9 @@ func (store *Store) CommitCandidateActiveHardFailureObservation(
 	if err := applyObservationReservationTx(
 		ctx, tx, candidate, reservation,
 	); err != nil {
+		return CandidateProbeState{}, ObservationCommitResult{}, err
+	}
+	if err := recordRouteRecoveriesTx(ctx, tx, candidate, at); err != nil {
 		return CandidateProbeState{}, ObservationCommitResult{}, err
 	}
 	if err := tx.Commit(); err != nil {

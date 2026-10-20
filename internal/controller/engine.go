@@ -16,10 +16,7 @@ import (
 	"github.com/only-hydrat/hydrat/internal/wireguard"
 )
 
-const (
-	activeCandidateQoEFreshness  = 2 * time.Minute
-	standbyCandidateQoEFreshness = 10 * time.Minute
-)
+const activeClientTrafficWindow = 2 * time.Minute
 
 type Agent interface {
 	Apply(context.Context, dataplane.DesiredPlan) error
@@ -98,22 +95,10 @@ func WithDisallowRUEgress(disallow bool) EngineOption {
 // before a healthy standby may receive an optional quality-driven move.
 func WithQoEPromotionEvidence(
 	window int,
-	latestFreshness time.Duration,
-	windowFreshness time.Duration,
-	maximumSampleGap time.Duration,
 ) EngineOption {
 	return func(engine *Engine) {
 		if window > 0 {
 			engine.qoePromotionWindow = window
-		}
-		if latestFreshness > 0 {
-			engine.qoePromotionFreshness = latestFreshness
-		}
-		if windowFreshness > 0 {
-			engine.qoePromotionWindowFreshness = windowFreshness
-		}
-		if maximumSampleGap > 0 {
-			engine.qoePromotionMaximumSampleGap = maximumSampleGap
 		}
 	}
 }
@@ -187,33 +172,32 @@ func (err *ActiveCriticalRouteLimitError) Unwrap() error {
 }
 
 type Engine struct {
+	clientReservations bool
+	activityGate       chan struct{}
 	// cycleGate makes one Engine the controller's single-writer boundary across
 	// activity collection, desired-plan persistence, agent apply, assignments,
 	// and the applied-generation mark while allowing deadline-bound emergency
 	// work to abandon admission without waiting for the current writer.
-	cycleGate                    chan struct{}
-	store                        *store.Store
-	agent                        Agent
-	profiles                     ProfileProvider
-	scheduler                    *scheduler.Scheduler
-	torSecret                    []byte
-	qoeEnabled                   bool
-	qoePromotionWindow           int
-	qoePromotionFreshness        time.Duration
-	qoePromotionWindowFreshness  time.Duration
-	qoePromotionMaximumSampleGap time.Duration
-	dnsResolvers                 []string
-	reserveActiveFreshness       time.Duration
-	activeHardFailureFreshness   time.Duration
-	activeCriticalRouteLimit     int
-	directSuffixes               []string
-	directDomains                []string
-	disallowRUEgress             bool
-	coverageMu                   sync.Mutex
-	coverageSearch               *criticalCoverageSession
-	bootstrapCoverageMu          sync.Mutex
-	bootstrapCoverageSearch      *criticalCoverageSession
-	bootstrapCoverageEvaluate    func(
+	cycleGate                  chan struct{}
+	store                      *store.Store
+	agent                      Agent
+	profiles                   ProfileProvider
+	scheduler                  *scheduler.Scheduler
+	torSecret                  []byte
+	qoeEnabled                 bool
+	qoePromotionWindow         int
+	dnsResolvers               []string
+	reserveActiveFreshness     time.Duration
+	activeHardFailureFreshness time.Duration
+	activeCriticalRouteLimit   int
+	directSuffixes             []string
+	directDomains              []string
+	disallowRUEgress           bool
+	coverageMu                 sync.Mutex
+	coverageSearch             *criticalCoverageSession
+	bootstrapCoverageMu        sync.Mutex
+	bootstrapCoverageSearch    *criticalCoverageSession
+	bootstrapCoverageEvaluate  func(
 		context.Context, time.Time, *scheduler.Scheduler,
 		[]scheduler.Client, []scheduler.Candidate, []string,
 	) (criticalCoverageEvaluation, error)
@@ -251,15 +235,12 @@ func promotionQoEReady(
 	now time.Time,
 	state qoe.State,
 	window int,
-	latestFreshness time.Duration,
-	windowFreshness time.Duration,
-	maximumSampleGap time.Duration,
 ) bool {
 	return window > 0 && state.Status == qoe.StatusHealthy &&
 		state.WindowValid >= window && state.WindowBad == 0 &&
-		activeObservationFresh(now, state.LastValidAt, latestFreshness) &&
-		activeObservationFresh(now, state.WindowStartedAt, windowFreshness) &&
-		maximumSampleGap > 0 && state.WindowMaxGap <= maximumSampleGap
+		activeObservationFresh(now, state.LastValidAt, qoe.EvidenceMaxAge) &&
+		activeObservationFresh(now, state.WindowStartedAt, qoe.EvidenceMaxAge) &&
+		!state.WindowStartedAt.After(state.LastValidAt)
 }
 
 func NewEngine(database *store.Store, agent Agent, profiles ProfileProvider, placement *scheduler.Scheduler, torSecret []byte, options ...EngineOption) *Engine {
@@ -269,11 +250,8 @@ func NewEngine(database *store.Store, agent Agent, profiles ProfileProvider, pla
 	engine := &Engine{
 		store: database, agent: agent, profiles: profiles, scheduler: placement,
 		torSecret: append([]byte(nil), torSecret...), qoeEnabled: true,
-		qoePromotionWindow:           qoe.DefaultPolicy().WindowSize,
-		qoePromotionFreshness:        standbyCandidateQoEFreshness,
-		qoePromotionWindowFreshness:  standbyCandidateQoEFreshness,
-		qoePromotionMaximumSampleGap: standbyCandidateQoEFreshness,
-		dnsResolvers:                 []string{"1.1.1.1"}, cycleGate: make(chan struct{}, 1),
+		qoePromotionWindow: qoe.DefaultPolicy().WindowSize,
+		dnsResolvers:       []string{"1.1.1.1"}, cycleGate: make(chan struct{}, 1), activityGate: make(chan struct{}, 1),
 		directSuffixes: []string{".ru"},
 	}
 	engine.cycleGate <- struct{}{}
@@ -291,30 +269,60 @@ func (engine *Engine) CycleForReason(
 	ctx context.Context,
 	now time.Time,
 	reason PlacementReason,
-) error {
+) (cycleErr error) {
 	release, err := engine.acquireCycle(ctx)
 	if err != nil {
 		return err
 	}
 	defer release()
+	if engine.store == nil {
+		return errors.New("controller engine requires store")
+	}
+	debt, err := engine.store.PendingRouteRecoveries(ctx)
+	if err != nil {
+		return err
+	}
+	// Ordinary quality placement must never consume an unresolved emergency:
+	// the persisted hard-failure reason preserves scoped TCP reset on retries.
+	if len(debt) > 0 {
+		reason = PlacementHardFailure
+	}
 	profiles, profileFence := engine.capturePlanProfiles()
+	reconcileRecovery := false
 	if reason == PlacementHardFailure {
-		const maxInventoryAttempts = 3
-		for attempt := 0; attempt < maxInventoryAttempts; attempt++ {
-			err := engine.hardFailureCycle(ctx, now, profiles, profileFence)
-			if !errors.Is(err, store.ErrCandidateInventoryChanged) &&
-				!errors.Is(err, store.ErrCandidateEvidenceChanged) {
-				return err
-			}
+		err := engine.recoverHardFailure(ctx, now, profiles, profileFence, len(debt) > 0)
+		if !errors.Is(err, errRecoverySkeletonChanged) {
+			return err
 		}
-		return store.ErrCandidateInventoryChanged
+		// A concurrent source/client lifecycle change can make the applied
+		// skeleton unpublishable. Reconcile it without allowing quality moves.
+		// applyPlan still fences TCP resets to actual confirmed failed scopes.
+		reconcileRecovery = true
+		parent := ctx
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		defer func() {
+			if cycleErr != nil && parent.Err() == nil && ctx.Err() == context.DeadlineExceeded {
+				cycleErr = routeRecoveryRetryError{}
+			}
+		}()
 	}
 
 	const maxInventoryAttempts = 3
 	for attempt := 0; attempt < maxInventoryAttempts; attempt++ {
+		// A failure may have arrived while an ordinary publish CAS was retried.
+		// Recheck the debt before allowing quality placement to consume it.
+		pending, err := engine.store.PendingRouteRecoveries(ctx)
+		if err != nil {
+			return err
+		}
+		if len(pending) > 0 && !reconcileRecovery {
+			return engine.recoverHardFailure(ctx, now, profiles, profileFence, true)
+		}
 		preview := engine.scheduler.BeginPreview()
 		committed := false
-		err := engine.cycleOnce(
+		err = engine.cycleOnce(
 			ctx,
 			now,
 			reason,
@@ -400,7 +408,7 @@ func (engine *Engine) cycleOnce(
 		assignmentByClient[assignment.ClientID] = assignment
 	}
 	activeCandidateIDs := make(map[string]bool)
-	activeCutoff := now.Add(-activeCandidateQoEFreshness)
+	activeCutoff := now.Add(-activeClientTrafficWindow)
 	for _, assignment := range assignments {
 		client, exists := clientByID[assignment.ClientID]
 		if !exists || client.Paused || client.LastTrafficAt == nil ||
@@ -484,14 +492,38 @@ func (engine *Engine) cycleOnce(
 		}
 		scheduleClients = append(scheduleClients, scheduler.Client{
 			ID: client.ID, LastTraffic: traffic,
+			AppliedReserve: appliedReservesByClient[client.ID],
 			Assignment: scheduler.Assignment{
 				TCP: assignment.TCPOutbound, UDP: assignment.UDPOutbound,
 				TCPSince: assignment.TCPSince, UDPSince: assignment.UDPSince,
 			},
 		})
 	}
+	aliases := map[string]string{}
+	bootstrapRecovery := false
+	if engine.clientReservations {
+		previous, err := dormantClients(state)
+		if err != nil {
+			return err
+		}
+		for index := range scheduleClients {
+			client := &scheduleClients[index]
+			client.Dormant = !clientByID[client.ID].RouteReserved(now)
+			bootstrapRecovery = bootstrapRecovery || client.Dormant || previous[client.ID]
+			if !client.Dormant && previous[client.ID] {
+				client.Assignment = returningAssignment(now, *client, scheduleClients, scheduleCandidates)
+			}
+		}
+		scheduleClients, aliases = collapseDormantClients(scheduleClients)
+	}
+	scheduleClients, scheduleCandidates, err = engine.servingPrimaries(ctx, now, reason, placementScheduler, scheduleClients, candidateSnapshot)
+	if err != nil {
+		return err
+	}
 	allScheduleCandidates := scheduleCandidates
-	degradedAvailabilityRecovery := canRecoverStaticallyBlockedAppliedTransport(
+	// Missing bootstrap coverage must publish a bounded fail-closed plan,
+	// not leave an unverified cached path applied when an idle device returns.
+	degradedAvailabilityRecovery := bootstrapRecovery || canRecoverStaticallyBlockedAppliedTransport(
 		state, scheduleClients, allScheduleCandidates,
 		engine.activeCriticalRouteLimit,
 	) || canRecoverDegradedAssignedTransport(scheduleClients, allScheduleCandidates) ||
@@ -520,10 +552,6 @@ func (engine *Engine) cycleOnce(
 			SuppressQualityMoves: reason != PlacementPeriodic,
 		},
 	)
-	preserveServingAssignmentsForCapacityEvents(
-		reason, scheduleClients, placement.Assignments,
-		engine.activeCriticalRouteLimit, unavailableTor,
-	)
 	preserveLastKnownGoodWithoutReplacement(
 		scheduleClients, placement.Assignments, appliedAssignments, unavailableTor,
 	)
@@ -550,25 +578,10 @@ func (engine *Engine) cycleOnce(
 	reservesByClient := make(map[string]scheduler.ReserveSelection, len(placement.Assignments))
 	for clientID, assignment := range placement.Assignments {
 		selected, err := placementScheduler.SelectReservesContext(
-			ctx, now, clientID, assignment, scheduleCandidates,
+			ctx, now, clientID, assignment, scheduleCandidates, appliedReservesByClient[clientID],
 		)
 		if err != nil {
 			return err
-		}
-		applied, exists := appliedReservesByClient[clientID]
-		if exists {
-			validation, err := placementScheduler.ValidateReserveSelectionContext(
-				ctx, now, clientID, assignment, applied, scheduleCandidates,
-			)
-			if err != nil {
-				return err
-			}
-			if validation.TCP {
-				selected.TCP = applied.TCP
-			}
-			if validation.UDP {
-				selected.UDP = applied.UDP
-			}
 		}
 		reservesByClient[clientID] = selected
 	}
@@ -581,6 +594,10 @@ func (engine *Engine) cycleOnce(
 				return err
 			}
 		}
+	}
+	for clientID, representative := range aliases {
+		placement.Assignments[clientID] = placement.Assignments[representative]
+		reservesByClient[clientID] = reservesByClient[representative]
 	}
 	selectedExpectations := make(map[string]store.CandidatePlanExpectation)
 	for clientID, assignment := range placement.Assignments {
@@ -631,6 +648,7 @@ func (engine *Engine) cycleOnce(
 			UpdatedAt: now,
 		})
 		route := dataplane.ClientRoute{
+			Dormant:  engine.clientReservations && !client.RouteReserved(now),
 			ClientID: clientID, SourceCIDR: client.Address,
 			BlockTCP: assignment.TCP == "", BlockUDP: assignment.UDP == "",
 		}

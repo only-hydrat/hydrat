@@ -141,6 +141,16 @@ func (store *Store) LoadRoutingEvidenceSnapshot(
 	ctx context.Context,
 	referencedIDs []string,
 ) (RoutingEvidenceSnapshot, error) {
+	return store.loadRoutingEvidenceSnapshot(ctx, referencedIDs, false)
+}
+
+// LoadRoutingReferencesSnapshot decrypts only explicitly referenced routes,
+// keeping the emergency fast path independent of subscription inventory size.
+func (store *Store) LoadRoutingReferencesSnapshot(ctx context.Context, referencedIDs []string) (RoutingEvidenceSnapshot, error) {
+	return store.loadRoutingEvidenceSnapshot(ctx, referencedIDs, true)
+}
+
+func (store *Store) loadRoutingEvidenceSnapshot(ctx context.Context, referencedIDs []string, referencesOnly bool) (RoutingEvidenceSnapshot, error) {
 	tx, err := store.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return RoutingEvidenceSnapshot{}, err
@@ -152,7 +162,7 @@ func (store *Store) LoadRoutingEvidenceSnapshot(
 	`).Scan(&snapshot.InventoryEpoch); err != nil {
 		return RoutingEvidenceSnapshot{}, err
 	}
-	candidates, err := store.listRoutingEvidenceCandidatesTx(ctx, tx, referencedIDs)
+	candidates, err := store.listRoutingEvidenceCandidatesTx(ctx, tx, referencedIDs, referencesOnly)
 	if err != nil {
 		return RoutingEvidenceSnapshot{}, err
 	}
@@ -176,6 +186,7 @@ func (store *Store) listRoutingEvidenceCandidatesTx(
 	ctx context.Context,
 	tx *sql.Tx,
 	referencedIDs []string,
+	referencesOnly bool,
 ) ([]CandidateRoutingEvidence, error) {
 	var hasProbeState bool
 	if err := tx.QueryRowContext(ctx, `
@@ -214,6 +225,18 @@ func (store *Store) listRoutingEvidenceCandidatesTx(
 		    AND p.observation_placeholder=0
 		    AND (p.in_working_pool=1 OR p.draining=1)
 		)`
+	}
+	if referencesOnly {
+		if len(referencedIDs) == 0 {
+			return nil, nil
+		}
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(referencedIDs)), ",")
+		lifecyclePredicate = `c.lifecycle IN ('active','draining')`
+		routingPredicate = `c.id IN (` + placeholders + `)`
+		arguments = make([]any, 0, len(referencedIDs))
+		for _, id := range referencedIDs {
+			arguments = append(arguments, id)
+		}
 	}
 	rows, err := tx.QueryContext(ctx, `
 		SELECT c.id, c.source_id, c.kind, c.label, c.fingerprint,

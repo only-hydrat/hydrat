@@ -31,53 +31,6 @@ func (engine *Engine) dnsResolverForCandidate(candidateID string) (string, error
 	return resolver, nil
 }
 
-// Capacity and client-lifecycle passes may fill empty assignments and refresh
-// reserves, but they must not move an already serving transport merely because
-// pool membership changed. Confirmed failures are handled by hardFailureCycle;
-// quality moves are handled by periodic/QoE placement with their dwell and
-// improvement thresholds. Exceptions are missing Tor runtime profiles and legacy
-// normalization where the existing primaries exceed the hard route limit.
-func preserveServingAssignmentsForCapacityEvents(
-	reason PlacementReason,
-	clients []scheduler.Client,
-	assignments map[string]scheduler.Assignment,
-	activeRouteLimit int,
-	unavailableTor map[string]bool,
-) {
-	if reason != PlacementStartupNormalization && reason != PlacementClientLifecycle {
-		return
-	}
-	if activeRouteLimit > 0 {
-		serving := make(map[string]bool)
-		for _, client := range clients {
-			if client.Assignment.TCP != "" {
-				serving[client.Assignment.TCP] = true
-			}
-			if client.Assignment.UDP != "" {
-				serving[client.Assignment.UDP] = true
-			}
-		}
-		if len(serving) > activeRouteLimit {
-			return
-		}
-	}
-	for _, client := range clients {
-		planned, exists := assignments[client.ID]
-		if !exists {
-			continue
-		}
-		if client.Assignment.TCP != "" && !unavailableTor[client.Assignment.TCP] {
-			planned.TCP = client.Assignment.TCP
-			planned.TCPSince = client.Assignment.TCPSince
-		}
-		if client.Assignment.UDP != "" {
-			planned.UDP = client.Assignment.UDP
-			planned.UDPSince = client.Assignment.UDPSince
-		}
-		assignments[client.ID] = planned
-	}
-}
-
 // preserveLastKnownGoodWithoutReplacement prevents ordinary planning from
 // turning a still-applied transport into an explicit block while qualification
 // is rebuilding. Confirmed failures use hardFailureCycle, which performs its
@@ -90,6 +43,9 @@ func preserveLastKnownGoodWithoutReplacement(
 	unavailableTor map[string]bool,
 ) {
 	for _, client := range clients {
+		if client.Dormant {
+			continue
+		}
 		planned, exists := assignments[client.ID]
 		if !exists {
 			continue
@@ -409,7 +365,24 @@ func (engine *Engine) applyPlan(
 	plan dataplane.DesiredPlan,
 	encoded []byte,
 ) error {
-	if err := engine.agent.Apply(ctx, plan); err != nil {
+	state, err := engine.store.LoadPlanState(ctx)
+	if err != nil {
+		return err
+	}
+	recoveries, err := confirmedFlowRecoveries(state, plan)
+	if err != nil {
+		return err
+	}
+	recoveries, err = engine.fenceFlowRecoveries(ctx, recoveries)
+	if err != nil {
+		return err
+	}
+	if agent, ok := engine.agent.(flowRecoveryAgent); ok && len(recoveries) > 0 {
+		err = agent.ApplyWithRecovery(ctx, plan, recoveries)
+	} else {
+		err = engine.agent.Apply(ctx, plan)
+	}
+	if err != nil {
 		return err
 	}
 	if err := engine.store.MarkAppliedPlan(ctx, plan.Generation, encoded); err != nil {
@@ -419,6 +392,15 @@ func (engine *Engine) applyPlan(
 }
 
 func (engine *Engine) updateActivity(ctx context.Context, now time.Time) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case engine.activityGate <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-engine.activityGate }()
 	peers, err := engine.agent.Activity(ctx)
 	if err != nil {
 		return err
@@ -436,7 +418,7 @@ func (engine *Engine) updateActivity(ctx context.Context, now time.Time) error {
 		if !exists {
 			continue
 		}
-		if err := engine.store.RecordActivity(ctx, client.ID, now, peer.RXBytes, peer.TXBytes); err != nil {
+		if err := engine.store.RecordPeerActivity(ctx, client.ID, now, peer); err != nil {
 			return err
 		}
 	}

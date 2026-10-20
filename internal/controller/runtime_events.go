@@ -15,7 +15,7 @@ func retryActiveCriticalCoverage(err error) bool {
 	if !errors.As(err, &coverageErr) {
 		return false
 	}
-	return coverageErr.SearchExhausted
+	return coverageErr.Temporary()
 }
 
 func (runtime Runtime) normalizeStartup(
@@ -55,6 +55,10 @@ func (runtime Runtime) normalizeStartup(
 }
 
 func recoverableCapacityNormalizationError(err error) bool {
+	var repair routeRecoveryRetryError
+	if errors.As(err, &repair) {
+		return true
+	}
 	if errors.Is(err, ErrTorProfileUnavailable) {
 		return true
 	}

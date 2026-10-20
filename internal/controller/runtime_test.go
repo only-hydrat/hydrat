@@ -3812,7 +3812,7 @@ func TestRuntimeQoERunsWhileCapacityRecoveryIsPending(t *testing.T) {
 	}
 }
 
-func TestRuntimeQoESkipsOverdueTickAndUsesFreshTimestamp(t *testing.T) {
+func TestRuntimeQoEContinuesAfterSlowSweepWithFreshTimestamp(t *testing.T) {
 	const interval = 40 * time.Millisecond
 	type invocation struct {
 		at       time.Time
@@ -3821,6 +3821,7 @@ func TestRuntimeQoESkipsOverdueTickAndUsesFreshTimestamp(t *testing.T) {
 	invocations := make(chan invocation, 3)
 	releaseFirst := make(chan struct{})
 	var calls int
+	clock := &qoeAdmissionClock{interval: interval, ticker: &manualRuntimeTicker{ticks: make(chan time.Time, 1)}, ready: make(chan struct{})}
 	runtime := Runtime{
 		QoE: func(ctx context.Context, at time.Time) error {
 			calls++
@@ -3840,6 +3841,7 @@ func TestRuntimeQoESkipsOverdueTickAndUsesFreshTimestamp(t *testing.T) {
 		PlacementInterval:     time.Hour,
 		ActiveInterval:        time.Hour,
 		QoEInterval:           interval,
+		clock:                 clock,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -3849,13 +3851,21 @@ func TestRuntimeQoESkipsOverdueTickAndUsesFreshTimestamp(t *testing.T) {
 	}()
 
 	select {
+	case <-clock.ready:
+	case <-time.After(time.Second):
+		cancel()
+		waitRuntimeDone(t, done)
+		t.Fatal("QoE admission ticker was not created")
+	}
+	clock.ticker.ticks <- time.Now()
+	select {
 	case <-invocations:
 	case <-time.After(time.Second):
 		cancel()
 		waitRuntimeDone(t, done)
 		t.Fatal("first QoE cycle did not start")
 	}
-	time.Sleep(2 * interval)
+	clock.ticker.ticks <- time.Now().Add(-time.Minute)
 	releasedAt := time.Now()
 	close(releaseFirst)
 
@@ -3866,9 +3876,6 @@ func TestRuntimeQoESkipsOverdueTickAndUsesFreshTimestamp(t *testing.T) {
 		cancel()
 		waitRuntimeDone(t, done)
 		t.Fatal("second QoE cycle did not start after the next interval")
-	}
-	if delay := second.observed.Sub(releasedAt); delay < interval/2 {
-		t.Errorf("overdue QoE tick replayed after %s, want a new interval", delay)
 	}
 	if second.at.Before(releasedAt) {
 		t.Errorf("second QoE timestamp=%s predates first completion=%s", second.at, releasedAt)
@@ -4159,6 +4166,13 @@ func newWallClockHTTPApplier() *wallClockHTTPApplier {
 		lowerStarted: make(chan struct{}), hardDone: make(chan struct{}),
 		recomputeDone: make(chan struct{}),
 	}
+}
+
+func (applier *wallClockHTTPApplier) ApplyWithRecovery(ctx context.Context, plan dataplane.DesiredPlan, scopes []dataplane.FlowRecovery) error {
+	if err := dataplane.ValidateFlowRecoveries(plan, scopes); err != nil {
+		return err
+	}
+	return applier.Apply(ctx, plan)
 }
 
 func (applier *wallClockHTTPApplier) Apply(

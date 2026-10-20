@@ -369,29 +369,6 @@ func TestActiveProofFreshnessUsesConfiguredGrace(t *testing.T) {
 	}
 }
 
-func TestQoEPromotionFreshnessCoversTwoCadencesAndProbe(t *testing.T) {
-	cfg := Defaults()
-	if got := cfg.QoEPromotionFreshness(); got != 70*time.Second {
-		t.Fatalf("QoE promotion freshness=%s want=70s", got)
-	}
-	if got := cfg.QoEPromotionWindowFreshness(); got != 160*time.Second {
-		t.Fatalf("QoE promotion window freshness=%s want=160s", got)
-	}
-	if got := cfg.QoEPromotionMaximumSampleGap(); got != 40*time.Second {
-		t.Fatalf("QoE promotion maximum sample gap=%s want=40s", got)
-	}
-	cfg.QoE.ActiveInterval = time.Duration(math.MaxInt64)
-	if got := cfg.QoEPromotionFreshness(); got != maxDuration {
-		t.Fatalf("overflowing QoE promotion freshness=%s want=%s", got, maxDuration)
-	}
-	if got := cfg.QoEPromotionWindowFreshness(); got != maxDuration {
-		t.Fatalf("overflowing QoE promotion window freshness=%s want=%s", got, maxDuration)
-	}
-	if got := cfg.QoEPromotionMaximumSampleGap(); got != maxDuration {
-		t.Fatalf("overflowing QoE promotion sample gap=%s want=%s", got, maxDuration)
-	}
-}
-
 func TestActiveProofFreshnessUsesLongerComputedPipeline(t *testing.T) {
 	cfg := Defaults()
 	cfg.Probes.ActiveInterval = 20 * time.Second

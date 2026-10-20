@@ -1,6 +1,7 @@
 package qoe
 
 import (
+	"math"
 	"sort"
 	"time"
 )
@@ -8,6 +9,8 @@ import (
 type Status string
 
 const (
+	// EvidenceMaxAge bounds quality evidence, not route failure detection.
+	EvidenceMaxAge                   = 10 * time.Minute
 	MaxWindowSize                    = 100
 	MaxProbeWorkers                  = 4
 	MinimumAlternativeSpeedup        = 1.3
@@ -39,14 +42,19 @@ type Policy struct {
 }
 
 type Observation struct {
-	At               time.Time
-	Success          bool
-	Infrastructure   bool
-	ErrorCode        string
-	TTFB             time.Duration
-	TransferDuration time.Duration
-	Bytes            int64
-	ThroughputMbps   float64
+	At                time.Time
+	Success           bool
+	Infrastructure    bool
+	ErrorCode         string
+	TTFB              time.Duration
+	TransferDuration  time.Duration
+	Bytes             int64
+	ThroughputMbps    float64
+	ApplicationChecks []HTTPCheck `json:"application_checks,omitempty"`
+	// New agents keep unconfirmed HTTP failures neutral for old controllers.
+	// Only a fresh, independent routed control can confirm a negative sample.
+	UnconfirmedHTTP  bool   `json:"unconfirmed_http,omitempty"`
+	ComparisonPolicy string `json:"comparison_policy,omitempty"`
 	// UDPReachable is set only when a real QUIC handshake was attempted.
 	// It is intentionally independent from TCP QoE so one broken transport
 	// cannot evacuate the other.
@@ -79,11 +87,23 @@ type State struct {
 	WindowStartedAt        time.Time
 	WindowMaxGap           time.Duration
 	MedianEffectiveTime    time.Duration
+	MedianTTFB             time.Duration
+	MedianThroughputMbps   float64
 	LastValidAt            time.Time
 	LastReason             string
 	DegradedAt             time.Time
 	RecoveredAt            time.Time
 	UpdatedAt              time.Time
+}
+
+// Quality weights proportional improvements in throughput and TTFB equally.
+// Only successful window samples contribute; eligibility/freshness are checked
+// separately by the scheduler, never inferred from this ranking score.
+func (state State) Quality() float64 {
+	if state.MedianThroughputMbps <= 0 || math.IsNaN(state.MedianThroughputMbps) || math.IsInf(state.MedianThroughputMbps, 0) {
+		return 0
+	}
+	return math.Sqrt(state.MedianThroughputMbps / max(state.MedianTTFB, 50*time.Millisecond).Seconds())
 }
 
 type Transition struct {
@@ -174,6 +194,7 @@ func Apply(policy Policy, current State, recent, learningSuccesses []Sample, obs
 	}
 	current.WindowMaxGap = maxSampleGap(window)
 	current.MedianEffectiveTime = medianEffectiveTime(window)
+	current.MedianTTFB, current.MedianThroughputMbps = WindowMedians(window)
 	current.CurrentTTFB = sample.TTFB
 	current.CurrentThroughputMbps = sample.ThroughputMbps
 	current.LastValidAt = sample.At
@@ -384,6 +405,20 @@ func learnBaseline(policy Policy, state *State, learningSuccesses []Sample, samp
 	}
 	state.BaselineTTFB = medianDuration(ttfb)
 	state.BaselineThroughputMbps = medianFloat(throughput)
+}
+
+// WindowMedians is shared with schema migration so retained windows and new
+// observations use the same ranking scale immediately after an upgrade.
+func WindowMedians(window []Sample) (time.Duration, float64) {
+	ttfbs := make([]time.Duration, 0, len(window))
+	speeds := make([]float64, 0, len(window))
+	for _, sample := range window {
+		if sample.Success {
+			ttfbs = append(ttfbs, sample.TTFB)
+			speeds = append(speeds, sample.ThroughputMbps)
+		}
+	}
+	return medianDuration(ttfbs), medianFloat(speeds)
 }
 
 func medianEffectiveTime(window []Sample) time.Duration {

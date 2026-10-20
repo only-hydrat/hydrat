@@ -25,9 +25,10 @@ func (scheduler *Scheduler) SelectReservesContext(
 	clientID string,
 	assignment Assignment,
 	candidates []Candidate,
+	applied ...ReserveSelection,
 ) (ReserveSelection, error) {
 	return scheduler.selectReservesContext(
-		ctx, now, clientID, assignment, candidates, true,
+		ctx, now, clientID, assignment, candidates, true, applied...,
 	)
 }
 
@@ -102,9 +103,10 @@ func (scheduler *Scheduler) SelectProspectiveReservesContext(
 	clientID string,
 	assignment Assignment,
 	candidates []Candidate,
+	applied ...ReserveSelection,
 ) (ReserveSelection, error) {
 	return scheduler.selectReservesContext(
-		ctx, now, clientID, assignment, candidates, false,
+		ctx, now, clientID, assignment, candidates, false, applied...,
 	)
 }
 
@@ -123,7 +125,7 @@ func (scheduler *Scheduler) SelectEmergency(
 	failed := byID[failedID]
 	eligible := make([]Candidate, 0, len(candidates))
 	for _, candidate := range candidates {
-		if candidate.ID == failedID || sameRouteIdentity(failed, candidate) ||
+		if candidate.ServingOnly || candidate.ID == failedID || sameRouteIdentity(failed, candidate) ||
 			candidate.Retiring || candidate.CircuitOpen ||
 			candidate.QoEStatus == qoe.StatusDegraded ||
 			scheduler.excluded(now, clientID, candidate.ID) {
@@ -161,6 +163,7 @@ func (scheduler *Scheduler) SelectEmergency(
 		}
 	}
 	eligible = preferStableQoE(eligible)
+	eligible = preferSpareCapacity(eligible, candidates, load)
 	selected := ""
 	selectedDomainLoad := 0
 	selectedLoad := 0
@@ -168,15 +171,16 @@ func (scheduler *Scheduler) SelectEmergency(
 	for _, candidate := range eligible {
 		candidateDomainLoad := domainLoad[candidateDomain(candidate)]
 		candidateLoad := load[candidate.ID]
+		quality := selectionQuality(candidate)
 		if selected == "" || candidateDomainLoad < selectedDomainLoad ||
 			(candidateDomainLoad == selectedDomainLoad && candidateLoad < selectedLoad) ||
 			(candidateDomainLoad == selectedDomainLoad && candidateLoad == selectedLoad &&
-				(candidate.Score > selectedScore ||
-					(candidate.Score == selectedScore && candidate.ID < selected))) {
+				(quality > selectedScore ||
+					(quality == selectedScore && candidate.ID < selected))) {
 			selected = candidate.ID
 			selectedDomainLoad = candidateDomainLoad
 			selectedLoad = candidateLoad
-			selectedScore = candidate.Score
+			selectedScore = quality
 		}
 	}
 	return selected
@@ -189,6 +193,7 @@ func (scheduler *Scheduler) selectReservesContext(
 	assignment Assignment,
 	candidates []Candidate,
 	requireActiveProof bool,
+	applied ...ReserveSelection,
 ) (ReserveSelection, error) {
 	scheduler.mu.Lock()
 	defer scheduler.mu.Unlock()
@@ -199,10 +204,14 @@ func (scheduler *Scheduler) selectReservesContext(
 		}
 		byID[candidate.ID] = candidate
 	}
+	previous := ReserveSelection{}
+	if len(applied) > 0 {
+		previous = applied[0]
+	}
 	tcp, err := scheduler.selectReserveContext(
 		ctx,
 		now, clientID, "tcp", assignment.TCP, candidates, byID,
-		requireActiveProof,
+		requireActiveProof, previous.TCP,
 	)
 	if err != nil {
 		return ReserveSelection{}, err
@@ -210,7 +219,7 @@ func (scheduler *Scheduler) selectReservesContext(
 	udp, err := scheduler.selectReserveContext(
 		ctx,
 		now, clientID, "udp", assignment.UDP, candidates, byID,
-		requireActiveProof,
+		requireActiveProof, previous.UDP,
 	)
 	if err != nil {
 		return ReserveSelection{}, err
@@ -227,7 +236,19 @@ func (scheduler *Scheduler) selectReserveContext(
 	candidates []Candidate,
 	byID map[string]Candidate,
 	requireActiveProof bool,
+	applied string,
 ) (string, error) {
+	if applied != "" {
+		eligible, err := scheduler.eligibleReserveCandidatesContext(ctx, now, clientID, network, primaryID, candidates, byID, requireActiveProof, false)
+		if err != nil {
+			return "", err
+		}
+		for _, candidate := range eligible {
+			if candidate.ID == applied {
+				return applied, nil
+			}
+		}
+	}
 	eligible, err := scheduler.eligibleReserveCandidatesContext(
 		ctx, now, clientID, network, primaryID, candidates, byID,
 		requireActiveProof, true,
@@ -261,7 +282,7 @@ func (scheduler *Scheduler) eligibleReserveCandidatesContext(
 		if err := scheduler.checkContext(ctx); err != nil {
 			return nil, err
 		}
-		if sameRouteIdentity(primary, candidate) ||
+		if candidate.ServingOnly || sameRouteIdentity(primary, candidate) ||
 			!candidate.ReserveEligible ||
 			(requireActiveProof && (!candidate.ActiveEligible || !candidate.ActiveFresh)) ||
 			candidate.Retiring || candidate.CircuitOpen ||
@@ -280,6 +301,11 @@ func (scheduler *Scheduler) eligibleReserveCandidatesContext(
 			continue
 		}
 		eligible = append(eligible, candidate)
+	}
+	// Validation is admission, not ranking: a newly preferred domain must not
+	// revoke a healthy reserve that is already installed in the dataplane.
+	if !preferQuality {
+		return eligible, nil
 	}
 	primaryDomain := candidateDomain(primary)
 	preferDifferentVLESS := network == "tcp" && primary.Protocol == ProtocolVLESS
@@ -313,9 +339,6 @@ func (scheduler *Scheduler) eligibleReserveCandidatesContext(
 			preferred = append(preferred, candidate)
 		}
 		eligible = preferred
-	}
-	if !preferQuality {
-		return eligible, nil
 	}
 	eligible = preferStableQoE(eligible)
 	best := 0.0
@@ -355,17 +378,17 @@ func (scheduler *Scheduler) qoeAlternative(
 	clientID, network string,
 	current Candidate,
 	candidates []Candidate,
-	domainLoad map[string]int,
+	load, domainLoad map[string]int,
 	requireSpeedup bool,
 	preferDistinctDomain bool,
 ) string {
 	qualified := make([]Candidate, 0, len(candidates))
 	currentDomain := candidateDomain(current)
 	for _, candidate := range candidates {
-		if candidate.Retiring || candidate.QoEStatus != qoe.StatusHealthy ||
+		if candidate.ServingOnly || candidate.Retiring || candidate.QoEStatus != qoe.StatusHealthy ||
 			!candidate.QoEFresh || candidate.QoEEffective <= 0 ||
 			!scheduler.candidateUsable(now, clientID, network, candidate) ||
-			(requireSpeedup && float64(candidate.QoEEffective)*scheduler.policy.QoEAlternativeSpeedup > float64(current.QoEEffective)) {
+			(requireSpeedup && selectionQuality(candidate) < selectionQuality(current)*scheduler.policy.QoEAlternativeSpeedup) {
 			continue
 		}
 		qualified = append(qualified, candidate)
@@ -386,20 +409,31 @@ func (scheduler *Scheduler) qoeAlternative(
 				candidateDomain(candidate) != currentDomain
 		}
 	}
+	if hasDistinctDomain {
+		distinct := qualified[:0]
+		for _, candidate := range qualified {
+			if candidateDomain(candidate) != currentDomain {
+				distinct = append(distinct, candidate)
+			}
+		}
+		qualified = distinct
+	}
+	qualified = preferSpareCapacity(qualified, candidates, load)
 	selected := ""
-	var selectedEffective time.Duration
+	selectedQuality := 0.0
 	selectedDomainLoad := 0
 	for _, candidate := range qualified {
 		if hasDistinctDomain && candidateDomain(candidate) == currentDomain {
 			continue
 		}
 		candidateDomainLoad := domainLoad[candidateDomain(candidate)]
-		if selected == "" || candidate.QoEEffective < selectedEffective ||
-			(candidate.QoEEffective == selectedEffective &&
+		quality := selectionQuality(candidate)
+		if selected == "" || quality > selectedQuality ||
+			(quality == selectedQuality &&
 				(candidateDomainLoad < selectedDomainLoad ||
 					(candidateDomainLoad == selectedDomainLoad && candidate.ID < selected))) {
 			selected = candidate.ID
-			selectedEffective = candidate.QoEEffective
+			selectedQuality = quality
 			selectedDomainLoad = candidateDomainLoad
 		}
 	}

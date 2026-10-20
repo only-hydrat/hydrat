@@ -299,7 +299,7 @@ func (fixture qoeIntegrationFixture) monitor() (*QoEMonitor, *integrationQoEProb
 	prober := &integrationQoEProber{responses: make(map[string]qoe.Observation)}
 	return &QoEMonitor{
 		Store: fixture.database, Agent: prober, Profiles: fixture.profiles,
-		Policy: qoe.DefaultPolicy(), Workers: 1, StandbyCandidates: 3,
+		Policy: qoe.DefaultPolicy(), Workers: 2, StandbyCandidates: 3,
 		ActiveInterval: time.Nanosecond, IdleInterval: time.Nanosecond,
 		DegradedInterval: time.Nanosecond,
 	}, prober

@@ -18,6 +18,7 @@ type qualificationJob struct {
 	payload                 string
 	reservation             store.ObservationReservation
 	priority                tournament.Priority
+	nextProbeAt             time.Time
 	oneSuccess              bool
 	recoveringActiveFailure bool
 	retryInfrastructure     bool
@@ -135,8 +136,21 @@ func (service QualificationService) discoveryJobs(
 		if service.DisallowRUEgress && sources.IsRussianEgress(candidate.Label, payload) {
 			continue
 		}
+		nextProbeAt := time.Time{}
+		state := stateByFingerprint[candidate.Fingerprint]
+		if stage == tournament.ProbeFull && state.Status == store.CandidateQualified && !state.Stale && state.LastErrorCode == "" {
+			interval := 30 * time.Minute
+			if queuedJob.Priority == tournament.PriorityAssigned {
+				interval = 5 * time.Minute
+			}
+			if service.ResetWindow > 0 {
+				interval = min(interval, service.ResetWindow/2)
+			}
+			nextProbeAt = state.LastFullProbeAt.Add(interval)
+		}
 		jobs = append(jobs, qualificationJob{
 			candidate: candidate, payload: payload, priority: queuedJob.Priority,
+			nextProbeAt:             nextProbeAt,
 			oneSuccess:              stateByFingerprint[candidate.Fingerprint].FullSuccessStreak == 1,
 			recoveringActiveFailure: stateByFingerprint[candidate.Fingerprint].LastErrorCode == "active_hard_failure",
 		})
@@ -154,7 +168,40 @@ func (service QualificationService) discoveryJobs(
 			jobs = append(jobs, qualificationJob{candidate: candidate, payload: payload})
 		}
 	}
-	return jobs, nil
+	return interleaveProbeSources(jobs), nil
+}
+
+func interleaveProbeSources(jobs []qualificationJob) []qualificationJob {
+	result := make([]qualificationJob, 0, len(jobs))
+	for start := 0; start < len(jobs); {
+		end := start + 1
+		for end < len(jobs) && jobs[end].priority == jobs[start].priority {
+			end++
+		}
+		buckets := map[string][]qualificationJob{}
+		order := []string{}
+		for _, job := range jobs[start:end] {
+			id := job.candidate.SourceID
+			if _, exists := buckets[id]; !exists {
+				order = append(order, id)
+			}
+			buckets[id] = append(buckets[id], job)
+		}
+		for round := 0; ; round++ {
+			added := false
+			for _, id := range order {
+				if round < len(buckets[id]) {
+					result = append(result, buckets[id][round])
+					added = true
+				}
+			}
+			if !added {
+				break
+			}
+		}
+		start = end
+	}
+	return result
 }
 
 func interleaveFullProbeJobsByFailureDomain(
@@ -215,21 +262,32 @@ func interleaveFullProbePriorityGroup(jobs []qualificationJob) []qualificationJo
 	return ordered
 }
 
-func boundedExplorationJobs(jobs []qualificationJob, limit int) []qualificationJob {
-	selected := make([]qualificationJob, 0, min(len(jobs), limit))
-	explored := 0
+// Three maintenance launches followed by one discovery launch keep a large
+// established pool from monopolizing the bounded probe workers. Empty lanes
+// lend their capacity; discovery retains its existing per-cycle ceiling.
+func fairProbeJobs(jobs []qualificationJob, explorationLimit int) []qualificationJob {
+	maintenance := make([]qualificationJob, 0)
+	discovery := make([]qualificationJob, 0)
 	for _, job := range jobs {
-		if job.priority != tournament.PriorityAssigned &&
-			job.priority != tournament.PriorityWorkingPool &&
-			job.priority != tournament.PriorityOneSuccess {
-			if explored >= limit {
-				continue
+		if job.priority == tournament.PriorityAssigned || job.priority == tournament.PriorityWorkingPool || job.priority == tournament.PriorityOneSuccess {
+			if len(maintenance) < 3*explorationLimit {
+				maintenance = append(maintenance, job)
 			}
-			explored++
+		} else if len(discovery) < explorationLimit {
+			discovery = append(discovery, job)
 		}
-		selected = append(selected, job)
 	}
-	return selected
+	result := make([]qualificationJob, 0, len(maintenance)+len(discovery))
+	for len(maintenance) > 0 || len(discovery) > 0 {
+		n := min(3, len(maintenance))
+		result = append(result, maintenance[:n]...)
+		maintenance = maintenance[n:]
+		if len(discovery) > 0 {
+			result = append(result, discovery[0])
+			discovery = discovery[1:]
+		}
+	}
+	return result
 }
 
 func discoveryCandidate(
@@ -254,6 +312,8 @@ func (service QualificationService) runProbeJobs(
 	stage tournament.ProbeStage,
 	workerCount int,
 ) error {
+	probeCtx, cancelProbes := context.WithCancel(ctx)
+	defer cancelProbes()
 	observationStage := store.ObservationFull
 	if stage == tournament.ProbeFast {
 		observationStage = store.ObservationFast
@@ -280,14 +340,21 @@ func (service QualificationService) runProbeJobs(
 		go func() {
 			defer workers.Done()
 			for job := range jobs {
-				result := service.executeProbe(ctx, job, stage)
+				if probeCtx.Err() != nil {
+					continue
+				}
+				result := service.executeProbe(probeCtx, job, stage)
+				if agentapi.SharedProbeUnavailable(result.response) {
+					cancelProbes()
+				}
 				if job.retryInfrastructure &&
+					probeCtx.Err() == nil &&
 					(result.err != nil || result.response.FailureClass == agentapi.FailureInfrastructure) {
 					timer := time.NewTimer(time.Second)
 					select {
 					case <-timer.C:
-						result = service.executeProbe(ctx, job, stage)
-					case <-ctx.Done():
+						result = service.executeProbe(probeCtx, job, stage)
+					case <-probeCtx.Done():
 						timer.Stop()
 					}
 				}
@@ -299,7 +366,7 @@ func (service QualificationService) runProbeJobs(
 		for _, job := range pending {
 			select {
 			case jobs <- job:
-			case <-ctx.Done():
+			case <-probeCtx.Done():
 				close(jobs)
 				return
 			}
@@ -311,6 +378,9 @@ func (service QualificationService) runProbeJobs(
 		close(results)
 	}()
 	for result := range results {
+		if errors.Is(result.err, context.Canceled) {
+			continue
+		}
 		state, err := service.recordProbeResult(ctx, now, result, stage)
 		if err != nil {
 			if errors.Is(err, store.ErrCandidateNoLongerCurrent) {
@@ -421,7 +491,7 @@ func (service QualificationService) recordProbeResult(
 	}
 	if result.err != nil || result.response.FailureClass == agentapi.FailureInfrastructure {
 		transition.InfrastructureFailure = true
-		transition.ErrorCode = "agent_unavailable"
+		transition.ErrorCode, transition.SafeErrorMessage = agentapi.ProbeFailureDetails(result.response, result.err)
 		state, _, err := service.Store.CommitCandidateProbeObservation(
 			ctx, result.job.candidate, result.reservation, transition, nil, nil,
 		)

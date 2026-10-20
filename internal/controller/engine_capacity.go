@@ -113,7 +113,18 @@ type ActiveCriticalCoveragePlanError struct {
 	Unsatisfied     []string
 	SearchExhausted bool
 	Evaluations     int
+	// Cause distinguishes failed admission from an actual bounded-search slice.
+	Cause string
+	// Admission-only diagnostics, not candidate payloads or network errors.
+	ReserveIssues []string
 }
+
+const (
+	coverageReserveNotReady   = "reserve_not_ready"
+	coveragePrimaryUnusable   = "primary_unusable"
+	coverageGenerationPending = "generation_pending"
+	coverageCriticalLimit     = "critical_limit"
+)
 
 func isActiveCriticalCoverageError(err error) bool {
 	var coverageErr *ActiveCriticalCoveragePlanError
@@ -121,13 +132,24 @@ func isActiveCriticalCoverageError(err error) bool {
 }
 
 func (err *ActiveCriticalCoveragePlanError) Error() string {
+	missing := err.Unsatisfied
+	if len(missing) > 8 {
+		missing = append(append([]string(nil), missing[:8]...), fmt.Sprintf("more=%d", len(missing)-8))
+	}
+	if err.Cause != "" {
+		detail := ""
+		if len(err.ReserveIssues) > 0 {
+			detail = "; reserve issues: " + strings.Join(err.ReserveIssues[:min(8, len(err.ReserveIssues))], ", ")
+		}
+		return fmt.Sprintf("active critical %s within limit %d; unsatisfied: %s%s", err.Cause, err.Limit, strings.Join(missing, ", "), detail)
+	}
 	detail := "no feasible cover"
 	if err.SearchExhausted {
 		detail = "bounded cover search exhausted"
 	}
 	return fmt.Sprintf(
 		"active critical %s within limit %d after %d evaluations; unsatisfied: %s",
-		detail, err.Limit, err.Evaluations, strings.Join(err.Unsatisfied, ", "),
+		detail, err.Limit, err.Evaluations, strings.Join(missing, ", "),
 	)
 }
 
@@ -136,7 +158,7 @@ func (err *ActiveCriticalCoveragePlanError) Unwrap() error {
 }
 
 func (err *ActiveCriticalCoveragePlanError) Temporary() bool {
-	return err.SearchExhausted
+	return err.SearchExhausted || err.Cause == coverageReserveNotReady || err.Cause == coverageGenerationPending
 }
 
 type criticalCoverageBudget struct {
@@ -349,13 +371,6 @@ func (engine *Engine) scheduleCandidatesForCycle(
 			(len(full.witnessIDs) > 0 && len(full.witnessIDs) <= limit)) {
 		return candidates, nil
 	}
-	if incumbent, found, incumbentErr := incumbentPlusReserveCoverage(
-		ctx, now, placement, clients, candidates, required, limit, evaluate,
-	); incumbentErr != nil {
-		return nil, incumbentErr
-	} else if found {
-		return incumbent, nil
-	}
 	if cached, found, cacheErr := engine.cachedBootstrapCoverageCandidates(
 		now, placement, clients, candidates,
 	); cacheErr != nil {
@@ -370,15 +385,26 @@ func (engine *Engine) scheduleCandidatesForCycle(
 		if coverageComplete(covered, required) {
 			return cached, nil
 		}
-		// The retained prospective cover is the bounded set currently being
-		// actively proved. Searching arbitrary subsets of the full inventory
-		// cannot make those network observations arrive sooner, and can consume
-		// the whole placement budget on every proof transition. Keep the cycle
-		// safely unpublished until this canonical cover is ready.
-		return nil, &ActiveCriticalCoveragePlanError{
-			Limit: limit, Unsatisfied: missingCoverage(covered, required),
-			SearchExhausted: true, Evaluations: 2,
+		prospective, prospectiveErr := evaluateProspectiveCriticalCoverage(ctx, now, placement, clients, cached, required)
+		if prospectiveErr != nil {
+			return nil, prospectiveErr
 		}
+		if coverageComplete(prospective, required) {
+			// Proof wait cannot be shortened by searching more inventory. Only
+			// retain this set while its routes still pass admission without proof.
+			return nil, &ActiveCriticalCoveragePlanError{
+				Limit: limit, Unsatisfied: missingCoverage(covered, required),
+				Cause: coverageReserveNotReady, Evaluations: 3,
+			}
+		}
+		resetCriticalCoverageSession(&engine.bootstrapCoverageMu, &engine.bootstrapCoverageSearch)
+	}
+	if incumbent, found, incumbentErr := incumbentPlusReserveCoverage(
+		ctx, now, placement, clients, candidates, required, limit, evaluate,
+	); incumbentErr != nil {
+		return nil, incumbentErr
+	} else if found {
+		return incumbent, nil
 	}
 	if !coverageComplete(full, required) {
 		prospective, prospectiveErr := engine.cappedProspectiveScheduleCandidates(
@@ -401,7 +427,7 @@ func (engine *Engine) scheduleCandidatesForCycle(
 		// observations instead of enumerating arbitrary proof-dependent subsets.
 		return nil, &ActiveCriticalCoveragePlanError{
 			Limit: limit, Unsatisfied: missingCoverage(covered, required),
-			SearchExhausted: true, Evaluations: 2,
+			Cause: coverageReserveNotReady, Evaluations: 2,
 		}
 	}
 	return engine.cappedScheduleCandidatesWithFull(
@@ -1127,6 +1153,7 @@ func resumeCriticalCoveragePlanner(
 // scheduler or publishing a new plan. Fresh evidence remains protected by the
 // ordinary cycle's publish CAS; this check reports only effective readiness.
 func (engine *Engine) CapacityReady(ctx context.Context, now time.Time) error {
+	started := time.Now()
 	if engine.activeCriticalRouteLimit <= 0 {
 		return nil
 	}
@@ -1134,6 +1161,7 @@ func (engine *Engine) CapacityReady(ctx context.Context, now time.Time) error {
 	if err != nil {
 		return err
 	}
+	clients = engine.reservationRecords(clients, now)
 	state, err := engine.store.LoadPlanState(ctx)
 	if err != nil {
 		return err
@@ -1145,7 +1173,7 @@ func (engine *Engine) CapacityReady(ctx context.Context, now time.Time) error {
 	if state.DesiredGeneration != state.AppliedGeneration {
 		return &ActiveCriticalCoveragePlanError{
 			Limit:       engine.activeCriticalRouteLimit,
-			Unsatisfied: []string{"plan:generation"}, SearchExhausted: true,
+			Unsatisfied: []string{"plan:generation"}, Cause: coverageGenerationPending,
 		}
 	}
 	routes := make(map[string]dataplane.ClientRoute, len(applied.Clients))
@@ -1165,6 +1193,7 @@ func (engine *Engine) CapacityReady(ctx context.Context, now time.Time) error {
 	for candidateID := range referenced {
 		referencedIDs = append(referencedIDs, candidateID)
 	}
+	now = snapshotDecisionTime(now, started)
 	snapshot, err := engine.loadRouteCandidateSnapshot(
 		ctx, now, referencedIDs, referenced,
 	)
@@ -1220,12 +1249,12 @@ func (engine *Engine) CapacityReady(ctx context.Context, now time.Time) error {
 		route, exists := routes[client.ID]
 		if !exists || route.BlockTCP || route.TCPOutbound == "" {
 			missing = append(missing, client.ID+":tcp:primary")
-		} else if candidate := snapshot.allByID[candidateIDFromHandler(route.TCPOutbound, client.ID)]; !candidate.TCPQualified || candidate.CircuitOpen {
+		} else if id := candidateIDFromHandler(route.TCPOutbound, client.ID); !snapshot.allByID[id].TCPQualified || snapshot.allByID[id].CircuitOpen || !snapshot.healthByID[id].Available || snapshot.healthByID[id].ActiveHardFailure {
 			missing = append(missing, client.ID+":tcp:primary")
 		}
 		if !exists || route.BlockUDP || route.UDPOutbound == "" {
 			missing = append(missing, client.ID+":udp:primary")
-		} else if candidate := snapshot.allByID[candidateIDFromHandler(route.UDPOutbound, client.ID)]; candidate.Protocol != scheduler.ProtocolVLESS || !candidate.UDPQualified || candidate.CircuitOpen {
+		} else if id := candidateIDFromHandler(route.UDPOutbound, client.ID); snapshot.allByID[id].Protocol != scheduler.ProtocolVLESS || !snapshot.allByID[id].UDPQualified || snapshot.allByID[id].CircuitOpen || !snapshot.healthByID[id].Available || snapshot.healthByID[id].ActiveHardFailure {
 			missing = append(missing, client.ID+":udp:primary")
 		}
 	}
@@ -1235,6 +1264,6 @@ func (engine *Engine) CapacityReady(ctx context.Context, now time.Time) error {
 	sort.Strings(missing)
 	return &ActiveCriticalCoveragePlanError{
 		Limit:       engine.activeCriticalRouteLimit,
-		Unsatisfied: missing, SearchExhausted: true,
+		Unsatisfied: missing, Cause: coveragePrimaryUnusable,
 	}
 }

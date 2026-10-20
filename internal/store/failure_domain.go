@@ -160,6 +160,9 @@ func (store *Store) CommitActiveVLESSHardFailureObservation(
 	); err != nil {
 		return FailureDomainState{}, ObservationCommitResult{}, err
 	}
+	if err := recordRouteRecoveriesTx(ctx, tx, candidate, eventAt); err != nil {
+		return FailureDomainState{}, ObservationCommitResult{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return FailureDomainState{}, ObservationCommitResult{}, fmt.Errorf(
 			"commit atomic active VLESS failure: %w", err,

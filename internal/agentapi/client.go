@@ -20,6 +20,11 @@ import (
 )
 
 type Client struct {
+	backgroundMu        sync.Mutex
+	backgroundPaused    bool
+	backgroundRetryAt   time.Time
+	backgroundDelay     time.Duration
+	probeNow            func() time.Time
 	http                *http.Client
 	probeHTTP           *http.Client
 	probeDeadlines      probeDeadlines
@@ -159,14 +164,18 @@ func (client *Client) probeRuntimeHealth(
 }
 
 func (client *Client) Apply(ctx context.Context, plan dataplane.DesiredPlan) error {
+	return client.applyRequest(ctx, "/v1/plan", plan)
+}
+
+func (client *Client) applyRequest(ctx context.Context, path string, payload any) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	body, err := json.Marshal(plan)
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix/v1/plan", bytes.NewReader(body))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://unix"+path, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -180,6 +189,9 @@ func (client *Client) Apply(ctx context.Context, plan dataplane.DesiredPlan) err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusNoContent {
+		if path == "/v1/plan/recovery" && (response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusNotImplemented) {
+			return errRecoveryUnsupported
+		}
 		message, readErr := io.ReadAll(io.LimitReader(response.Body, 4096))
 		if readErr != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
@@ -303,6 +315,14 @@ func (client *Client) ProbeQoE(ctx context.Context, request ProbeRequest) (Probe
 }
 
 func (client *Client) probe(ctx context.Context, mode ProbeMode, payload ProbeRequest) (ProbeResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return ProbeResponse{}, err
+	}
+	background := mode != ProbeModeActiveCritical && payload.Kind == "vless"
+	if background && !client.backgroundProbesReady(ctx) {
+		return ProbeResponse{CandidateID: payload.CandidateID, FailureClass: FailureInfrastructure,
+			ErrorCode: "probe_runtime_unavailable", Diagnostics: &ProbeDiagnostics{Phase: "admission"}}, nil
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return ProbeResponse{}, err
@@ -322,16 +342,51 @@ func (client *Client) probe(ctx context.Context, mode ProbeMode, payload ProbeRe
 	request.Header.Set("Content-Type", "application/json")
 	response, err := client.probeHTTP.Do(request)
 	if err != nil {
-		return ProbeResponse{}, err
+		code := "agent_transport"
+		if probeCtx.Err() == context.DeadlineExceeded {
+			code = "agent_deadline"
+		}
+		if probeCtx.Err() == context.Canceled {
+			code = "agent_canceled"
+		}
+		return ProbeResponse{}, &ProbeError{Code: code, Phase: "transport", Cause: err}
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return ProbeResponse{}, fmt.Errorf("agent %s probe returned HTTP %d: %s", mode, response.StatusCode, bytes.TrimSpace(message))
+		var result ProbeResponse
+		if (response.StatusCode == http.StatusServiceUnavailable || response.StatusCode == http.StatusGatewayTimeout) &&
+			json.Unmarshal(message, &result) == nil && result.FailureClass == FailureInfrastructure && !result.Success &&
+			(result.CandidateID == "" || result.CandidateID == payload.CandidateID) {
+			result.CandidateID = payload.CandidateID
+			result.ErrorCode = safeInfrastructureCode(result.ErrorCode)
+			result.Diagnostics.sanitize()
+			result.sanitizeHTTPDiagnostics()
+			if background && SharedProbeUnavailable(result) {
+				client.pauseBackgroundProbes()
+			}
+			return result, nil
+		}
+		return ProbeResponse{}, &ProbeError{Code: "agent_http_error", Phase: "response"}
 	}
 	var result ProbeResponse
 	if err := json.NewDecoder(io.LimitReader(response.Body, 1024*1024)).Decode(&result); err != nil {
-		return ProbeResponse{}, err
+		return ProbeResponse{}, &ProbeError{Code: "agent_response_invalid", Phase: "response", Cause: err}
+	}
+	if result.CandidateID != "" && result.CandidateID != payload.CandidateID {
+		return ProbeResponse{}, &ProbeError{Code: "agent_response_invalid", Phase: "response"}
+	}
+	if (result.FailureClass != FailureNone && result.FailureClass != FailureCandidate && result.FailureClass != FailureInfrastructure) ||
+		(result.Success && result.FailureClass != FailureNone) {
+		return ProbeResponse{}, &ProbeError{Code: "agent_response_invalid", Phase: "response"}
+	}
+	result.Diagnostics.sanitize()
+	result.sanitizeHTTPDiagnostics()
+	if result.FailureClass == FailureInfrastructure {
+		result.ErrorCode = safeInfrastructureCode(result.ErrorCode)
+	}
+	if background && SharedProbeUnavailable(result) {
+		client.pauseBackgroundProbes()
 	}
 	return result, nil
 }

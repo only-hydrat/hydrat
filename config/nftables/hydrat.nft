@@ -1,6 +1,13 @@
 add table inet hydrat
 delete table inet hydrat
 table inet hydrat {
+  set client_activity {
+    type ipv4_addr
+    flags dynamic,timeout
+    timeout 5m
+    size 65535
+  }
+
   chain dns_redirect {
     type nat hook prerouting priority dstnat; policy accept;
     iifname "wg0" udp dport 53 redirect to :53
@@ -10,6 +17,7 @@ table inet hydrat {
 
   chain prerouting {
     type filter hook prerouting priority mangle; policy accept;
+    iifname "wg0" update @client_activity { ip saddr timeout 5m }
     iifname "wg0" ip daddr 10.44.0.1 tcp dport { 80, 8080 } accept
     iifname "wg0" udp dport 53 accept
     iifname "wg0" tcp dport 53 accept

@@ -37,6 +37,7 @@ type ProbeRequest struct {
 }
 
 type ProbeResponse struct {
+	Diagnostics  *ProbeDiagnostics  `json:"diagnostics,omitempty"`
 	CandidateID  string             `json:"candidate_id"`
 	Success      bool               `json:"success"`
 	FailureClass FailureClass       `json:"failure_class,omitempty"`
@@ -150,6 +151,24 @@ func (server *Server) probe(response http.ResponseWriter, request *http.Request,
 		writeJSON(response, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	started := time.Now()
+	diagnostics := &ProbeDiagnostics{Phase: "queue"}
+	probeRuntime := server.probeRuntime
+	if mode == ProbeModeActiveCritical {
+		probeRuntime = server.activeProbeRuntime
+	}
+	if body.Kind == sources.KindVLESS && probeRuntime != nil {
+		snapshot := probeRuntime.Snapshot()
+		diagnostics.RuntimeEpoch = snapshot.Epoch
+		diagnostics.RuntimeStatus = snapshot.Status
+		if mode != ProbeModeActiveCritical && snapshot.Status != "ready" && snapshot.Status != "" {
+			diagnostics.Phase = "runtime"
+			diagnostics.sanitize()
+			writeJSON(response, http.StatusServiceUnavailable, ProbeResponse{CandidateID: body.CandidateID,
+				FailureClass: FailureInfrastructure, ErrorCode: "probe_runtime_unavailable", Diagnostics: diagnostics})
+			return
+		}
+	}
 	ctx, cancel := context.WithTimeout(
 		request.Context(),
 		server.probeDeadlines.forRequest(mode, body.Kind),
@@ -160,11 +179,15 @@ func (server *Server) probe(response http.ResponseWriter, request *http.Request,
 	case limit <- struct{}{}:
 		defer func() { <-limit }()
 	case <-ctx.Done():
+		diagnostics.QueueMS, diagnostics.ElapsedMS = time.Since(started).Milliseconds(), time.Since(started).Milliseconds()
 		writeJSON(response, http.StatusGatewayTimeout, ProbeResponse{
 			CandidateID: body.CandidateID, FailureClass: FailureInfrastructure, ErrorCode: "worker_timeout",
+			Diagnostics: diagnostics,
 		})
 		return
 	}
+	diagnostics.QueueMS = time.Since(started).Milliseconds()
+	diagnostics.Phase = "measure"
 	result, err := runner.Probe(ctx, mode, body)
 	if err != nil {
 		code := "probe_infrastructure"
@@ -173,6 +196,11 @@ func (server *Server) probe(response http.ResponseWriter, request *http.Request,
 		} else if errors.Is(err, context.Canceled) {
 			code = "probe_canceled"
 		}
+		var probeErr *ProbeError
+		if errors.As(err, &probeErr) {
+			code = safeInfrastructureCode(probeErr.Code)
+			diagnostics.Phase = safeProbePhase(probeErr.Phase)
+		}
 		result = ProbeResponse{
 			CandidateID: body.CandidateID, FailureClass: FailureInfrastructure, ErrorCode: code,
 		}
@@ -180,6 +208,10 @@ func (server *Server) probe(response http.ResponseWriter, request *http.Request,
 	if result.CandidateID == "" {
 		result.CandidateID = body.CandidateID
 	}
+	diagnostics.ElapsedMS = time.Since(started).Milliseconds()
+	diagnostics.sanitize()
+	result.Diagnostics = diagnostics
+	result.sanitizeHTTPDiagnostics()
 	writeJSON(response, http.StatusOK, result)
 }
 

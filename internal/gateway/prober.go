@@ -191,7 +191,7 @@ func (prober *Prober) probeCriticalActiveVLESS(
 	}
 	lease, err := prober.runtime.Acquire(ctx)
 	if err != nil {
-		return agentapi.ProbeResponse{}, err
+		return agentapi.ProbeResponse{}, &agentapi.ProbeError{Code: "probe_runtime_interrupted", Phase: "runtime", Cause: err}
 	}
 	var cleanupErr error
 	defer func() { prober.runtime.Release(lease, cleanupErr) }()
@@ -257,7 +257,7 @@ func (prober *Prober) probeVLESS(
 	}
 	lease, err := prober.runtime.Acquire(ctx)
 	if err != nil {
-		return agentapi.ProbeResponse{}, err
+		return agentapi.ProbeResponse{}, &agentapi.ProbeError{Code: "probe_runtime_interrupted", Phase: "runtime", Cause: err}
 	}
 	defer func() {
 		panicValue := recover()
@@ -273,10 +273,14 @@ func (prober *Prober) probeVLESS(
 		}
 		if clearErr != nil {
 			response = agentapi.ProbeResponse{}
-			probeErr = fmt.Errorf("clear probe slot: %w", clearErr)
+			probeErr = &agentapi.ProbeError{Code: "probe_cleanup_failed", Phase: "cleanup", Cause: clearErr}
 		}
 	}()
-	return prober.measureVLESS(lease.Context, lease.Epoch, control, slot, mode, request)
+	response, probeErr = prober.measureVLESS(lease.Context, lease.Epoch, control, slot, mode, request)
+	if ctx.Err() == nil && lease.Context.Err() != nil {
+		return agentapi.ProbeResponse{}, &agentapi.ProbeError{Code: "probe_runtime_interrupted", Phase: "runtime", Cause: lease.Context.Err()}
+	}
+	return response, probeErr
 }
 
 func (prober *Prober) measureVLESS(
@@ -300,7 +304,7 @@ func (prober *Prober) measureVLESS(
 		epoch,
 		[]probexray.SlotCandidate{{Slot: 0, Config: encoded}},
 	); err != nil {
-		return agentapi.ProbeResponse{}, err
+		return agentapi.ProbeResponse{}, &agentapi.ProbeError{Code: "probe_setup_failed", Phase: "configure", Cause: err}
 	}
 	address := fmt.Sprintf("127.0.0.1:%d", prober.portBase+slot)
 	if mode == agentapi.ProbeModeQoE {
@@ -583,6 +587,7 @@ func (prober *Prober) slots(mode agentapi.ProbeMode) chan int {
 }
 
 func qoeProbeResponse(candidateID string, observation qoe.Observation) agentapi.ProbeResponse {
+	observation.ApplicationChecks = qoe.SafeHTTPChecks(observation.ApplicationChecks)
 	response := agentapi.ProbeResponse{
 		CandidateID: candidateID,
 		Success:     observation.Success,

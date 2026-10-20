@@ -24,6 +24,38 @@ type hardFailureCandidateState struct {
 	candidate  scheduler.Candidate
 }
 
+type routeRecoveryRetryError struct{}
+
+var errRecoverySkeletonChanged = fmt.Errorf("applied recovery skeleton changed: %w", store.ErrCandidateInventoryChanged)
+
+func (routeRecoveryRetryError) Error() string {
+	return "confirmed route recovery attempt exhausted its budget"
+}
+func (routeRecoveryRetryError) Temporary() bool { return true }
+
+func (engine *Engine) recoverHardFailure(ctx context.Context, now time.Time, profiles ProfileProvider, fence *planProfileFence, bounded bool) error {
+	attempt := ctx
+	if bounded {
+		var cancel context.CancelFunc
+		attempt, cancel = context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+	}
+	const maxInventoryAttempts = 3
+	for i := 0; i < maxInventoryAttempts; i++ {
+		err := engine.hardFailureCycle(attempt, now, profiles, fence)
+		if err != nil && ctx.Err() == nil && attempt.Err() == context.DeadlineExceeded {
+			return routeRecoveryRetryError{}
+		}
+		if errors.Is(err, errRecoverySkeletonChanged) {
+			return err
+		}
+		if !errors.Is(err, store.ErrCandidateInventoryChanged) && !errors.Is(err, store.ErrCandidateEvidenceChanged) {
+			return err
+		}
+	}
+	return store.ErrCandidateInventoryChanged
+}
+
 func (engine *Engine) hardFailureCycle(
 	ctx context.Context,
 	now time.Time,
@@ -58,10 +90,20 @@ func (engine *Engine) hardFailureCycle(
 		return err
 	}
 	rowsByID := candidateSnapshot.rowsByID
+	debt, err := engine.store.PendingRouteRecoveries(ctx)
+	if err != nil {
+		return err
+	}
+	debtByRoute := make(map[string]bool, len(debt))
+	for _, recovery := range debt {
+		if row, ok := candidateSnapshot.rowsByID[recovery.CandidateID]; ok && row.Fingerprint == recovery.Fingerprint {
+			debtByRoute[recovery.ClientID+":"+string(recovery.Transport)] = true
+		}
+	}
 	inventoryEpoch := candidateSnapshot.inventoryEpoch
 	emergencyCandidates := make(map[string][]scheduler.Candidate)
 	for candidateID, state := range candidateStates {
-		if state.hardFailed {
+		if state.hardFailed || len(debt) > 0 {
 			emergencyCandidates[candidateID] = hardFailureEmergencyCandidates(
 				candidateID, candidateSnapshot,
 			)
@@ -72,8 +114,18 @@ func (engine *Engine) hardFailureCycle(
 		return err
 	}
 	currentClients := make(map[string]bool, len(clients))
+	pausedClients := make(map[string]bool, len(clients))
+	appliedClients := make(map[string]dataplane.ClientRoute, len(plan.Clients))
+	for _, route := range plan.Clients {
+		appliedClients[route.ClientID] = route
+	}
 	for _, client := range clients {
+		route, routed := appliedClients[client.ID]
+		if (!routed && !client.Paused) || (routed && (route.SourceCIDR != client.Address || client.Paused && (!route.BlockTCP || !route.BlockUDP))) {
+			return errRecoverySkeletonChanged
+		}
 		currentClients[client.ID] = true
+		pausedClients[client.ID] = client.Paused
 	}
 	removedClientRoutes := false
 	remainingRoutes := plan.Clients[:0]
@@ -93,7 +145,6 @@ func (engine *Engine) hardFailureCycle(
 	for _, assignment := range assignments {
 		assignmentByClient[assignment.ClientID] = assignment
 	}
-	candidateLoad, domainLoad := hardFailureLoads(assignments, candidateStates)
 	planOutbounds := make(map[string]dataplane.Outbound, len(plan.Outbounds))
 	for _, outbound := range plan.Outbounds {
 		planOutbounds[outbound.ID] = outbound
@@ -105,7 +156,17 @@ func (engine *Engine) hardFailureCycle(
 	}
 	changed := removedClientRoutes
 	requiresTorFence := false
-	for clientID, assignment := range assignmentByClient {
+	clientIDs := make([]string, 0, len(assignmentByClient))
+	for clientID := range assignmentByClient {
+		clientIDs = append(clientIDs, clientID)
+	}
+	sort.Strings(clientIDs)
+	for _, clientID := range clientIDs {
+		if pausedClients[clientID] {
+			continue
+		}
+		assignment := assignmentByClient[clientID]
+		candidateLoad, domainLoad := engine.hardFailureOtherClientLoads(now, clients, assignmentByClient, clientID, candidateStates)
 		routeIndex, routed := routeByClient[clientID]
 		if !routed {
 			continue
@@ -113,7 +174,7 @@ func (engine *Engine) hardFailureCycle(
 		route := &plan.Clients[routeIndex]
 		clientChanged := false
 		if assignment.TCPOutbound != "" &&
-			candidateStates[assignment.TCPOutbound].hardFailed {
+			(candidateStates[assignment.TCPOutbound].hardFailed || debtByRoute[clientID+":tcp"]) {
 			failedCandidateID := assignment.TCPOutbound
 			replacementApplied := false
 			reserve, ok, err := engine.store.AppliedReserveForFailure(
@@ -136,6 +197,12 @@ func (engine *Engine) hardFailureCycle(
 					clientID, reserve, route.TCPReserveOutbound, plan.Outbounds,
 					rowsByID, profiles,
 				)
+			if reserveHandlerValid && scheduler.RouteLoad(reserveState.candidate, emergencyCandidates[failedCandidateID], candidateLoad) >= 2 {
+				alternative := engine.scheduler.SelectEmergency(now, clientID, "tcp", failedCandidateID, emergencyCandidates[failedCandidateID], candidateLoad, domainLoad)
+				if alternative != "" && scheduler.RouteLoad(candidateStates[alternative].candidate, emergencyCandidates[failedCandidateID], candidateLoad) < 2 && scheduler.ComparableQuality(candidateStates[alternative].candidate, reserveState.candidate) {
+					reserveHandlerValid = false
+				}
+			}
 			reserveDNS := dnsHandlerForClientTarget(
 				clientID, route.TCPReserveOutbound, plan.Outbounds,
 			)
@@ -188,17 +255,13 @@ func (engine *Engine) hardFailureCycle(
 				}
 			}
 			if replacementApplied {
-				adjustHardFailureLoad(
-					candidateLoad, domainLoad, candidateStates,
-					failedCandidateID, assignment.TCPOutbound,
-				)
 				route.TCPReserveOutbound = ""
 				clientChanged = true
 				changed = true
 			}
 		}
 		if assignment.UDPOutbound != "" &&
-			candidateStates[assignment.UDPOutbound].hardFailed {
+			(candidateStates[assignment.UDPOutbound].hardFailed || debtByRoute[clientID+":udp"]) {
 			failedCandidateID := assignment.UDPOutbound
 			replacementApplied := false
 			reserve, ok, err := engine.store.AppliedReserveForFailure(
@@ -217,6 +280,12 @@ func (engine *Engine) hardFailureCycle(
 			)
 			reserveHandlerValid := ok && selection.UDP == reserve &&
 				candidateIDFromHandler(route.UDPReserveOutbound, clientID) == reserve
+			if reserveHandlerValid && scheduler.RouteLoad(reserveState.candidate, emergencyCandidates[failedCandidateID], candidateLoad) >= 2 {
+				alternative := engine.scheduler.SelectEmergency(now, clientID, "udp", failedCandidateID, emergencyCandidates[failedCandidateID], candidateLoad, domainLoad)
+				if alternative != "" && scheduler.RouteLoad(candidateStates[alternative].candidate, emergencyCandidates[failedCandidateID], candidateLoad) < 2 && scheduler.ComparableQuality(candidateStates[alternative].candidate, reserveState.candidate) {
+					reserveHandlerValid = false
+				}
+			}
 			if reserveHandlerValid {
 				assignment.UDPOutbound = reserve
 				assignment.UDPSince = now
@@ -247,10 +316,6 @@ func (engine *Engine) hardFailureCycle(
 				}
 			}
 			if replacementApplied {
-				adjustHardFailureLoad(
-					candidateLoad, domainLoad, candidateStates,
-					failedCandidateID, assignment.UDPOutbound,
-				)
 				route.UDPReserveOutbound = ""
 				clientChanged = true
 				changed = true
@@ -274,7 +339,7 @@ func (engine *Engine) hardFailureCycle(
 	for _, candidateID := range uniqueCandidateReferences(plan.Outbounds) {
 		candidate, exists := rowsByID[candidateID]
 		if !exists {
-			return store.ErrCandidateInventoryChanged
+			return errRecoverySkeletonChanged
 		}
 		expectations = append(expectations, store.CandidatePlanExpectation{
 			Candidate: candidate, AllowDraining: true,
@@ -330,35 +395,37 @@ func hardFailureLoads(
 	load := make(map[string]int)
 	domainLoad := make(map[string]int)
 	for _, assignment := range assignments {
+		seenCandidates := map[string]bool{}
+		seenDomains := map[string]bool{}
 		for _, candidateID := range []string{
 			assignment.TCPOutbound, assignment.UDPOutbound,
 		} {
 			if candidateID == "" {
 				continue
 			}
-			load[candidateID]++
-			domainLoad[hardFailureDomain(candidateID, states)]++
+			if !seenCandidates[candidateID] {
+				load[candidateID]++
+				seenCandidates[candidateID] = true
+			}
+			domain := hardFailureDomain(candidateID, states)
+			if !seenDomains[domain] {
+				domainLoad[domain]++
+				seenDomains[domain] = true
+			}
 		}
 	}
 	return load, domainLoad
 }
 
-func adjustHardFailureLoad(
-	load, domainLoad map[string]int,
-	states map[string]hardFailureCandidateState,
-	oldCandidateID, newCandidateID string,
-) {
-	if oldCandidateID == newCandidateID {
-		return
+func (engine *Engine) hardFailureOtherClientLoads(now time.Time, clients []store.ClientRecord, assignments map[string]store.AssignmentRecord, excludedID string, states map[string]hardFailureCandidateState) (map[string]int, map[string]int) {
+	selected := make([]store.AssignmentRecord, 0, len(clients))
+	for _, client := range clients {
+		if client.ID == excludedID || client.Paused || (engine.clientReservations && !client.RouteReserved(now)) {
+			continue
+		}
+		selected = append(selected, assignments[client.ID])
 	}
-	if oldCandidateID != "" {
-		load[oldCandidateID]--
-		domainLoad[hardFailureDomain(oldCandidateID, states)]--
-	}
-	if newCandidateID != "" {
-		load[newCandidateID]++
-		domainLoad[hardFailureDomain(newCandidateID, states)]++
-	}
+	return hardFailureLoads(selected, states)
 }
 
 func hardFailureDomain(
@@ -543,8 +610,8 @@ func (engine *Engine) pendingHardPlanPrimariesCurrent(
 	for candidateID := range referenced {
 		ids = append(ids, candidateID)
 	}
-	snapshot, err := engine.loadRouteCandidateSnapshotWithProfiles(
-		ctx, now, ids, referenced, profiles,
+	snapshot, err := engine.routeCandidateSnapshot(
+		ctx, now, ids, referenced, profiles, true,
 	)
 	if err != nil {
 		return false, err
@@ -684,11 +751,75 @@ func (engine *Engine) hardFailureCandidateStates(
 	includeStale bool,
 ) (map[string]hardFailureCandidateState, routeCandidateSnapshot, error) {
 	references := uniqueCandidateReferences(plan.Outbounds)
-	snapshot, err := engine.loadRouteCandidateSnapshotWithProfiles(
-		ctx, now, references, map[string]bool{}, profiles,
+	snapshot, err := engine.routeCandidateSnapshot(
+		ctx, now, references, map[string]bool{}, profiles, true,
 	)
 	if err != nil {
 		return nil, routeCandidateSnapshot{}, err
+	}
+	// Prefer the exact installed reserve. Explore the working pool only when
+	// its admission/profile/DNS binding is no longer usable, not on every RPC.
+	needsEmergency := false
+	projectedTCP, projectedUDP := make(map[string]int), make(map[string]int)
+	physicalKey := func(id string) string {
+		if key := snapshot.allByID[id].RouteKey; key != "" {
+			return key
+		}
+		return id
+	}
+	for _, route := range plan.Clients {
+		if route.Dormant {
+			continue
+		}
+		projectedTCP[physicalKey(candidateIDFromHandler(route.TCPOutbound, route.ClientID))]++
+		projectedUDP[physicalKey(candidateIDFromHandler(route.UDPOutbound, route.ClientID))]++
+	}
+	debt, err := engine.store.PendingRouteRecoveries(ctx)
+	if err != nil {
+		return nil, routeCandidateSnapshot{}, err
+	}
+	pending := make(map[string]bool, len(debt))
+	for _, recovery := range debt {
+		pending[recovery.ClientID+":"+string(recovery.Transport)] = true
+	}
+	for _, route := range plan.Clients {
+		if route.Dormant {
+			continue
+		}
+		tcp, udp := candidateIDFromHandler(route.TCPOutbound, route.ClientID), candidateIDFromHandler(route.UDPOutbound, route.ClientID)
+		failedTCP := tcp != "" && (snapshot.healthByID[tcp].ActiveHardFailure || pending[route.ClientID+":tcp"])
+		failedUDP := udp != "" && (snapshot.healthByID[udp].ActiveHardFailure || pending[route.ClientID+":udp"])
+		if !failedTCP && !failedUDP {
+			continue
+		}
+		reserveTCP, reserveUDP := candidateIDFromHandler(route.TCPReserveOutbound, route.ClientID), candidateIDFromHandler(route.UDPReserveOutbound, route.ClientID)
+		if failedTCP && reserveTCP != "" {
+			projectedTCP[physicalKey(tcp)]--
+			projectedTCP[physicalKey(reserveTCP)]++
+			needsEmergency = projectedTCP[physicalKey(reserveTCP)] > 2
+		}
+		if failedUDP && reserveUDP != "" {
+			projectedUDP[physicalKey(udp)]--
+			projectedUDP[physicalKey(reserveUDP)]++
+			needsEmergency = needsEmergency || projectedUDP[physicalKey(reserveUDP)] > 2
+		}
+		if needsEmergency {
+			break
+		}
+		admission, err := engine.scheduler.ValidateReserveSelectionContext(ctx, now, route.ClientID, scheduler.Assignment{TCP: tcp, UDP: udp}, scheduler.ReserveSelection{TCP: reserveTCP, UDP: reserveUDP}, []scheduler.Candidate{snapshot.allByID[tcp], snapshot.allByID[udp], snapshot.allByID[reserveTCP], snapshot.allByID[reserveUDP]})
+		if err != nil {
+			return nil, routeCandidateSnapshot{}, err
+		}
+		if failedTCP && (!admission.TCP || dnsHandlerForClientTarget(route.ClientID, route.TCPReserveOutbound, plan.Outbounds) == "" || !engine.mappedReserveHandlerMatchesCurrentProfile(route.ClientID, reserveTCP, route.TCPReserveOutbound, plan.Outbounds, snapshot.rowsByID, profiles)) || failedUDP && !admission.UDP {
+			needsEmergency = true
+			break
+		}
+	}
+	if needsEmergency {
+		snapshot, err = engine.loadRouteCandidateSnapshotWithProfiles(ctx, now, references, map[string]bool{}, profiles)
+		if err != nil {
+			return nil, routeCandidateSnapshot{}, err
+		}
 	}
 	result := make(map[string]hardFailureCandidateState, len(snapshot.allByID))
 	for candidateID, candidate := range snapshot.allByID {

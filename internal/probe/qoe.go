@@ -3,10 +3,13 @@ package probe
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -27,24 +30,19 @@ const (
 	defaultQoEEndpoint      = "https://speed.cloudflare.com/__down"
 	defaultQoEBytes         = int64(262144)
 	defaultQoEDeadline      = 10 * time.Second
-	directReserve           = 2 * time.Second
 	applicationGateDeadline = 3 * time.Second
 	dnsGateDeadline         = 4 * time.Second
-	failureWindow           = 30 * time.Second
-	failureThreshold        = 3
-	recoveryInterval        = time.Minute
 
-	qoeRouteTimeout                = qoe.ReasonRouteTimeout
-	qoeRouteTLS                    = qoe.ReasonRouteTLS
-	qoeRouteTransport              = qoe.ReasonRouteTransport
-	qoeEndpointHTTP                = "qoe_endpoint_http"
-	qoeEndpointSize                = "qoe_endpoint_size"
-	qoeEndpointMalformed           = "qoe_endpoint_malformed"
-	qoeEndpointUnavailable         = "qoe_endpoint_unavailable"
-	qoeApplicationGates            = qoe.ReasonApplicationGates
-	qoeApplicationGatesUnavailable = "qoe_application_gates_unavailable"
-	qoeDNSUnavailable              = "qoe_dns_unavailable"
-	qoeMeasurementCanceled         = "qoe_measurement_canceled"
+	qoeRouteTimeout        = qoe.ReasonRouteTimeout
+	qoeRouteTLS            = qoe.ReasonRouteTLS
+	qoeRouteTransport      = qoe.ReasonRouteTransport
+	qoeEndpointHTTP        = "qoe_endpoint_http"
+	qoeEndpointSize        = "qoe_endpoint_size"
+	qoeEndpointMalformed   = "qoe_endpoint_malformed"
+	qoeApplicationGates    = qoe.ReasonApplicationGates
+	qoeDNSUnavailable      = "qoe_dns_unavailable"
+	qoeMeasurementCanceled = "qoe_measurement_canceled"
+	qoeProxyUnavailable    = "qoe_proxy_unavailable"
 )
 
 type ApplicationGateChecker func(context.Context, *http.Client) HTTPGateResult
@@ -53,15 +51,17 @@ type DNSRouteChecker func(context.Context, string, string) error
 type DNSDirectChecker func(context.Context, string) error
 
 type QoEMeasurerConfig struct {
-	ClientFactory      func(string) *http.Client
-	DirectClient       *http.Client
-	Endpoint           string
-	SampleBytes        int64
-	Deadline           time.Duration
-	Now                func() time.Time
-	Nonce              func() string
-	ApplicationGates   ApplicationGateChecker
+	ClientFactory    func(string) *http.Client
+	DirectClient     *http.Client // Deprecated: ignored; HTTP controls use other configurations.
+	Endpoint         string
+	SampleBytes      int64
+	Deadline         time.Duration
+	Now              func() time.Time
+	Nonce            func() string
+	ApplicationGates ApplicationGateChecker
+	// Deprecated: ignored. HTTP control is routed by the controller.
 	ApplicationControl ApplicationGateChecker
+	ApplicationPolicy  string
 	DNSResolver        string
 	DNSResolvers       []string
 	DNSRouteCheck      DNSRouteChecker
@@ -71,33 +71,19 @@ type QoEMeasurerConfig struct {
 }
 
 type QoEMeasurer struct {
-	clientFactory      func(string) *http.Client
-	directClient       *http.Client
-	endpoint           string
-	sampleBytes        int64
-	deadline           time.Duration
-	now                func() time.Time
-	nonce              func() string
-	applicationGates   ApplicationGateChecker
-	applicationControl ApplicationGateChecker
-	dnsResolvers       []string
-	dnsRouteCheck      DNSRouteChecker
-	dnsDirectCheck     DNSDirectChecker
-	udpCheck           func(context.Context, string) bool
-	udpNon443Check     func(context.Context, string) bool
-
-	mu                 sync.Mutex
-	recentFailures     map[string]time.Time
-	circuitOpen        bool
-	lastControlAttempt time.Time
-	lastControlHealthy bool
-	control            *qoeControlCall
-}
-
-type qoeControlCall struct {
-	done     chan struct{}
-	healthy  bool
-	recovery bool
+	clientFactory    func(string) *http.Client
+	endpoint         string
+	sampleBytes      int64
+	deadline         time.Duration
+	now              func() time.Time
+	nonce            func() string
+	applicationGates ApplicationGateChecker
+	comparisonPolicy string
+	dnsResolvers     []string
+	dnsRouteCheck    DNSRouteChecker
+	dnsDirectCheck   DNSDirectChecker
+	udpCheck         func(context.Context, string) bool
+	udpNon443Check   func(context.Context, string) bool
 }
 
 type qoeRequestResult struct {
@@ -128,9 +114,6 @@ func NewQoEMeasurer(config QoEMeasurerConfig) *QoEMeasurer {
 			return randomQoENonce(rand.Reader)
 		}
 	}
-	if config.DirectClient == nil {
-		config.DirectClient = http.DefaultClient
-	}
 	dnsResolvers := append([]string(nil), config.DNSResolvers...)
 	if len(dnsResolvers) == 0 && config.DNSResolver != "" {
 		dnsResolvers = []string{config.DNSResolver}
@@ -147,22 +130,29 @@ func NewQoEMeasurer(config QoEMeasurerConfig) *QoEMeasurer {
 	if config.UDPNon443Check == nil {
 		config.UDPNon443Check = CheckNon443UDP
 	}
+	encodedPolicy, _ := json.Marshal(struct {
+		Version      string
+		Endpoint     string
+		Bytes        int64
+		DNS          []string
+		Applications string
+		Deadline     time.Duration
+	}{"hydrat-http-qoe-v1", config.Endpoint, config.SampleBytes, dnsResolvers, config.ApplicationPolicy, config.Deadline})
+	policyDigest := sha256.Sum256(encodedPolicy)
 	return &QoEMeasurer{
-		clientFactory:      config.ClientFactory,
-		directClient:       config.DirectClient,
-		endpoint:           config.Endpoint,
-		sampleBytes:        config.SampleBytes,
-		deadline:           config.Deadline,
-		now:                config.Now,
-		nonce:              config.Nonce,
-		applicationGates:   config.ApplicationGates,
-		applicationControl: config.ApplicationControl,
-		dnsResolvers:       dnsResolvers,
-		dnsRouteCheck:      config.DNSRouteCheck,
-		dnsDirectCheck:     config.DNSDirectCheck,
-		udpCheck:           config.UDPCheck,
-		udpNon443Check:     config.UDPNon443Check,
-		recentFailures:     make(map[string]time.Time),
+		clientFactory:    config.ClientFactory,
+		endpoint:         config.Endpoint,
+		sampleBytes:      config.SampleBytes,
+		deadline:         config.Deadline,
+		now:              config.Now,
+		nonce:            config.Nonce,
+		applicationGates: config.ApplicationGates,
+		comparisonPolicy: hex.EncodeToString(policyDigest[:]),
+		dnsResolvers:     dnsResolvers,
+		dnsRouteCheck:    config.DNSRouteCheck,
+		dnsDirectCheck:   config.DNSDirectCheck,
+		udpCheck:         config.UDPCheck,
+		udpNon443Check:   config.UDPNon443Check,
 	}
 }
 
@@ -239,6 +229,11 @@ func (measurer *QoEMeasurer) MeasureAvailability(
 		observation.ErrorCode = qoeMeasurementCanceled
 		return observation
 	}
+	if localSOCKSDialFailure(routeErr, socksAddress) {
+		observation.Infrastructure = true
+		observation.ErrorCode = qoeProxyUnavailable
+		return observation
+	}
 	if !measurer.anyDNSDirectHealthy(availabilityCtx, resolver) {
 		observation.Infrastructure = true
 		observation.ErrorCode = qoeDNSUnavailable
@@ -255,16 +250,10 @@ func (measurer *QoEMeasurer) measure(
 	udpCheck func(context.Context, string) bool,
 ) qoe.Observation {
 	at := measurer.now()
-	observation := qoe.Observation{At: at}
+	observation := qoe.Observation{At: at, ComparisonPolicy: measurer.comparisonPolicy}
 	ctx, cancel := context.WithTimeout(ctx, measurer.deadline)
 	defer cancel()
 
-	allowed, recovered := measurer.circuitAllowsRoute(ctx, at)
-	if !allowed {
-		observation.Infrastructure = true
-		observation.ErrorCode = qoeEndpointUnavailable
-		return observation
-	}
 	if len(measurer.dnsResolvers) > 0 && measurer.dnsRouteCheck != nil {
 		resolver, resolverErr := dataplane.SelectDNSResolver(candidateID, measurer.dnsResolvers)
 		if resolverErr != nil {
@@ -279,6 +268,11 @@ func (measurer *QoEMeasurer) measure(
 			if ctx.Err() != nil {
 				observation.Infrastructure = true
 				observation.ErrorCode = qoeMeasurementCanceled
+				return observation
+			}
+			if localSOCKSDialFailure(dnsErr, socksAddress) {
+				observation.Infrastructure = true
+				observation.ErrorCode = qoeProxyUnavailable
 				return observation
 			}
 			if !measurer.anyDNSDirectHealthy(ctx, resolver) {
@@ -310,20 +304,42 @@ func (measurer *QoEMeasurer) measure(
 	}()
 
 	routeStarted := at
-	if recovered {
-		routeStarted = measurer.now()
-	}
-	routeCtx, routeCancel := context.WithDeadline(ctx, measurer.routeDeadline(ctx))
+	// Leave bounded room for classification, application gates and slot cleanup
+	// before the agent RPC expires. This is not a host-HTTP control budget.
+	routeBudget := contextDeadline(ctx)
+	remaining := time.Until(routeBudget)
+	routeBudget = routeBudget.Add(-min(2*time.Second, remaining/2))
+	routeCtx, routeCancel := context.WithDeadline(ctx, routeBudget)
 	routeClient := measurer.routeClient(socksAddress)
 	defer routeClient.CloseIdleConnections()
+	requestStarted := time.Now()
 	result := measurer.request(routeCtx, routeClient, true, routeStarted)
 	routeCancel()
 	observation.TTFB = result.ttfb
 	observation.TransferDuration = result.transferDuration
 	observation.Bytes = result.bytes
+	endpointCheck := qoe.HTTPCheck{Service: "qoe_endpoint", Path: "route", Phase: "body", Code: "ok", Status: result.statusCode, ElapsedMS: time.Since(requestStarted).Milliseconds(), OK: result.err == nil && !result.malformed && result.endpointError == "" && result.statusCode >= 200 && result.statusCode < 300 && result.bytes == measurer.sampleBytes}
+	if !endpointCheck.OK {
+		endpointCheck.Code = "body"
+		if result.err != nil {
+			endpointCheck.Code = "transport"
+			if classifyQoERouteError(result.err) == qoeRouteTimeout {
+				endpointCheck.Code = "timeout"
+			}
+			if classifyQoERouteError(result.err) == qoeRouteTLS {
+				endpointCheck.Code = "tls"
+			}
+		}
+		if result.statusCode >= 300 {
+			endpointCheck.Code = "http_status"
+			endpointCheck.Phase = "status"
+		}
+	}
+	observation.ApplicationChecks = []qoe.HTTPCheck{endpointCheck}
 
 	if result.endpointError != "" {
 		observation.Infrastructure = true
+		observation.UnconfirmedHTTP = result.endpointError == qoeEndpointSize
 		observation.ErrorCode = result.endpointError
 		return observation
 	}
@@ -333,15 +349,14 @@ func (measurer *QoEMeasurer) measure(
 			observation.ErrorCode = qoeMeasurementCanceled
 			return observation
 		}
-		candidateError := classifyQoERouteError(result.err)
-		failureAt := measurer.now()
-		measurer.recordCandidateFailure(candidateID, failureAt)
-		if measurer.directControlHealthy(ctx, failureAt, false) {
-			observation.ErrorCode = candidateError
+		if localSOCKSDialFailure(result.err, socksAddress) {
+			observation.Infrastructure = true
+			observation.ErrorCode = qoeProxyUnavailable
 			return observation
 		}
 		observation.Infrastructure = true
-		observation.ErrorCode = qoeEndpointUnavailable
+		observation.UnconfirmedHTTP = true
+		observation.ErrorCode = classifyQoERouteError(result.err)
 		return observation
 	}
 	if result.malformed {
@@ -351,11 +366,13 @@ func (measurer *QoEMeasurer) measure(
 	}
 	if result.statusCode < http.StatusOK || result.statusCode >= http.StatusMultipleChoices {
 		observation.Infrastructure = true
+		observation.UnconfirmedHTTP = true
 		observation.ErrorCode = qoeEndpointHTTP
 		return observation
 	}
 	if result.bytes != measurer.sampleBytes {
 		observation.Infrastructure = true
+		observation.UnconfirmedHTTP = true
 		observation.ErrorCode = qoeEndpointSize
 		return observation
 	}
@@ -364,18 +381,22 @@ func (measurer *QoEMeasurer) measure(
 		// measurement. Bound it independently so a route that regularly stalls
 		// YouTube or Telegram for several seconds cannot remain healthy merely
 		// because the overall QoE measurement still has time left.
-		gateCtx, gateCancel := context.WithTimeout(ctx, applicationGateDeadline)
+		gateBudget := min(applicationGateDeadline, max(0, time.Until(contextDeadline(ctx))-250*time.Millisecond))
+		gateCtx, gateCancel := context.WithTimeout(ctx, gateBudget)
 		routeGates := measurer.applicationGates(gateCtx, routeClient)
 		gateCancel()
+		for _, check := range routeGates.Checks {
+			check.Path = "route"
+			observation.ApplicationChecks = append(observation.ApplicationChecks, check)
+		}
+		observation.ApplicationChecks = qoe.SafeHTTPChecks(observation.ApplicationChecks)
 		if !applicationRouteGatesHealthy(routeGates) {
-			if measurer.applicationControl == nil ||
-				!applicationRouteGatesHealthy(
-					measurer.applicationControl(ctx, measurer.directClient),
-				) {
-				observation.Infrastructure = true
-				observation.ErrorCode = qoeApplicationGatesUnavailable
+			observation.Infrastructure = true
+			if ctx.Err() != nil {
+				observation.ErrorCode = qoeMeasurementCanceled
 				return observation
 			}
+			observation.UnconfirmedHTTP = true
 			observation.ErrorCode = qoeApplicationGates
 			return observation
 		}
@@ -556,16 +577,6 @@ func (measurer *QoEMeasurer) routeClient(socksAddress string) *http.Client {
 	}}
 }
 
-func (measurer *QoEMeasurer) routeDeadline(ctx context.Context) time.Time {
-	deadline, _ := ctx.Deadline()
-	now := time.Now()
-	remaining := deadline.Sub(now)
-	if remaining > directReserve {
-		return deadline.Add(-directReserve)
-	}
-	return now.Add(remaining / 2)
-}
-
 func (measurer *QoEMeasurer) request(
 	ctx context.Context,
 	client *http.Client,
@@ -673,121 +684,9 @@ func readQoEBody(ctx context.Context, body io.ReadCloser, limit int64) (int64, e
 	}
 }
 
-func (measurer *QoEMeasurer) circuitAllowsRoute(ctx context.Context, at time.Time) (bool, bool) {
-	measurer.mu.Lock()
-	if !measurer.circuitOpen {
-		measurer.mu.Unlock()
-		return true, false
-	}
-	if at.Sub(measurer.lastControlAttempt) < recoveryInterval {
-		measurer.mu.Unlock()
-		return false, false
-	}
-	measurer.mu.Unlock()
-	healthy := measurer.directControlHealthy(ctx, at, true)
-	return healthy, healthy
-}
-
-func (measurer *QoEMeasurer) directControlHealthy(
-	ctx context.Context,
-	at time.Time,
-	recovery bool,
-) bool {
-	measurer.mu.Lock()
-	if measurer.control != nil {
-		call := measurer.control
-		measurer.mu.Unlock()
-		select {
-		case <-call.done:
-			return call.healthy
-		case <-ctx.Done():
-			return false
-		}
-	}
-	if measurer.circuitOpen && !recovery {
-		measurer.mu.Unlock()
-		return false
-	}
-	controlAge := at.Sub(measurer.lastControlAttempt)
-	if !measurer.circuitOpen && measurer.lastControlHealthy &&
-		controlAge < failureWindow {
-		measurer.mu.Unlock()
-		return true
-	}
-	if recovery && at.Sub(measurer.lastControlAttempt) < recoveryInterval {
-		measurer.mu.Unlock()
-		return false
-	}
-	call := &qoeControlCall{done: make(chan struct{}), recovery: recovery}
-	measurer.control = call
-	if at.After(measurer.lastControlAttempt) {
-		measurer.lastControlAttempt = at
-	}
-	measurer.mu.Unlock()
-
-	controlContext := context.WithoutCancel(ctx)
-	controlContext, cancelControl := context.WithDeadline(controlContext, contextDeadline(ctx))
-	go measurer.runDirectControl(call, controlContext, cancelControl, at)
-	select {
-	case <-call.done:
-		return call.healthy
-	case <-ctx.Done():
-		return false
-	}
-}
-
-func (measurer *QoEMeasurer) runDirectControl(
-	call *qoeControlCall,
-	ctx context.Context,
-	cancel context.CancelFunc,
-	at time.Time,
-) {
-	defer cancel()
-	result := measurer.request(
-		ctx,
-		withHTTPTimeout(measurer.directClient, measurer.deadline),
-		false,
-		at,
-	)
-	healthy := result.err == nil && !result.malformed &&
-		result.endpointError == "" &&
-		result.statusCode >= http.StatusOK && result.statusCode < http.StatusMultipleChoices &&
-		result.bytes == measurer.sampleBytes
-
-	measurer.mu.Lock()
-	call.healthy = healthy
-	if healthy {
-		measurer.circuitOpen = false
-	} else if call.recovery || measurer.hasFailureQuorumLocked(at) {
-		measurer.circuitOpen = true
-	}
-	measurer.lastControlHealthy = healthy
-	measurer.control = nil
-	close(call.done)
-	measurer.mu.Unlock()
-}
-
-func (measurer *QoEMeasurer) recordCandidateFailure(candidateID string, at time.Time) {
-	measurer.mu.Lock()
-	defer measurer.mu.Unlock()
-	measurer.pruneCandidateFailuresLocked(at)
-	if candidateID != "" {
-		measurer.recentFailures[candidateID] = at
-	}
-}
-
-func (measurer *QoEMeasurer) hasFailureQuorumLocked(at time.Time) bool {
-	measurer.pruneCandidateFailuresLocked(at)
-	return len(measurer.recentFailures) >= failureThreshold
-}
-
-func (measurer *QoEMeasurer) pruneCandidateFailuresLocked(at time.Time) {
-	cutoff := at.Add(-failureWindow)
-	for id, failedAt := range measurer.recentFailures {
-		if failedAt.Before(cutoff) {
-			delete(measurer.recentFailures, id)
-		}
-	}
+func localSOCKSDialFailure(err error, address string) bool {
+	var proxyError *net.OpError
+	return errors.As(err, &proxyError) && proxyError.Op == "dial" && proxyError.Addr != nil && proxyError.Addr.String() == address
 }
 
 func classifyQoERouteError(err error) string {

@@ -3,13 +3,18 @@ package probe
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
+	"sync"
 	"time"
+
+	"github.com/only-hydrat/hydrat/internal/qoe"
 )
 
 const (
@@ -39,6 +44,7 @@ type HTTPGateResult struct {
 	YouTubeWeb   bool
 	InstagramWeb bool
 	CustomGates  map[string]bool
+	Checks       []qoe.HTTPCheck
 }
 
 func DefaultHTTPGateConfig() HTTPGateConfig {
@@ -147,27 +153,39 @@ func checkHTTPServicesWithConfig(
 	}
 
 	type result struct {
-		name     string
-		ok       bool
-		isCustom bool
+		index      int
+		name       string
+		ok         bool
+		isCustom   bool
+		diagnostic qoe.HTTPCheck
 	}
 	results := make(chan result, len(checks))
-	for _, check := range checks {
+	for index, check := range checks {
 		check := check
 		go func() {
+			diagnostic := checkStatusDetailed(ctx, client, check.url, check.acceptable)
+			diagnostic.Service = check.name
+			if check.isCustom {
+				diagnostic.Service = "custom"
+			}
 			results <- result{
-				name:     check.name,
-				ok:       checkStatus(ctx, client, check.url, check.acceptable),
-				isCustom: check.isCustom,
+				index:      index,
+				name:       check.name,
+				ok:         diagnostic.OK,
+				isCustom:   check.isCustom,
+				diagnostic: diagnostic,
 			}
 		}()
 	}
-	gates := HTTPGateResult{}
+	gates := HTTPGateResult{Checks: make([]qoe.HTTPCheck, min(len(checks), 16))}
 	if len(cfg.CustomGates) > 0 {
 		gates.CustomGates = make(map[string]bool, len(cfg.CustomGates))
 	}
 	for range checks {
 		item := <-results
+		if item.index < len(gates.Checks) {
+			gates.Checks[item.index] = item.diagnostic
+		}
 		if item.isCustom {
 			gates.CustomGates[item.name] = item.ok
 		} else {
@@ -188,23 +206,92 @@ func checkHTTPServicesWithConfig(
 	return gates
 }
 
-func checkStatus(ctx context.Context, client *http.Client, url string, acceptable func(int) bool) bool {
+func checkStatusDetailed(ctx context.Context, client *http.Client, url string, acceptable func(int) bool) (check qoe.HTTPCheck) {
+	started := time.Now()
+	check.Phase = "request"
+	defer func() { check.ElapsedMS = min(600_000, time.Since(started).Milliseconds()) }()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return false
+		check.Code = "invalid_request"
+		return check
 	}
+	// Transport callbacks may run concurrently (including DNS and Happy Eyeballs).
+	var mu sync.Mutex
+	phase := "request"
+	budgetExhausted := errors.Is(ctx.Err(), context.DeadlineExceeded)
+	setPhase := func(value string) { mu.Lock(); phase = value; mu.Unlock() }
+	request = request.WithContext(httptrace.WithClientTrace(request.Context(), &httptrace.ClientTrace{
+		DNSStart:          func(httptrace.DNSStartInfo) { setPhase("dns") },
+		ConnectStart:      func(string, string) { setPhase("connect") },
+		TLSHandshakeStart: func() { setPhase("tls") },
+		TLSHandshakeDone: func(_ tls.ConnectionState, err error) {
+			if err == nil {
+				setPhase("request")
+			}
+		},
+		GotConn: func(httptrace.GotConnInfo) { setPhase("request") },
+		WroteRequest: func(info httptrace.WroteRequestInfo) {
+			if info.Err == nil {
+				setPhase("headers")
+			}
+		},
+	}))
 	originClient := *client
 	originClient.CheckRedirect = func(*http.Request, []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
 	response, err := originClient.Do(request)
 	if err != nil {
-		return false
+		mu.Lock()
+		check.Phase = phase
+		mu.Unlock()
+		check.Code = httpCheckErrorCode(err)
+		if budgetExhausted {
+			check.Code = "budget_exhausted"
+		}
+		if check.Phase == "tls" && check.Code == "transport" {
+			check.Code = "tls"
+		}
+		if check.Code == "dns" || check.Code == "tls" {
+			check.Phase = check.Code
+		}
+		return check
 	}
+	check.Status = response.StatusCode
+	check.Phase = "body"
 	if _, err := discardBody(ctx, response.Body, 4096); err != nil {
-		return false
+		check.Code = httpCheckErrorCode(err)
+		if check.Code == "transport" {
+			check.Code = "body"
+		}
+		return check
 	}
-	return acceptable(response.StatusCode)
+	check.Phase, check.Code = "status", "http_status"
+	check.OK = acceptable(response.StatusCode)
+	if check.OK {
+		check.Code = "ok"
+	}
+	return check
+}
+
+func httpCheckErrorCode(err error) string {
+	var dns *net.DNSError
+	var tlsError *tls.CertificateVerificationError
+	var netError net.Error
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.As(err, &dns):
+		return "dns"
+	case errors.As(err, &tlsError):
+		return "tls"
+	case errors.As(err, &netError) && netError.Timeout():
+		return "timeout"
+	default:
+		return "transport"
+	}
 }
 
 func statusBelow400(status int) bool {

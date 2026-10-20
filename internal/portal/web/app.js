@@ -74,7 +74,8 @@ async function loadSelf() {
     };
     const tcp = formatRoute(data.tcp_kind, data.tcp_label, data.tcp_assignment);
     const udp = formatRoute(data.udp_kind, data.udp_label, data.udp_assignment);
-    $("status").textContent = `${data.name}\nTCP: ${tcp}\nUDP: ${udp}`;
+    const presence = data.connection_state === "inactive" ? "Неактивен — резервация освобождена" : data.connection_state === "unavailable" ? "Нет доступного маршрута" : data.paused ? "Пауза" : "В сети";
+    $("status").textContent = `${data.name}\n${presence}\nTCP: ${tcp}\nUDP: ${udp}`;
   } catch (error) {
     $("status").textContent = "Откройте панель через WireGuard\n" + error.message;
   }
@@ -153,7 +154,9 @@ async function loadClients() {
     const row = node("article", "data-row");
     const identity = node("div");
     identity.append(node("strong", "", client.name), node("small", "", client.address));
-    row.append(identity, metric("TCP", assignment.tcp_outbound || "block"), metric("UDP", assignment.udp_outbound || "block"), badge(client.paused ? "Пауза" : "Активен", client.paused ? "warn" : "good"));
+    const inactive = client.connection_state === "inactive";
+    const state = client.paused ? "Пауза" : inactive ? "Неактивен — резервация освобождена" : client.connection_state === "unavailable" ? "Нет доступного маршрута" : "В сети";
+    row.append(identity, metric(inactive ? "Общий TCP" : "TCP", assignment.tcp_outbound || "block"), metric(inactive ? "Общий UDP" : "UDP", assignment.udp_outbound || "block"), badge(state, client.paused || inactive ? "neutral" : client.connection_state === "unavailable" ? "bad" : "good"));
     const actions = node("div", "actions");
     actions.append(
       button("Конфиг / QR", () => showArtifacts(client)),
@@ -320,6 +323,9 @@ async function loadCandidates(reset = false) {
         node("span", "cell-label", `TTFB ${ttfb} · ${speed}`),
         node("span", "cell-label", state.in_working_pool ? "WORKING POOL" : state.draining ? "DRAINING" : health.available ? "AVAILABLE" : "")
       );
+      const reasons = {policy_ru_egress:"Исключён политикой RU-egress",never_attempted:"Ожидает первой проверки",infrastructure_error:"Ошибка проверяющей инфраструктуры",candidate_failed:"Ошибка маршрута",awaiting_qualification:"Ожидает квалификации",qualified:"Квалифицирован"};
+      info.append(node("span", "cell-label", reasons[candidate.selection_reason] || candidate.selection_reason || ""));
+      if (candidate.last_probe_at) info.append(node("span", "cell-label", `Последняя проверка: ${new Date(candidate.last_probe_at).toLocaleString()}`));
       row.append(info);
       target.append(row);
     });
@@ -346,6 +352,8 @@ async function loadSystem() {
   const capacity = system.effective_capacity || {};
   const runtime = system.probe_runtime || {};
   const activeRuntime = system.active_probe_runtime || {};
+  const coverage = system.probe_coverage || {};
+  const probeActivity = system.probe_activity_5h || {};
   const summarizeRuntime = (value) => {
     const rssMiB = Number.isFinite(value.rss_bytes) ? (value.rss_bytes / 1048576).toFixed(1) : "—";
     return `${value.status || "unavailable"} · epoch ${value.epoch || 0} · RSS ${rssMiB} MiB · FDs ${value.fd_count || 0} · probes ${value.completed_probes || 0} · recycles ${value.recycle_count || 0}${value.last_recycle_reason ? ` · ${value.last_recycle_reason}` : ""}`;
@@ -354,6 +362,11 @@ async function loadSystem() {
     ["Статус",system.status],
     ["Источники",system.source_count],
     ["Кандидаты",system.candidate_count],
+    ["Ожидают первой проверки",coverage.never_attempted || 0],
+    ["Исключены политикой",coverage.excluded_policy || 0],
+    ["Ошибки инфраструктуры",coverage.infrastructure_error || 0],
+    ["Ошибки маршрутов",coverage.candidate_failed || 0],
+    ["Охват полных проверок за 5 ч",`${probeActivity.distinct_candidates || 0} кандидатов / ${probeActivity.full_probes || 0} проверок`],
     ["VLESS working",working.vless || 0],
     ["VLESS domains",capacity.vless_failure_domains || 0],
     ["Tor candidates",working.tor_bridge || 0],

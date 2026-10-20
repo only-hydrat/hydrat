@@ -261,6 +261,8 @@ func recordCandidateProbeTx(
 
 	switch {
 	case transition.InfrastructureFailure:
+		// Attempt times preserve discovery fairness; LastSuccessAt and health
+		// remain unchanged, and LastErrorCode bypasses normal healthy cadence.
 		if transition.Full {
 			state.LastFullProbeAt = transition.At
 		} else {

@@ -197,11 +197,13 @@ func TestValidateReserveSelectionRejectsIneligibleAppliedCandidates(t *testing.T
 			},
 		},
 		{
-			name:   "weaker primary domain",
-			change: func(candidate *Candidate) { candidate.FailureDomain = primary.FailureDomain },
+			name:    "weaker primary domain",
+			change:  func(candidate *Candidate) { candidate.FailureDomain = primary.FailureDomain },
+			wantTCP: true, wantUDP: true,
 		},
 		{
-			name: "weaker Tor protocol for VLESS TCP primary",
+			name:    "weaker Tor protocol for VLESS TCP primary",
+			wantTCP: true,
 			change: func(candidate *Candidate) {
 				candidate.Protocol = ProtocolTor
 				candidate.ProfileID = "slot-applied"

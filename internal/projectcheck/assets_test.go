@@ -1134,7 +1134,10 @@ func TestProductionEnvironmentAndComposeContract(t *testing.T) {
 		"trojan without TLS is prohibited",
 		"-buildvcs=false",
 		"-buildid=",
-		"-X github.com/xtls/xray-core/core.build=52a412d-hydrat2",
+		"-X github.com/xtls/xray-core/core.build=52a412d-hydrat3",
+		"COPY internal/xrayflow/ ./common/hydratflow/",
+		"git apply --check /tmp/hydrat-flow-recovery.patch",
+		"go test ./common/hydratflow",
 		"COPY --from=xray-build /out/xray /usr/local/bin/xray",
 		"COPY config/xray/active.json /etc/hydrat/xray-active.json",
 	} {

@@ -255,45 +255,8 @@ func (c Config) ActiveFailureFreshness() time.Duration {
 	return freshness
 }
 
-// QoEPromotionWindowFreshness bounds the oldest sample in the complete clean
-// promotion window. One extra cadence tolerates scheduler/probe phase skew.
-func (c Config) QoEPromotionWindowFreshness() time.Duration {
-	cadences, ok := checkedDurationProduct(c.QoE.ActiveInterval, c.QoE.WindowSize)
-	if !ok {
-		return maxDuration
-	}
-	freshness, ok := checkedDurationSum(cadences, c.QoE.Deadline)
-	if !ok {
-		return maxDuration
-	}
-	return freshness
-}
-
-func (c Config) QoEPromotionMaximumSampleGap() time.Duration {
-	gap, ok := checkedDurationSum(c.QoE.ActiveInterval, c.QoE.Deadline)
-	if !ok {
-		return maxDuration
-	}
-	return gap
-}
-
 func (c Config) ActiveProofFreshness() time.Duration {
 	return max(c.ActiveFailureFreshness(), c.Probes.ActiveProofGrace)
-}
-
-// QoEPromotionFreshness keeps only observations gathered close enough to the
-// active standby cadence to prove that an optional promotion target is still
-// stable. The full clean window is checked separately by the controller.
-func (c Config) QoEPromotionFreshness() time.Duration {
-	freshness, ok := checkedDurationSum(
-		c.QoE.ActiveInterval,
-		c.QoE.ActiveInterval,
-		c.QoE.Deadline,
-	)
-	if !ok {
-		return maxDuration
-	}
-	return freshness
 }
 
 func Defaults() Config {

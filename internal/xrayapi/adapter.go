@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/only-hydrat/hydrat/internal/dataplane"
+	"github.com/only-hydrat/hydrat/internal/xrayflow"
 	"io"
 	"net"
 	"os"
@@ -29,6 +30,7 @@ type Adapter struct {
 	useGeoRules    bool
 	geoCheck       func() bool
 	runner         Runner
+	flowControl    *xrayflow.Client
 }
 
 func NewAdapter(binary, server, dnsResolver string, runner Runner) *Adapter {

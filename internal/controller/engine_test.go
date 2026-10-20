@@ -1164,15 +1164,15 @@ func TestEngineReserveActiveFreshnessUsesExactlyTwoConfiguredProbeIntervals(t *t
 func TestPromotionQoEReadyRequiresCompleteCleanFreshWindow(t *testing.T) {
 	now := time.Unix(1_900_000_000, 0)
 	window := qoe.DefaultPolicy().WindowSize
-	freshness := 40 * time.Second
-	windowFreshness := 85 * time.Second
+	freshness := qoe.EvidenceMaxAge
+	windowFreshness := qoe.EvidenceMaxAge
 	maximumSampleGap := 25 * time.Second
 	healthy := qoe.State{
 		Status: qoe.StatusHealthy, WindowValid: window, WindowBad: 0,
 		LastValidAt: now.Add(-freshness), WindowStartedAt: now.Add(-windowFreshness),
 		WindowMaxGap: maximumSampleGap,
 	}
-	if !promotionQoEReady(now, healthy, window, freshness, windowFreshness, maximumSampleGap) {
+	if !promotionQoEReady(now, healthy, window) {
 		t.Fatal("complete clean window at freshness boundary was rejected")
 	}
 	for _, test := range []struct {
@@ -1196,14 +1196,9 @@ func TestPromotionQoEReadyRequiresCompleteCleanFreshWindow(t *testing.T) {
 		{name: "missing", state: func() qoe.State { state := healthy; state.LastValidAt = time.Time{}; return state }()},
 		{name: "future window", state: func() qoe.State { state := healthy; state.WindowStartedAt = now.Add(time.Nanosecond); return state }()},
 		{name: "missing window", state: func() qoe.State { state := healthy; state.WindowStartedAt = time.Time{}; return state }()},
-		{name: "window gap", state: func() qoe.State {
-			state := healthy
-			state.WindowMaxGap = maximumSampleGap + time.Nanosecond
-			return state
-		}()},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if promotionQoEReady(now, test.state, window, freshness, windowFreshness, maximumSampleGap) {
+			if promotionQoEReady(now, test.state, window) {
 				t.Fatalf("unsafe state accepted: %+v", test.state)
 			}
 		})
@@ -3786,7 +3781,7 @@ func TestScheduleCandidatesBuildsProspectiveCoverBeforeExactSubsetSearch(
 		context.Background(), now, placement, clients, candidates,
 	)
 	var coverageErr *ActiveCriticalCoveragePlanError
-	if !errors.As(err, &coverageErr) || !coverageErr.SearchExhausted {
+	if !errors.As(err, &coverageErr) || coverageErr.SearchExhausted || coverageErr.Cause != coverageReserveNotReady {
 		t.Fatalf("missing active proof error=%v", err)
 	}
 	if got := exactEvaluations.Load(); got != 2 {
@@ -4867,6 +4862,12 @@ func TestEngineHardFailurePromotesOnlyAppliedMappedReserveWithoutColdAdd(t *test
 		hardRoutes[route.ClientID] = route
 	}
 	initialRoute, hardRoute := initialRoutes["alice"], hardRoutes["alice"]
+	if len(agent.recoveries) != 1 || !reflect.DeepEqual(agent.recoveries[0], []dataplane.FlowRecovery{{
+		ClientID: "alice", SourceCIDR: initialRoute.SourceCIDR,
+		FailedOutbound: initialRoute.TCPOutbound, ReplacementOutbound: hardRoute.TCPOutbound,
+	}}) {
+		t.Fatalf("confirmed TCP failure recovery scopes=%+v", agent.recoveries)
+	}
 	if hardRoute.TCPOutbound != initialRoute.TCPReserveOutbound ||
 		hardRoute.TCPReserveOutbound != "" || hardRoute.BlockTCP ||
 		hardRoute.UDPOutbound != initialRoute.UDPOutbound ||
@@ -6054,7 +6055,7 @@ func TestEngineActiveCriticalCapacityRejectsEmptyPlanBeforePublish(t *testing.T)
 	)
 	err = engine.Cycle(ctx, now)
 	var coverageErr *ActiveCriticalCoveragePlanError
-	if !errors.As(err, &coverageErr) || !coverageErr.SearchExhausted {
+	if !errors.As(err, &coverageErr) || coverageErr.SearchExhausted || coverageErr.Cause != coveragePrimaryUnusable {
 		t.Fatalf("Cycle error=%v", err)
 	}
 	assignments, loadErr := database.ListAssignments(ctx)
@@ -7722,6 +7723,13 @@ func (adapter *recordingEngineAdapter) RemoveOutbound(_ context.Context, id stri
 type reconcilerEngineAgent struct {
 	reconciler *dataplane.Reconciler
 	plans      []dataplane.DesiredPlan
+	recoveries [][]dataplane.FlowRecovery
+}
+
+func (agent *reconcilerEngineAgent) ApplyWithRecovery(ctx context.Context, plan dataplane.DesiredPlan, recoveries []dataplane.FlowRecovery) error {
+	agent.plans = append(agent.plans, plan)
+	agent.recoveries = append(agent.recoveries, recoveries)
+	return agent.reconciler.ApplyWithRecovery(ctx, plan, recoveries)
 }
 
 func (agent *reconcilerEngineAgent) Apply(

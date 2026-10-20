@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -886,7 +887,7 @@ func TestQoEProbeResponseClassifiesObservationWithoutRawError(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			response := qoeProbeResponse("candidate", test.observation)
 			if response.Success != test.observation.Success || response.FailureClass != test.wantClass ||
-				response.ErrorCode != test.observation.ErrorCode || response.QoE == nil || *response.QoE != test.observation {
+				response.ErrorCode != test.observation.ErrorCode || response.QoE == nil || !reflect.DeepEqual(*response.QoE, test.observation) {
 				t.Fatalf("response=%+v", response)
 			}
 			if strings.Contains(response.ErrorCode, "dial tcp") {
@@ -904,6 +905,15 @@ func TestFullProbeResponseReportsQualificationFailure(t *testing.T) {
 
 	if response.Success || response.FailureClass != agentapi.FailureCandidate || response.ErrorCode != "openai_api_failed" {
 		t.Fatalf("response=%+v", response)
+	}
+}
+
+func TestQoEProbeResponsePreservesSafeGateDetails(t *testing.T) {
+	response := qoeProbeResponse("candidate", qoe.Observation{Infrastructure: true, ErrorCode: "qoe_application_gates_unavailable", ApplicationChecks: []qoe.HTTPCheck{{Service: "youtube", Path: "route", Phase: "headers", Code: "timeout", ElapsedMS: 3000}, {Service: "private-token", Path: "private-token", Phase: "private-token", Code: "private-token"}}})
+	encoded, _ := json.Marshal(response)
+	_, details := agentapi.ProbeFailureDetails(response, nil)
+	if strings.Contains(string(encoded), "private-token") || !strings.Contains(details, "route/youtube:headers:timeout:http_0:3000ms") {
+		t.Fatalf("response=%s details=%s", encoded, details)
 	}
 }
 

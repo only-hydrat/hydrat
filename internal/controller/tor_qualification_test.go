@@ -158,7 +158,7 @@ func TestTorCandidatesStopWhenCycleBudgetExpires(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.FailureStreak != 0 || state.LastErrorCode != "agent_unavailable" {
+	if state.FailureStreak != 0 || state.LastErrorCode != "agent_deadline" {
 		t.Fatalf("budget cancellation was not recorded as infrastructure: %+v", state)
 	}
 }

@@ -408,14 +408,20 @@ func (service QualificationService) runAgent(ctx context.Context, now time.Time)
 			promotionJobs := make([]qualificationJob, 0, len(fullJobs))
 			attemptedPromotions := make(map[string]struct{})
 			for _, job := range fullJobs {
+				if job.nextProbeAt.After(now) {
+					continue
+				}
 				if job.oneSuccess ||
 					udpQualified[job.candidate.ID] || cachedTCP[job.candidate.ID] {
 					job.retryInfrastructure = udpQualified[job.candidate.ID] || cachedTCP[job.candidate.ID]
 					promotionJobs = append(promotionJobs, job)
-					attemptedPromotions[job.candidate.Fingerprint] = struct{}{}
 				}
 			}
 			sortPromotionJobs(promotionJobs, udpQualified)
+			promotionJobs = promotionJobs[:min(len(promotionJobs), fullExplorationLimit)]
+			for _, job := range promotionJobs {
+				attemptedPromotions[job.candidate.Fingerprint] = struct{}{}
+			}
 			if err := service.runProbeJobs(
 				laneCtx, now, promotionJobs, tournament.ProbeFull, service.FullWorkers,
 			); err != nil {
@@ -449,7 +455,7 @@ func (service QualificationService) runAgent(ctx context.Context, now time.Time)
 			remainingFast := make([]qualificationJob, 0, len(fastJobs))
 			udpRecovery := make(map[string]struct{})
 			for _, job := range fastJobs {
-				if udpQualified[job.candidate.ID] {
+				if udpQualified[job.candidate.ID] && len(udpRecoveryFast) < fullExplorationLimit {
 					job.retryInfrastructure = true
 					udpRecoveryFast = append(udpRecoveryFast, job)
 					udpRecovery[job.candidate.Fingerprint] = struct{}{}
@@ -484,7 +490,7 @@ func (service QualificationService) runAgent(ctx context.Context, now time.Time)
 				}
 			}
 			if err := service.runProbeJobs(
-				laneCtx, now, boundedExplorationJobs(remainingFast, fastExplorationLimit), tournament.ProbeFast, service.FastWorkers,
+				laneCtx, now, fairProbeJobs(remainingFast, fastExplorationLimit), tournament.ProbeFast, service.FastWorkers,
 			); err != nil {
 				return err
 			}
@@ -496,12 +502,15 @@ func (service QualificationService) runAgent(ctx context.Context, now time.Time)
 			}
 			remaining := fullJobs[:0]
 			for _, job := range fullJobs {
+				if job.nextProbeAt.After(now) {
+					continue
+				}
 				if _, attempted := attemptedPromotions[job.candidate.Fingerprint]; !attempted {
 					remaining = append(remaining, job)
 				}
 			}
 			if err := service.runProbeJobs(
-				laneCtx, now, boundedExplorationJobs(remaining, fullExplorationLimit), tournament.ProbeFull, service.FullWorkers,
+				laneCtx, now, fairProbeJobs(remaining, fullExplorationLimit), tournament.ProbeFull, service.FullWorkers,
 			); err != nil {
 				return err
 			}

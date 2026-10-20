@@ -6,10 +6,14 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
+	"github.com/only-hydrat/hydrat/internal/dataplane"
 	"github.com/only-hydrat/hydrat/internal/supervisor"
+	"github.com/only-hydrat/hydrat/internal/xrayflow"
 )
 
 type xraySupervisorGroup struct {
@@ -37,6 +41,53 @@ func newXraySupervisor(output io.Writer) supervisor.Supervisor {
 		Runner:  supervisor.ExecRunner{Output: output},
 		Backoff: time.Second,
 	}
+}
+
+func flowControlledSupervisor(output io.Writer, socketPath string) supervisor.Supervisor {
+	managed := newXraySupervisor(output)
+	managed.Runner = supervisor.ExecRunner{Output: output, Env: []string{xrayflow.SocketEnvironment + "=" + socketPath}}
+	return managed
+}
+
+func flowControlSocket(agentSocket string) (string, error) {
+	parent := filepath.Dir(agentSocket)
+	// Match listenUnix's parent permissions before Xray creates its private
+	// child directory; otherwise MkdirAll(0700) would hide a new agent socket.
+	if err := os.MkdirAll(parent, 0755); err != nil {
+		return "", err
+	}
+	return filepath.Join(parent, "flow-control", "xray.sock"), nil
+}
+
+// Owned by the main supervisor group: cancellation stops and joins recovery,
+// including an in-flight RPC. Failures are logged on transition, not every tick.
+func (group *xraySupervisorGroup) StartFlowRecovery(retry func(context.Context) error) {
+	group.workers.Add(1)
+	go func() {
+		defer group.workers.Done()
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		var lastError string
+		for {
+			if group.ctx.Err() != nil {
+				return
+			}
+			err := retry(group.ctx)
+			message := ""
+			if err != nil && !errors.Is(err, dataplane.ErrRuntimeRecovering) && group.ctx.Err() == nil {
+				message = err.Error()
+			}
+			if message != "" && message != lastError {
+				log.Printf("TCP flow recovery pending: %s", message)
+			}
+			lastError = message
+			select {
+			case <-group.ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
 }
 
 func startXraySupervisors(

@@ -273,6 +273,7 @@ func criticalCoveragePlanningKeyWithProofMode(
 
 type criticalCoverageCandidateKey struct {
 	ID, RouteKey, ProfileID, Protocol, FailureDomain string
+	ServingOnly                                      bool
 }
 
 func normalizeCriticalCoverageCandidate(
@@ -288,6 +289,7 @@ func normalizeCriticalCoverageCandidateWithProofMode(
 	return criticalCoverageCandidateKey{
 		ID: candidate.ID, RouteKey: candidate.RouteKey, ProfileID: candidate.ProfileID,
 		Protocol: string(candidate.Protocol), FailureDomain: candidate.FailureDomain,
+		ServingOnly: candidate.ServingOnly,
 	}
 }
 
@@ -388,6 +390,10 @@ func evaluateCriticalCoverageWithProofMode(
 		}
 	}
 	clientIDs := make([]string, 0, len(result.Assignments))
+	appliedReserves := make(map[string]scheduler.ReserveSelection, len(clients))
+	for _, client := range clients {
+		appliedReserves[client.ID] = client.AppliedReserve
+	}
 	for clientID := range result.Assignments {
 		clientIDs = append(clientIDs, clientID)
 	}
@@ -398,11 +404,11 @@ func evaluateCriticalCoverageWithProofMode(
 		var err error
 		if requireActiveProof {
 			reserves, err = view.SelectReservesContext(
-				ctx, now, clientID, assignment, candidates,
+				ctx, now, clientID, assignment, candidates, appliedReserves[clientID],
 			)
 		} else {
 			reserves, err = view.SelectProspectiveReservesContext(
-				ctx, now, clientID, assignment, candidates,
+				ctx, now, clientID, assignment, candidates, appliedReserves[clientID],
 			)
 		}
 		if err != nil {
@@ -541,6 +547,8 @@ func validateScheduledCriticalCapacityWithProofMode(
 		}
 	}
 	missing := make([]string, 0)
+	issues := make([]string, 0)
+	cause := coverageReserveNotReady
 	for _, client := range clients {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -549,9 +557,11 @@ func validateScheduledCriticalCapacityWithProofMode(
 		reserve := reserves[client.ID]
 		if assignment.TCP == "" {
 			missing = append(missing, client.ID+":tcp:primary")
+			cause = coveragePrimaryUnusable
 		}
 		if assignment.UDP == "" {
 			missing = append(missing, client.ID+":udp:primary")
+			cause = coveragePrimaryUnusable
 		}
 		var validation scheduler.ReserveValidation
 		var err error
@@ -562,7 +572,7 @@ func validateScheduledCriticalCapacityWithProofMode(
 		} else {
 			var selected scheduler.ReserveSelection
 			selected, err = selector.SelectProspectiveReservesContext(
-				ctx, now, client.ID, assignment, criticalCandidates,
+				ctx, now, client.ID, assignment, criticalCandidates, reserve,
 			)
 			validation = scheduler.ReserveValidation{
 				TCP: reserve.TCP != "" && reserve.TCP == selected.TCP,
@@ -571,6 +581,33 @@ func validateScheduledCriticalCapacityWithProofMode(
 		}
 		if err != nil {
 			return err
+		}
+		// Only on rejected admission, and bounded to the same diagnostic limit.
+		// The proof-free selector distinguishes proof wait from ineligibility
+		// without weakening the actual publication/readiness gate.
+		if (!validation.TCP || !validation.UDP) && len(issues) < 8 {
+			prospective := scheduler.ReserveSelection{}
+			if requireActiveProof {
+				prospective, err = selector.SelectProspectiveReservesContext(ctx, now, client.ID, assignment, candidates, reserve)
+				if err != nil {
+					return err
+				}
+			}
+			for _, rejected := range []struct {
+				network, id, prospective string
+				valid                    bool
+			}{{"tcp", reserve.TCP, prospective.TCP, validation.TCP}, {"udp", reserve.UDP, prospective.UDP, validation.UDP}} {
+				if rejected.valid || len(issues) >= 8 {
+					continue
+				}
+				detail := "not_admitted"
+				if rejected.id == "" {
+					detail = "missing"
+				} else if requireActiveProof && rejected.id == rejected.prospective {
+					detail = "proof_not_fresh"
+				}
+				issues = append(issues, client.ID+":"+rejected.network+":"+detail)
+			}
 		}
 		if !validation.TCP {
 			missing = append(missing, client.ID+":tcp:reserve")
@@ -584,9 +621,10 @@ func validateScheduledCriticalCapacityWithProofMode(
 	}
 	if len(criticalIDs) > limit {
 		missing = append(missing, "active-critical:limit")
+		cause = coverageCriticalLimit
 	}
 	sort.Strings(missing)
 	return &ActiveCriticalCoveragePlanError{
-		Limit: limit, Unsatisfied: missing, SearchExhausted: true,
+		Limit: limit, Unsatisfied: missing, Cause: cause, ReserveIssues: issues,
 	}
 }

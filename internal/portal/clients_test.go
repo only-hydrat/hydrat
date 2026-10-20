@@ -41,6 +41,9 @@ func TestClientPortalReturnsTCPAndUDPAssignments(t *testing.T) {
 	if me["assignment"] != "tor-fast" || me["tcp_assignment"] != "tor-fast" || me["udp_assignment"] != "vless-fast" {
 		t.Fatalf("me=%+v", me)
 	}
+	if me["connection_state"] != "inactive" || me["route_reserved"] != false {
+		t.Fatalf("self portal confuses cached path and active reservation: %+v", me)
+	}
 
 	reassignRequest := httptest.NewRequest(http.MethodPost, "/api/me/reassign", nil)
 	reassignRequest.RemoteAddr = "10.44.0.2:54321"

@@ -4,21 +4,47 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"github.com/only-hydrat/hydrat/internal/wireguard"
 )
 
 type ClientRecord struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	Address       string `json:"address"`
-	PublicKey     string `json:"public_key"`
-	Paused        bool   `json:"paused"`
-	CreatedAt     int64  `json:"created_at"`
-	UpdatedAt     int64  `json:"updated_at"`
-	LastTrafficAt *int64 `json:"last_traffic_at,omitempty"`
-	RXBytes       int64  `json:"rx_bytes"`
-	TXBytes       int64  `json:"tx_bytes"`
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	Address         string `json:"address"`
+	PublicKey       string `json:"public_key"`
+	Paused          bool   `json:"paused"`
+	CreatedAt       int64  `json:"created_at"`
+	UpdatedAt       int64  `json:"updated_at"`
+	LastTrafficAt   *int64 `json:"last_traffic_at,omitempty"`
+	LatestHandshake *int64 `json:"latest_handshake,omitempty"`
+	RXBytes         int64  `json:"rx_bytes"`
+	TXBytes         int64  `json:"tx_bytes"`
 }
 
+const ClientInactiveAfter = 5 * time.Minute
+
+func (client ClientRecord) RouteReserved(now time.Time) bool {
+	return !client.Paused && client.LastTrafficAt != nil &&
+		*client.LastTrafficAt <= now.Unix() && now.Unix()-*client.LastTrafficAt < int64(ClientInactiveAfter/time.Second)
+}
+
+// WireGuard counters include handshake and keepalive packets. Presence uses
+// the gateway's decrypted-packet timestamp, never encrypted transfer counters.
+func (store *Store) RecordPeerActivity(ctx context.Context, id string, at time.Time, peer wireguard.PeerActivity) error {
+	traffic := peer.LastUserTraffic
+	if traffic.After(at) {
+		traffic = at
+	}
+	result, err := store.db.ExecContext(ctx, `UPDATE clients SET
+		last_traffic_at=CASE WHEN ? IS NOT NULL THEN MAX(COALESCE(last_traffic_at,0),?) ELSE last_traffic_at END,
+		latest_handshake=?, activity_seen=1, rx_bytes=?, tx_bytes=?, updated_at=? WHERE id=?`,
+		unixOrNil(traffic), unixOrNil(traffic), unixOrNil(peer.LatestHandshake), peer.RXBytes, peer.TXBytes, at.Unix(), id)
+	if err != nil {
+		return err
+	}
+	return requireAffected(result, "client")
+}
 
 func (store *Store) PutClient(ctx context.Context, client ClientRecord, wireGuardConfig string) error {
 	if client.ID == "" || client.Name == "" || client.Address == "" || wireGuardConfig == "" {
@@ -41,7 +67,7 @@ func (store *Store) PutClient(ctx context.Context, client ClientRecord, wireGuar
 
 func (store *Store) ListClients(ctx context.Context) ([]ClientRecord, error) {
 	rows, err := store.db.QueryContext(ctx, `
-        SELECT id, name, address, public_key, paused, created_at, updated_at, last_traffic_at, rx_bytes, tx_bytes
+        SELECT id, name, address, public_key, paused, created_at, updated_at, last_traffic_at, rx_bytes, tx_bytes, latest_handshake
         FROM clients ORDER BY address, id
     `)
 	if err != nil {
@@ -52,7 +78,7 @@ func (store *Store) ListClients(ctx context.Context) ([]ClientRecord, error) {
 	for rows.Next() {
 		var client ClientRecord
 		if err := rows.Scan(&client.ID, &client.Name, &client.Address, &client.PublicKey, &client.Paused,
-			&client.CreatedAt, &client.UpdatedAt, &client.LastTrafficAt, &client.RXBytes, &client.TXBytes); err != nil {
+			&client.CreatedAt, &client.UpdatedAt, &client.LastTrafficAt, &client.RXBytes, &client.TXBytes, &client.LatestHandshake); err != nil {
 			return nil, err
 		}
 		result = append(result, client)

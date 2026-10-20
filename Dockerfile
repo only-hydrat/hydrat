@@ -75,6 +75,11 @@ RUN set -eu; \
     rm "$archive"
 
 WORKDIR /src/xray
+COPY internal/xrayflow/ ./common/hydratflow/
+COPY patches/xray/flow-recovery.patch /tmp/hydrat-flow-recovery.patch
+RUN git apply --check /tmp/hydrat-flow-recovery.patch \
+    && git apply /tmp/hydrat-flow-recovery.patch \
+    && go test ./common/hydratflow
 RUN sed -i \
       's/c.server = grpc.NewServer()/c.server = grpc.NewServer(grpc.MaxRecvMsgSize(16 * 1024 * 1024))/' \
       app/commander/commander.go \
@@ -89,7 +94,7 @@ RUN sed -i \
     && go mod download \
     && CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
       go build -buildvcs=false -trimpath \
-        -ldflags="-s -w -buildid= -X github.com/xtls/xray-core/core.build=52a412d-hydrat2" \
+        -ldflags="-s -w -buildid= -X github.com/xtls/xray-core/core.build=52a412d-hydrat3" \
         -o /out/xray ./main
 
 FROM --platform=$BUILDPLATFORM golang:1.26.5-bookworm AS probe-runtime-test

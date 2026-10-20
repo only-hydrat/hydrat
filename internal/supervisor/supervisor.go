@@ -62,10 +62,14 @@ func (supervisor Supervisor) Run(ctx context.Context, spec Spec) error {
 
 type ExecRunner struct {
 	Output io.Writer
+	Env    []string
 }
 
 func (runner ExecRunner) Start(ctx context.Context, path string, args ...string) (Process, error) {
 	command := exec.CommandContext(ctx, path, args...)
+	if len(runner.Env) > 0 {
+		command.Env = append(os.Environ(), runner.Env...)
+	}
 	output := runner.Output
 	if output == nil {
 		output = os.Stdout

@@ -749,14 +749,15 @@ func (store *Store) MarkAppliedPlan(ctx context.Context, generation int64, plan 
 		desiredAssignmentsGeneration int64
 		desiredAssignments           []byte
 		desiredReason                string
+		previousPlan                 []byte
 	)
 	if err := tx.QueryRowContext(ctx, `
 		SELECT desired_plan, desired_assignments_generation, desired_assignments,
-		       desired_reason
+		       desired_reason, applied_plan
 		FROM plan_state WHERE singleton=1
 	`).Scan(
 		&desiredPlan, &desiredAssignmentsGeneration, &desiredAssignments,
-		&desiredReason,
+		&desiredReason, &previousPlan,
 	); err != nil {
 		return err
 	}
@@ -847,7 +848,7 @@ func (store *Store) MarkAppliedPlan(ctx context.Context, generation int64, plan 
 		}
 		if err := appendAssignmentMigrationEventsTx(
 			ctx, tx, previousAssignments, assignments,
-			desiredReason, appliedAt,
+			desiredReason, previousPlan, desiredPlan, appliedAt,
 		); err != nil {
 			return err
 		}
@@ -871,6 +872,9 @@ func (store *Store) MarkAppliedPlan(ctx context.Context, generation int64, plan 
 	`, generation); err != nil {
 		return err
 	}
+	if _, err := pendingRouteRecoveriesTx(ctx, tx); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -880,8 +884,36 @@ func appendAssignmentMigrationEventsTx(
 	previous map[string]AssignmentRecord,
 	next []AssignmentRecord,
 	desiredReason string,
+	previousPlan, nextPlan []byte,
 	at time.Time,
 ) error {
+	dormancy := func(encoded []byte) (map[string]bool, error) {
+		result := make(map[string]bool)
+		if len(encoded) == 0 {
+			return result, nil
+		}
+		var projection struct {
+			Clients []struct {
+				ClientID string `json:"client_id"`
+				Dormant  bool   `json:"dormant"`
+			} `json:"clients"`
+		}
+		if err := json.Unmarshal(encoded, &projection); err != nil {
+			return nil, err
+		}
+		for _, route := range projection.Clients {
+			result[route.ClientID] = route.Dormant
+		}
+		return result, nil
+	}
+	oldDormant, err := dormancy(previousPlan)
+	if err != nil {
+		return err
+	}
+	newDormant, err := dormancy(nextPlan)
+	if err != nil {
+		return err
+	}
 	reason := assignmentMigrationReason(desiredReason)
 	for _, assignment := range next {
 		old, exists := previous[assignment.ClientID]
@@ -892,23 +924,38 @@ func appendAssignmentMigrationEventsTx(
 			transport string
 			from      string
 			to        string
+			since     time.Time
 		}{
-			{transport: "tcp", from: old.TCPOutbound, to: assignment.TCPOutbound},
-			{transport: "udp", from: old.UDPOutbound, to: assignment.UDPOutbound},
+			{transport: "tcp", from: old.TCPOutbound, to: assignment.TCPOutbound, since: old.TCPSince},
+			{transport: "udp", from: old.UDPOutbound, to: assignment.UDPOutbound, since: old.UDPSince},
 		} {
 			if change.from == "" || change.from == change.to {
 				continue
 			}
+			// Unknown/future timestamps must not masquerade as immediate churn.
+			var previousAge *int64
+			if !change.since.IsZero() && !change.since.After(at) {
+				age := at.Sub(change.since).Milliseconds()
+				previousAge = &age
+			}
 			message, err := json.Marshal(struct {
-				Transport string `json:"transport"`
-				From      string `json:"from"`
-				To        string `json:"to"`
-				Reason    string `json:"reason"`
+				Transport   string `json:"transport"`
+				From        string `json:"from"`
+				To          string `json:"to"`
+				Reason      string `json:"reason"`
+				Trigger     string `json:"trigger"`
+				FromDormant bool   `json:"from_dormant"`
+				Dormant     bool   `json:"dormant"`
+				PreviousAge *int64 `json:"previous_assignment_age_ms,omitempty"`
 			}{
-				Transport: change.transport,
-				From:      change.from,
-				To:        change.to,
-				Reason:    reason,
+				Transport:   change.transport,
+				From:        change.from,
+				To:          change.to,
+				Reason:      reason,
+				Trigger:     desiredReason,
+				FromDormant: oldDormant[assignment.ClientID],
+				Dormant:     newDormant[assignment.ClientID],
+				PreviousAge: previousAge,
 			})
 			if err != nil {
 				return err

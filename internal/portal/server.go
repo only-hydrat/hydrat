@@ -200,6 +200,8 @@ func (server *Server) me(response http.ResponseWriter, request *http.Request) {
 		"assignment": assignment.TCPOutbound, "tcp_assignment": assignment.TCPOutbound,
 		"udp_assignment": assignment.UDPOutbound, "last_traffic_at": client.LastTrafficAt,
 	}
+	result["connection_state"], result["route_reserved"] = connectionStatus(client, assignment, time.Now())
+	result["latest_handshake"] = client.LatestHandshake
 	var referenced []string
 	if assignment.TCPOutbound != "" {
 		referenced = append(referenced, assignment.TCPOutbound)
@@ -286,7 +288,38 @@ func (server *Server) listClients(response http.ResponseWriter, request *http.Re
 		writeError(response, http.StatusInternalServerError, "assignment list failed")
 		return
 	}
-	writeJSON(response, http.StatusOK, map[string]any{"clients": clients, "assignments": assignments})
+	byID := make(map[string]store.AssignmentRecord, len(assignments))
+	for _, assignment := range assignments {
+		byID[assignment.ClientID] = assignment
+	}
+	views := make([]clientPresenceView, 0, len(clients))
+	now := time.Now()
+	for _, client := range clients {
+		assignment := byID[client.ID]
+		state, reserved := connectionStatus(client, assignment, now)
+		views = append(views, clientPresenceView{ClientRecord: client, ConnectionState: state, Reserved: reserved, LastRoute: assignment})
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"clients": views, "assignments": assignments})
+}
+
+type clientPresenceView struct {
+	store.ClientRecord
+	ConnectionState string                 `json:"connection_state"`
+	Reserved        bool                   `json:"route_reserved"`
+	LastRoute       store.AssignmentRecord `json:"last_route"`
+}
+
+func connectionStatus(client store.ClientRecord, assignment store.AssignmentRecord, now time.Time) (string, bool) {
+	if client.Paused {
+		return "paused", false
+	}
+	if !client.RouteReserved(now) {
+		return "inactive", false
+	}
+	if assignment.TCPOutbound == "" && assignment.UDPOutbound == "" {
+		return "unavailable", false
+	}
+	return "online", true
 }
 
 func (server *Server) createClient(response http.ResponseWriter, request *http.Request) {

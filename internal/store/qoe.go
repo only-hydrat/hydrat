@@ -15,7 +15,7 @@ const candidateQoEStateSelect = `
            baseline_throughput_mbps, baseline_samples, current_ttfb_ms,
 	       current_throughput_mbps, window_valid, window_bad,
 	       window_started_at, window_max_gap_ms, median_effective_ms, last_valid_at, last_reason, degraded_at,
-           recovered_at, updated_at
+           recovered_at, updated_at, median_ttfb_ms, median_throughput_mbps
     FROM candidate_qoe_state`
 
 const candidateQoESampleSelect = `
@@ -28,6 +28,32 @@ func (store *Store) RecordCandidateQoE(
 	candidate Candidate,
 	observation qoe.Observation,
 	policy qoe.Policy,
+) (qoe.State, qoe.Transition, error) {
+	return store.recordCandidateQoE(ctx, candidate, observation, policy, nil)
+}
+
+var ErrQoEObservationSuperseded = errors.New("QoE observation predates a confirmed failure")
+
+// CandidateQoEGeneration fences long quality probes without advancing the
+// independent active/full observation sequences.
+func (store *Store) CandidateQoEGeneration(ctx context.Context, candidateID string) (int64, error) {
+	var generation int64
+	err := store.db.QueryRowContext(ctx, `SELECT COALESCE(
+		(SELECT failure_generation FROM candidate_health WHERE candidate_id=?), 0)
+	`, candidateID).Scan(&generation)
+	return generation, err
+}
+
+func (store *Store) RecordCandidateQoEObserved(
+	ctx context.Context, candidate Candidate, observation qoe.Observation,
+	policy qoe.Policy, generation int64,
+) (qoe.State, qoe.Transition, error) {
+	return store.recordCandidateQoE(ctx, candidate, observation, policy, &generation)
+}
+
+func (store *Store) recordCandidateQoE(
+	ctx context.Context, candidate Candidate, observation qoe.Observation,
+	policy qoe.Policy, generation *int64,
 ) (qoe.State, qoe.Transition, error) {
 	if policy.WindowSize < 1 || policy.WindowSize > qoe.MaxWindowSize {
 		return qoe.State{}, qoe.Transition{}, fmt.Errorf(
@@ -58,6 +84,17 @@ func (store *Store) RecordCandidateQoE(
 	if !currentCandidate {
 		return qoe.State{}, qoe.Transition{}, ErrCandidateNoLongerCurrent
 	}
+	if generation != nil {
+		var current int64
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(
+			(SELECT failure_generation FROM candidate_health WHERE candidate_id=?), 0)
+		`, candidate.ID).Scan(&current); err != nil {
+			return qoe.State{}, qoe.Transition{}, err
+		}
+		if current != *generation {
+			return qoe.State{}, qoe.Transition{}, ErrQoEObservationSuperseded
+		}
+	}
 
 	state, err := loadCandidateQoEStateTx(ctx, tx, candidate.ID)
 	if err != nil {
@@ -76,6 +113,22 @@ func (store *Store) RecordCandidateQoE(
 	if err != nil {
 		return qoe.State{}, qoe.Transition{}, err
 	}
+	var lastFailure sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT MAX(last_failure_at)
+		FROM candidate_probe_state WHERE candidate_id=?`, candidate.ID).Scan(&lastFailure); err != nil {
+		return qoe.State{}, qoe.Transition{}, err
+	}
+	filter := func(samples []qoe.Sample) []qoe.Sample {
+		current := samples[:0]
+		for _, sample := range samples {
+			if !sample.At.IsZero() && !sample.At.Before(observation.At.Add(-qoe.EvidenceMaxAge)) &&
+				!sample.At.After(observation.At) && (!lastFailure.Valid || sample.At.Unix() > lastFailure.Int64) {
+				current = append(current, sample)
+			}
+		}
+		return current
+	}
+	recent, learningSuccesses = filter(recent), filter(learningSuccesses)
 
 	decision := qoe.Apply(policy, state, recent, learningSuccesses, observation)
 	decision.State.CandidateID = candidate.ID
@@ -280,8 +333,8 @@ func upsertCandidateQoEStateTx(ctx context.Context, tx *sql.Tx, state qoe.State)
           baseline_samples, current_ttfb_ms, current_throughput_mbps,
 		  window_valid, window_bad, window_started_at, window_max_gap_ms,
 		  median_effective_ms, last_valid_at,
-		  last_reason, degraded_at, recovered_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		  last_reason, degraded_at, recovered_at, updated_at, median_ttfb_ms, median_throughput_mbps
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(candidate_id) DO UPDATE SET
           status=excluded.status,
           baseline_ttfb_ms=excluded.baseline_ttfb_ms,
@@ -298,7 +351,9 @@ func upsertCandidateQoEStateTx(ctx context.Context, tx *sql.Tx, state qoe.State)
           last_reason=excluded.last_reason,
           degraded_at=excluded.degraded_at,
           recovered_at=excluded.recovered_at,
-          updated_at=excluded.updated_at
+          updated_at=excluded.updated_at,
+		  median_ttfb_ms=excluded.median_ttfb_ms,
+		  median_throughput_mbps=excluded.median_throughput_mbps
     `, state.CandidateID, state.Status, milliseconds(state.BaselineTTFB),
 		state.BaselineThroughputMbps, state.BaselineSamples,
 		milliseconds(state.CurrentTTFB), state.CurrentThroughputMbps,
@@ -306,13 +361,13 @@ func upsertCandidateQoEStateTx(ctx context.Context, tx *sql.Tx, state qoe.State)
 		milliseconds(state.WindowMaxGap),
 		milliseconds(state.MedianEffectiveTime),
 		unixOrNil(state.LastValidAt), state.LastReason, unixOrNil(state.DegradedAt),
-		unixOrNil(state.RecoveredAt), state.UpdatedAt.Unix())
+		unixOrNil(state.RecoveredAt), state.UpdatedAt.Unix(), milliseconds(state.MedianTTFB), state.MedianThroughputMbps)
 	return err
 }
 
 func scanCandidateQoEState(row rowScanner) (qoe.State, error) {
 	var state qoe.State
-	var baselineTTFBMS, currentTTFBMS, windowMaxGapMS, medianEffectiveMS float64
+	var baselineTTFBMS, currentTTFBMS, windowMaxGapMS, medianEffectiveMS, medianTTFBMS float64
 	var windowStartedAt, lastValidAt, degradedAt, recoveredAt sql.NullInt64
 	var updatedAt int64
 	err := row.Scan(
@@ -320,7 +375,7 @@ func scanCandidateQoEState(row rowScanner) (qoe.State, error) {
 		&state.BaselineThroughputMbps, &state.BaselineSamples, &currentTTFBMS,
 		&state.CurrentThroughputMbps, &state.WindowValid, &state.WindowBad,
 		&windowStartedAt, &windowMaxGapMS, &medianEffectiveMS, &lastValidAt, &state.LastReason, &degradedAt,
-		&recoveredAt, &updatedAt,
+		&recoveredAt, &updatedAt, &medianTTFBMS, &state.MedianThroughputMbps,
 	)
 	if err != nil {
 		return qoe.State{}, err
@@ -328,6 +383,7 @@ func scanCandidateQoEState(row rowScanner) (qoe.State, error) {
 	state.BaselineTTFB = durationFromMilliseconds(baselineTTFBMS)
 	state.CurrentTTFB = durationFromMilliseconds(currentTTFBMS)
 	state.MedianEffectiveTime = durationFromMilliseconds(medianEffectiveMS)
+	state.MedianTTFB = durationFromMilliseconds(medianTTFBMS)
 	state.WindowStartedAt = nullableTime(windowStartedAt)
 	state.WindowMaxGap = durationFromMilliseconds(windowMaxGapMS)
 	state.LastValidAt = nullableTime(lastValidAt)

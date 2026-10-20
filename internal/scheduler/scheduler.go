@@ -33,13 +33,16 @@ type Candidate struct {
 	ActiveFresh     bool
 	Warm            bool
 	Retiring        bool
-	FailureDomain   string
-	CircuitOpen     bool
-	QoEStatus       qoe.Status
-	QoEEffective    time.Duration
-	QoEFresh        bool
-	QoEReason       string
-	QoETracked      bool
+	// ServingOnly can retain an installed primary, but cannot receive new work.
+	ServingOnly   bool
+	FailureDomain string
+	CircuitOpen   bool
+	QoEStatus     qoe.Status
+	QoEEffective  time.Duration
+	QoEQuality    float64
+	QoEFresh      bool
+	QoEReason     string
+	QoETracked    bool
 	// QoEPromotionReady requires a recent, complete and clean QoE window.
 	// It is intentionally used only for optional quality moves; emergency
 	// failover can still use any currently qualified alternative.
@@ -64,9 +67,13 @@ type ReserveValidation struct {
 }
 
 type Client struct {
-	ID          string
-	LastTraffic time.Time
-	Assignment  Assignment
+	Dormant        bool
+	PreserveTCP    bool
+	PreserveUDP    bool
+	AppliedReserve ReserveSelection
+	ID             string
+	LastTraffic    time.Time
+	Assignment     Assignment
 }
 
 type Policy struct {
@@ -301,11 +308,15 @@ func (scheduler *Scheduler) scheduleContext(
 		assignment := client.Assignment
 		plannedMovesBefore := result.PlannedMoves
 		hardMovesBefore := result.HardMoves
-		assignment.TCP = scheduler.choose(
-			now, client, "tcp", assignment.TCP, assignment.TCPSince,
-			active, candidates, byID, result.Load, domainLoad, &result, false,
-			options.SuppressQualityMoves,
-		)
+		if client.PreserveTCP {
+			scheduler.resetStreak(client.ID, "tcp")
+		} else {
+			assignment.TCP = scheduler.choose(
+				now, client, "tcp", assignment.TCP, assignment.TCPSince,
+				active, candidates, byID, result.Load, domainLoad, &result, false,
+				options.SuppressQualityMoves,
+			)
+		}
 		if assignment.TCP != client.Assignment.TCP {
 			assignment.TCPSince = now
 		}
@@ -314,6 +325,7 @@ func (scheduler *Scheduler) scheduleContext(
 			result.HardMoves == hardMovesBefore
 		tcpCandidate, tcpExists := byID[assignment.TCP]
 		tcpCanUDP := tcpExists &&
+			(!tcpCandidate.ServingOnly || assignment.UDP == assignment.TCP) &&
 			tcpCandidate.Protocol == ProtocolVLESS &&
 			tcpCandidate.UDPQualified &&
 			scheduler.candidateUsable(now, client.ID, "udp", tcpCandidate) &&
@@ -322,7 +334,10 @@ func (scheduler *Scheduler) scheduleContext(
 			tcpCandidate.QoEStatus != qoe.StatusDegraded
 
 		currentUDP, currentUDPExists := byID[client.Assignment.UDP]
-		if tcpCanUDP {
+		if client.PreserveUDP {
+			// Reserve repair must not silently align another transport.
+			scheduler.resetStreak(client.ID, "udp")
+		} else if tcpCanUDP {
 			if assignment.UDP != assignment.TCP {
 				assignment.UDP = assignment.TCP
 				assignment.UDPSince = now
@@ -340,7 +355,7 @@ func (scheduler *Scheduler) scheduleContext(
 			if assignment.UDP != client.Assignment.UDP {
 				assignment.UDPSince = now
 			}
-			if udpCandidate, udpExists := byID[assignment.UDP]; udpExists &&
+			if udpCandidate, udpExists := byID[assignment.UDP]; !client.PreserveTCP && udpExists &&
 				udpCandidate.Protocol == ProtocolVLESS &&
 				udpCandidate.TCPQualified &&
 				udpCandidate.UDPQualified &&
@@ -376,6 +391,8 @@ func (scheduler *Scheduler) ReadView() *Scheduler {
 	return scheduler.cloneLocked()
 }
 
+func (scheduler *Scheduler) MinimumDwell() time.Duration { return scheduler.policy.MinimumDwell }
+
 // PlanningFingerprint identifies every scheduler state component that can
 // affect a schedule for the supplied clients at now. Exact wall time is not
 // included; instead the time-dependent active/dwell/exclusion classifications
@@ -397,6 +414,8 @@ func (scheduler *Scheduler) PlanningFingerprint(now time.Time, clients []Client)
 			client.Assignment.TCP, client.Assignment.UDP,
 			active, tcpDwell, udpDwell,
 		)
+		_, _ = fmt.Fprintf(hash, "preserve:%t:%t|", client.PreserveTCP, client.PreserveUDP)
+		_, _ = fmt.Fprintf(hash, "reserve:%s:%s|", client.AppliedReserve.TCP, client.AppliedReserve.UDP)
 	}
 	streakKeys := make([]string, 0, len(scheduler.streaks))
 	for key := range scheduler.streaks {
@@ -530,6 +549,7 @@ func (scheduler *Scheduler) choose(
 	suppressQualityMoves bool,
 ) string {
 	eligible := scheduler.eligible(now, client.ID, network, candidates)
+	eligible = preferSpareCapacity(eligible, candidates, load)
 	preferred := rendezvous(client.ID+":"+network, eligible, load, domainLoad)
 	openFallback := scheduler.openFallback(now, client.ID, network, candidates)
 	preferredOpen := rendezvous(
@@ -548,7 +568,7 @@ func (scheduler *Scheduler) choose(
 	if currentID == "" {
 		if preferred != "" {
 			if alternative := scheduler.measuredAlternative(now, client.ID, network,
-				byID[preferred], eligible, domainLoad); alternative != "" {
+				byID[preferred], eligible, load, domainLoad); alternative != "" {
 				return alternative
 			}
 			return preferred
@@ -616,7 +636,7 @@ func (scheduler *Scheduler) choose(
 	if current.QoEStatus == qoe.StatusDegraded {
 		requiresEvacuation := qoe.RequiresEvacuation(current.QoEReason)
 		alternative := scheduler.qoeAlternative(
-			now, client.ID, network, current, candidates, domainLoad,
+			now, client.ID, network, current, candidates, load, domainLoad,
 			!requiresEvacuation, true,
 		)
 		if alternative == "" {
@@ -661,10 +681,11 @@ func (scheduler *Scheduler) choose(
 		}
 		qualityEligible = append(qualityEligible, candidate)
 	}
+	qualityEligible = preferSpareCapacity(qualityEligible, candidates, load)
 	preferred = rendezvous(client.ID+":"+network, qualityEligible, load, domainLoad)
 	measuredImprovement := false
 	if alternative := scheduler.measuredAlternative(now, client.ID, network, current,
-		qualityEligible, domainLoad); alternative != "" {
+		qualityEligible, load, domainLoad); alternative != "" {
 		preferred = alternative
 		measuredImprovement = true
 	}
@@ -677,7 +698,9 @@ func (scheduler *Scheduler) choose(
 		return currentID
 	}
 	target := byID[preferred]
-	if (!measuredImprovement && (current.Score <= 0 || target.Score < current.Score*(1+scheduler.policy.MinimumImprovement))) ||
+	rebalancesLoad := RouteLoad(current, candidates, load) >= 2 && RouteLoad(target, candidates, load) < 2 &&
+		selectionQuality(target) >= selectionQuality(current)*scheduler.policy.QualityTier
+	if (!measuredImprovement && !rebalancesLoad && (current.Score <= 0 || target.Score < current.Score*(1+scheduler.policy.MinimumImprovement))) ||
 		now.Sub(since) < scheduler.policy.MinimumDwell {
 		scheduler.resetStreak(client.ID, network)
 		return currentID
@@ -698,7 +721,7 @@ func (scheduler *Scheduler) choose(
 
 func (scheduler *Scheduler) measuredAlternative(
 	now time.Time, clientID, network string, current Candidate,
-	eligible []Candidate, domainLoad map[string]int,
+	eligible []Candidate, load, domainLoad map[string]int,
 ) string {
 	if current.QoEStatus != qoe.StatusHealthy || !current.QoEFresh || current.QoEEffective <= 0 {
 		return ""
@@ -710,7 +733,7 @@ func (scheduler *Scheduler) measuredAlternative(
 			measured = append(measured, candidate)
 		}
 	}
-	return scheduler.qoeAlternative(now, clientID, network, current, measured, domainLoad, true, false)
+	return scheduler.qoeAlternative(now, clientID, network, current, measured, load, domainLoad, true, false)
 }
 
 func (scheduler *Scheduler) candidateUsable(now time.Time, clientID, network string, candidate Candidate) bool {
@@ -762,7 +785,7 @@ func (scheduler *Scheduler) eligibleCircuitState(
 ) []Candidate {
 	filtered := make([]Candidate, 0, len(candidates))
 	for _, candidate := range candidates {
-		if candidate.Retiring || candidate.CircuitOpen != circuitOpen ||
+		if candidate.ServingOnly || candidate.Retiring || candidate.CircuitOpen != circuitOpen ||
 			candidate.QoEStatus == qoe.StatusDegraded {
 			continue
 		}

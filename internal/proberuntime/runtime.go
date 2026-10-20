@@ -38,6 +38,8 @@ var (
 )
 
 type Config struct {
+	// Role is a log-only label; unknown values are projected as "probe".
+	Role             string
 	Binary           string
 	ConfigPath       string
 	APIAddress       string
@@ -473,7 +475,7 @@ func (manager *Manager) Release(lease *Lease, cleanupErr error) {
 	manager.cond.Broadcast()
 	manager.mu.Unlock()
 	if logMetricError {
-		log.Printf("probe runtime: read metrics for pid %d: %v", process.PID(), metricsErr)
+		log.Printf("probe_runtime event=metrics_unavailable pid=%d", process.PID())
 	}
 }
 
@@ -564,7 +566,12 @@ func (manager *Manager) recycle() {
 		return
 	}
 	manager.recycleCount++
+	before := Snapshot{Epoch: manager.epoch, CompletedProbes: manager.completedProbes, RSSBytes: manager.rssBytes, FDCount: manager.fdCount, LastRecycleReason: manager.lastRecycleReason}
 	manager.mu.Unlock()
+	started := time.Now()
+	phase, outcome := "drain", "canceled"
+	manager.logRecycle("recycle_start", phase, "started", before, 0)
+	defer func() { manager.logRecycle("recycle_end", phase, outcome, manager.Snapshot(), time.Since(started)) }()
 
 	if !manager.waitForDrain() {
 		return
@@ -590,6 +597,7 @@ func (manager *Manager) recycle() {
 	manager.mu.Unlock()
 
 	if process != nil {
+		phase, outcome = "stop", "failed"
 		if err := process.Stop(manager.config.StopTimeout); err != nil {
 			manager.mu.Lock()
 			manager.clearIntentionalStopLocked(stoppingGeneration)
@@ -611,8 +619,10 @@ func (manager *Manager) recycle() {
 	}
 	manager.mu.Unlock()
 
+	phase, outcome = "start", "failed"
 	replacement, err := manager.starter.Start(manager.lifetimeCtx, manager.config)
 	if err == nil {
+		phase = "readiness"
 		err = manager.awaitReadiness(manager.lifetimeCtx, replacement)
 	}
 	if err != nil {
@@ -657,6 +667,7 @@ func (manager *Manager) recycle() {
 	manager.resetting = true
 	manager.mu.Unlock()
 
+	phase = "reset"
 	manager.resetter.Reset(epoch)
 
 	manager.mu.Lock()
@@ -701,6 +712,22 @@ func (manager *Manager) recycle() {
 	manager.cond.Broadcast()
 	manager.mu.Unlock()
 	manager.watchProcess(replacement, generation)
+	phase, outcome = "ready", "ready"
+}
+
+func (manager *Manager) logRecycle(event, phase, outcome string, snapshot Snapshot, elapsed time.Duration) {
+	role := manager.config.Role
+	if role != "background" && role != "active" {
+		role = "probe"
+	}
+	reason := snapshot.LastRecycleReason
+	switch reason {
+	case reasonCleanupFailure, reasonChildExit, reasonReadinessFailure, reasonRSSLimit, reasonFDLimit, reasonProbeLimit:
+	default:
+		reason = "unknown"
+	}
+	log.Printf("probe_runtime role=%s event=%s reason=%s epoch=%d completed=%d rss_bytes=%d fds=%d phase=%s outcome=%s elapsed_ms=%d",
+		role, event, reason, snapshot.Epoch, snapshot.CompletedProbes, snapshot.RSSBytes, snapshot.FDCount, phase, outcome, elapsed.Milliseconds())
 }
 
 func (manager *Manager) waitForDrain() bool {

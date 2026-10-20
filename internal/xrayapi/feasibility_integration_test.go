@@ -464,7 +464,7 @@ func (process *xrayProcess) evidence() string {
 	return normalized
 }
 
-func startXray(t *testing.T, binaryPath string, config map[string]any, readyAddress string) *xrayProcess {
+func startXray(t *testing.T, binaryPath string, config map[string]any, readyAddress string, environment ...string) *xrayProcess {
 	t.Helper()
 	configBody, err := json.Marshal(config)
 	if err != nil {
@@ -480,6 +480,9 @@ func startXray(t *testing.T, binaryPath string, config map[string]any, readyAddr
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	command := exec.CommandContext(ctx, binaryPath, "run", "-config", configPath)
+	if len(environment) > 0 {
+		command.Env = append(os.Environ(), environment...)
+	}
 	command.Stdout = logFile
 	command.Stderr = logFile
 	if err := command.Start(); err != nil {

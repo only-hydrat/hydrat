@@ -206,6 +206,7 @@ func NewServer(applier Applier, maxPlanSize int64, options ...Option) http.Handl
 		server.probe(response, request, ProbeModeQoE)
 	})
 	server.mux.HandleFunc("POST /v1/plan", server.applyPlan)
+	server.mux.HandleFunc("POST /v1/plan/recovery", server.applyRecoveryPlan)
 	server.mux.HandleFunc("GET /v1/geo", server.geoStatus)
 	server.mux.HandleFunc("POST /v1/geo/update", server.updateGeo)
 	return server
@@ -429,7 +430,11 @@ func (server *Server) applyPlan(response http.ResponseWriter, request *http.Requ
 		writeJSON(response, http.StatusBadRequest, map[string]string{"error": "request must contain one desired plan"})
 		return
 	}
-	if err := server.applier.Apply(request.Context(), plan); err != nil {
+	writeApplyResult(response, server.applier.Apply(request.Context(), plan))
+}
+
+func writeApplyResult(response http.ResponseWriter, err error) {
+	if err != nil {
 		status := http.StatusConflict
 		message := err.Error()
 		retryable := false

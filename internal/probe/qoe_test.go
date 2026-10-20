@@ -267,7 +267,7 @@ func TestProbeBodyReadersJoinAfterCancellation(t *testing.T) {
 	}
 }
 
-func TestQoEMeasurerRejectsRouteWhenApplicationMajorityFailsButDirectControlPasses(t *testing.T) {
+func TestQoEMeasurerReportsUnconfirmedApplicationFailure(t *testing.T) {
 	routeClient := qoeSuccessClient()
 	directClient := qoeSuccessClient()
 	var routeChecks, directChecks int
@@ -290,10 +290,10 @@ func TestQoEMeasurerRejectsRouteWhenApplicationMajorityFailsButDirectControlPass
 
 	got := measurer.Measure(context.Background(), "candidate", "127.0.0.1:1080")
 
-	if got.Success || got.Infrastructure || got.ErrorCode != qoeApplicationGates {
+	if got.Success || !got.Infrastructure || !got.UnconfirmedHTTP || got.ErrorCode != qoeApplicationGates {
 		t.Fatalf("observation=%+v", got)
 	}
-	if routeChecks != 1 || directChecks != 1 {
+	if routeChecks != 1 || directChecks != 0 {
 		t.Fatalf("route checks=%d direct checks=%d", routeChecks, directChecks)
 	}
 }
@@ -329,9 +329,6 @@ func TestQoEMeasurerKeepsWorkingHTTPSWhenProxyDNSFails(t *testing.T) {
 	}
 	if routeChecks != 1 || directChecks != 1 {
 		t.Fatalf("route checks=%d direct checks=%d", routeChecks, directChecks)
-	}
-	if _, exists := measurer.recentFailures["candidate"]; exists {
-		t.Fatal("DNS failure polluted bulk-endpoint circuit state")
 	}
 }
 
@@ -371,9 +368,6 @@ func TestQoEMeasurerTreatsSharedDNSFailureAsInfrastructure(t *testing.T) {
 
 	if got.Success || !got.Infrastructure || got.ErrorCode != qoeDNSUnavailable {
 		t.Fatalf("observation=%+v", got)
-	}
-	if _, exists := measurer.recentFailures["candidate"]; exists {
-		t.Fatal("shared DNS failure polluted candidate failure state")
 	}
 	if directChecks.Load() != 3 {
 		t.Fatalf("direct DNS checks=%d want all configured resolvers", directChecks.Load())
@@ -433,7 +427,7 @@ func TestQoEMeasurerChecksHTTPSAfterProxyDNSFailure(t *testing.T) {
 
 	got := measurer.Measure(context.Background(), "candidate", "127.0.0.1:1080")
 
-	if got.Infrastructure || got.ErrorCode != qoe.ReasonRouteTransport {
+	if !got.Infrastructure || !got.UnconfirmedHTTP || got.ErrorCode != qoe.ReasonRouteTransport {
 		t.Fatalf("observation=%+v", got)
 	}
 	if bulkRequests.Load() != 1 {
@@ -513,7 +507,7 @@ func TestQoEMeasurerRejectsRouteWhenTelegramFailsEvenIfBothAIGatesPass(t *testin
 
 	got := measurer.Measure(context.Background(), "candidate", "127.0.0.1:1080")
 
-	if got.Success || got.Infrastructure || got.ErrorCode != qoeApplicationGates {
+	if got.Success || !got.Infrastructure || !got.UnconfirmedHTTP || got.ErrorCode != qoeApplicationGates {
 		t.Fatalf("observation=%+v", got)
 	}
 }
@@ -542,7 +536,7 @@ func TestQoEMeasurerBoundsApplicationGateStallIndependently(t *testing.T) {
 
 	got := measurer.Measure(context.Background(), "candidate", "127.0.0.1:1080")
 
-	if got.Success || got.Infrastructure || got.ErrorCode != qoeApplicationGates {
+	if got.Success || !got.Infrastructure || !got.UnconfirmedHTTP || got.ErrorCode != qoeApplicationGates {
 		t.Fatalf("observation=%+v", got)
 	}
 	if gateBudget < 2500*time.Millisecond || gateBudget > 3100*time.Millisecond {
@@ -550,7 +544,7 @@ func TestQoEMeasurerBoundsApplicationGateStallIndependently(t *testing.T) {
 	}
 }
 
-func TestQoEMeasurerIgnoresApplicationFailureWhenDirectControlAlsoFails(t *testing.T) {
+func TestQoEMeasurerApplicationFailureIsNeutralWithoutPeerEvidence(t *testing.T) {
 	routeClient := qoeSuccessClient()
 	directClient := qoeSuccessClient()
 	measurer := NewQoEMeasurer(QoEMeasurerConfig{
@@ -567,7 +561,7 @@ func TestQoEMeasurerIgnoresApplicationFailureWhenDirectControlAlsoFails(t *testi
 
 	got := measurer.Measure(context.Background(), "candidate", "127.0.0.1:1080")
 
-	if got.Success || !got.Infrastructure || got.ErrorCode != qoeApplicationGatesUnavailable {
+	if got.Success || !got.Infrastructure || !got.UnconfirmedHTTP || got.ErrorCode != qoeApplicationGates {
 		t.Fatalf("observation=%+v", got)
 	}
 }
@@ -851,7 +845,7 @@ func TestQoEMeasurerClassifiesEndpointResponsesAsInfrastructure(t *testing.T) {
 	}
 }
 
-func TestQoEMeasurerMapsRouteFailureAfterSuccessfulDirectControl(t *testing.T) {
+func TestQoEMeasurerReportsRawRouteFailureWithoutDirectHTTP(t *testing.T) {
 	for _, test := range []struct {
 		name      string
 		routeErr  error
@@ -877,234 +871,33 @@ func TestQoEMeasurerMapsRouteFailureAfterSuccessfulDirectControl(t *testing.T) {
 
 			got := measurer.Measure(context.Background(), "candidate", "127.0.0.1:1080")
 
-			if got.Success || got.Infrastructure || got.ErrorCode != test.errorCode ||
+			if got.Success || !got.Infrastructure || !got.UnconfirmedHTTP || got.ErrorCode != test.errorCode ||
 				strings.Contains(got.ErrorCode, "secret") {
 				t.Fatalf("observation=%+v", got)
 			}
-			if !directBody.Closed() {
-				t.Fatal("direct response body was not closed")
+			if directBody.Closed() {
+				t.Fatal("host HTTP control must not run")
 			}
 		})
 	}
 }
 
-func TestQoEMeasurerFailedDirectControlOpensCircuitAfterThreeDistinctCandidates(t *testing.T) {
-	var routeCalls atomic.Int32
-	var directCalls atomic.Int32
-	routeClient := &http.Client{Transport: qoeRoundTripFunc(func(*http.Request) (*http.Response, error) {
-		routeCalls.Add(1)
-		return nil, errors.New("candidate detail")
-	})}
-	directClient := &http.Client{Transport: qoeRoundTripFunc(func(*http.Request) (*http.Response, error) {
-		directCalls.Add(1)
-		return nil, errors.New("secret endpoint detail")
-	})}
-	measurer := NewQoEMeasurer(QoEMeasurerConfig{
-		ClientFactory: func(string) *http.Client { return routeClient },
-		DirectClient:  directClient,
-		SampleBytes:   65536,
-	})
-
-	for index, candidateID := range []string{
-		"candidate-1",
-		"candidate-2",
-		"candidate-2", // A duplicate must not advance the distinct threshold.
-		"candidate-3",
-	} {
-		got := measurer.Measure(context.Background(), candidateID, "127.0.0.1:1080")
-		if got.Success || !got.Infrastructure || got.ErrorCode != "qoe_endpoint_unavailable" {
-			t.Fatalf("failure %d observation=%+v", index+1, got)
-		}
-		if want := int32(index + 1); routeCalls.Load() != want {
-			t.Fatalf("failure %d suppressed route: route calls=%d want=%d", index+1, routeCalls.Load(), want)
-		}
-	}
-
-	skipped := measurer.Measure(context.Background(), "candidate-4", "127.0.0.1:1080")
-	if skipped.Success || !skipped.Infrastructure || skipped.ErrorCode != "qoe_endpoint_unavailable" {
-		t.Fatalf("open-circuit observation=%+v", skipped)
-	}
-	if routeCalls.Load() != 4 || directCalls.Load() != 4 {
-		t.Fatalf("route calls=%d direct calls=%d", routeCalls.Load(), directCalls.Load())
-	}
-}
-
-func TestQoEMeasurerReservesTwoSecondsForDirectControl(t *testing.T) {
-	var routeRemaining time.Duration
-	var directRemaining time.Duration
-	routeClient := &http.Client{Transport: qoeRoundTripFunc(func(request *http.Request) (*http.Response, error) {
-		deadline, ok := request.Context().Deadline()
-		if !ok {
-			t.Fatal("route request has no deadline")
-		}
-		routeRemaining = time.Until(deadline)
+func TestQoEMeasurerUsesRoutedDeadlineWithoutHostHTTPReserve(t *testing.T) {
+	var remaining time.Duration
+	var directCalls int
+	route := &http.Client{Transport: qoeRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+		deadline, _ := request.Context().Deadline()
+		remaining = time.Until(deadline)
 		return nil, context.DeadlineExceeded
 	})}
-	directClient := &http.Client{Transport: qoeRoundTripFunc(func(request *http.Request) (*http.Response, error) {
-		deadline, ok := request.Context().Deadline()
-		if !ok {
-			t.Fatal("direct request has no deadline")
-		}
-		directRemaining = time.Until(deadline)
-		return qoeResponse(http.StatusOK, bytes.Repeat([]byte{'x'}, 65536)), nil
+	direct := &http.Client{Transport: qoeRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		directCalls++
+		return nil, errors.New("must not run")
 	})}
-	measurer := NewQoEMeasurer(QoEMeasurerConfig{
-		ClientFactory: func(string) *http.Client { return routeClient },
-		DirectClient:  directClient,
-		SampleBytes:   65536,
-		Deadline:      6 * time.Second,
-	})
-
-	got := measurer.Measure(context.Background(), "candidate", "127.0.0.1:1080")
-
-	if got.Infrastructure || got.ErrorCode != "qoe_route_timeout" {
-		t.Fatalf("observation=%+v", got)
-	}
-	if routeRemaining < 3500*time.Millisecond || routeRemaining > 4100*time.Millisecond {
-		t.Fatalf("route deadline remaining=%s", routeRemaining)
-	}
-	if directRemaining-routeRemaining < 1500*time.Millisecond {
-		t.Fatalf("route=%s direct=%s; direct reserve missing", routeRemaining, directRemaining)
-	}
-}
-
-func TestQoEMeasurerSingleFlightsDirectControlAcrossDistinctCandidates(t *testing.T) {
-	var routeCalls atomic.Int32
-	routesReady := make(chan struct{})
-	routeClient := &http.Client{Transport: qoeRoundTripFunc(func(*http.Request) (*http.Response, error) {
-		if routeCalls.Add(1) == 3 {
-			close(routesReady)
-		}
-		<-routesReady
-		return nil, errors.New("route failed")
-	})}
-	var directCalls atomic.Int32
-	directStarted := make(chan struct{})
-	releaseDirect := make(chan struct{})
-	directClient := &http.Client{Transport: qoeRoundTripFunc(func(*http.Request) (*http.Response, error) {
-		if directCalls.Add(1) == 1 {
-			close(directStarted)
-		}
-		<-releaseDirect
-		return nil, errors.New("endpoint failed")
-	})}
-	measurer := NewQoEMeasurer(QoEMeasurerConfig{
-		ClientFactory: func(string) *http.Client { return routeClient },
-		DirectClient:  directClient,
-		SampleBytes:   65536,
-	})
-
-	results := make(chan qoe.Observation, 3)
-	for index := range 3 {
-		go func() {
-			got := measurer.Measure(context.Background(), "candidate-"+string(rune('a'+index)), "127.0.0.1:1080")
-			results <- got
-		}()
-	}
-	select {
-	case <-directStarted:
-	case <-time.After(time.Second):
-		t.Fatal("direct control did not start")
-	}
-	time.Sleep(50 * time.Millisecond)
-	if got := directCalls.Load(); got != 1 {
-		close(releaseDirect)
-		t.Fatalf("direct calls before release=%d", got)
-	}
-	close(releaseDirect)
-	for range 3 {
-		got := <-results
-		if got.Success || !got.Infrastructure || got.ErrorCode != "qoe_endpoint_unavailable" {
-			t.Fatalf("observation=%+v", got)
-		}
-	}
-	skipped := measurer.Measure(context.Background(), "candidate-d", "127.0.0.1:1080")
-	if skipped.Success || !skipped.Infrastructure || skipped.ErrorCode != "qoe_endpoint_unavailable" {
-		t.Fatalf("open-circuit observation=%+v", skipped)
-	}
-	if routeCalls.Load() != 3 || directCalls.Load() != 1 {
-		t.Fatalf("route calls=%d direct calls=%d", routeCalls.Load(), directCalls.Load())
-	}
-}
-
-func TestQoEMeasurerLeaderCancellationDoesNotPoisonSharedControl(t *testing.T) {
-	var routeCalls atomic.Int32
-	routeClient := &http.Client{Transport: qoeRoundTripFunc(func(*http.Request) (*http.Response, error) {
-		routeCalls.Add(1)
-		return nil, errors.New("route failed")
-	})}
-	var directCalls atomic.Int32
-	directStarted := make(chan struct{})
-	releaseDirect := make(chan struct{})
-	directClient := &http.Client{Transport: qoeRoundTripFunc(func(request *http.Request) (*http.Response, error) {
-		if directCalls.Add(1) == 1 {
-			close(directStarted)
-		}
-		select {
-		case <-releaseDirect:
-			return qoeResponse(http.StatusOK, bytes.Repeat([]byte{'x'}, 65536)), nil
-		case <-request.Context().Done():
-			return nil, request.Context().Err()
-		}
-	})}
-	measurer := NewQoEMeasurer(QoEMeasurerConfig{
-		ClientFactory: func(string) *http.Client { return routeClient },
-		DirectClient:  directClient,
-		SampleBytes:   65536,
-		Deadline:      time.Second,
-	})
-
-	leaderContext, cancelLeader := context.WithCancel(context.Background())
-	leaderResult := make(chan qoe.Observation, 1)
-	go func() {
-		leaderResult <- measurer.Measure(leaderContext, "candidate-a", "127.0.0.1:1080")
-	}()
-	select {
-	case <-directStarted:
-	case <-time.After(time.Second):
-		t.Fatal("direct control did not start")
-	}
-
-	waiterResults := make(chan qoe.Observation, 2)
-	for _, candidateID := range []string{"candidate-b", "candidate-c"} {
-		go func() {
-			waiterResults <- measurer.Measure(context.Background(), candidateID, "127.0.0.1:1080")
-		}()
-	}
-	deadline := time.Now().Add(time.Second)
-	for routeCalls.Load() != 3 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if routeCalls.Load() != 3 {
-		t.Fatalf("route calls before cancellation=%d", routeCalls.Load())
-	}
-
-	cancelLeader()
-	select {
-	case <-waiterResults:
-		t.Fatal("healthy waiter returned before the isolated control completed")
-	case <-time.After(20 * time.Millisecond):
-	}
-	close(releaseDirect)
-
-	for range 2 {
-		got := <-waiterResults
-		if got.Success || got.Infrastructure || got.ErrorCode != "qoe_route_transport" {
-			t.Fatalf("waiter observation=%+v", got)
-		}
-	}
-	select {
-	case <-leaderResult:
-	case <-time.After(time.Second):
-		t.Fatal("canceled leader did not return")
-	}
-
-	after := measurer.Measure(context.Background(), "candidate-d", "127.0.0.1:1080")
-	if after.Success || after.Infrastructure || after.ErrorCode != "qoe_route_transport" {
-		t.Fatalf("post-cancellation observation=%+v", after)
-	}
-	if routeCalls.Load() != 4 || directCalls.Load() != 1 {
-		t.Fatalf("route calls=%d direct calls=%d", routeCalls.Load(), directCalls.Load())
+	measurer := NewQoEMeasurer(QoEMeasurerConfig{ClientFactory: func(string) *http.Client { return route }, DirectClient: direct, Deadline: 6 * time.Second})
+	got := measurer.Measure(context.Background(), "candidate", "socks")
+	if !got.Infrastructure || !got.UnconfirmedHTTP || got.ErrorCode != qoeRouteTimeout || directCalls != 0 || remaining < 3500*time.Millisecond || remaining > 4*time.Second {
+		t.Fatalf("observation=%+v direct=%d remaining=%s", got, directCalls, remaining)
 	}
 }
 
@@ -1160,223 +953,6 @@ func TestQoEMeasurerCanceledRouteDoesNotMutateEndpointHealth(t *testing.T) {
 		t.Fatalf("post-cancellation observation=%+v", after)
 	}
 	if routeCalls.Load() != 4 || directCalls.Load() != 0 {
-		t.Fatalf("route calls=%d direct calls=%d", routeCalls.Load(), directCalls.Load())
-	}
-}
-
-func TestQoEMeasurerReusesHealthyControlAcrossDistinctCandidateWindow(t *testing.T) {
-	base := time.Unix(1_800_000_000, 0)
-	clock := newStepClock(
-		base,
-		base,
-		base.Add(10*time.Second),
-		base.Add(10*time.Second),
-		base.Add(20*time.Second),
-		base.Add(20*time.Second),
-	)
-	routeClient := &http.Client{Transport: qoeRoundTripFunc(func(*http.Request) (*http.Response, error) {
-		return nil, errors.New("route failed")
-	})}
-	var directCalls atomic.Int32
-	directClient := &http.Client{Transport: qoeRoundTripFunc(func(*http.Request) (*http.Response, error) {
-		directCalls.Add(1)
-		return qoeResponse(http.StatusOK, bytes.Repeat([]byte{'x'}, 65536)), nil
-	})}
-	measurer := NewQoEMeasurer(QoEMeasurerConfig{
-		ClientFactory: func(string) *http.Client { return routeClient },
-		DirectClient:  directClient,
-		SampleBytes:   65536,
-		Now:           clock.Now,
-	})
-
-	for index := range 3 {
-		got := measurer.Measure(
-			context.Background(),
-			"candidate-"+string(rune('a'+index)),
-			"127.0.0.1:1080",
-		)
-		if got.Success || got.Infrastructure || got.ErrorCode != "qoe_route_transport" {
-			t.Fatalf("observation %d=%+v", index, got)
-		}
-	}
-	if got := directCalls.Load(); got != 1 {
-		t.Fatalf("direct calls=%d", got)
-	}
-}
-
-func TestQoEMeasurerTimestampsOutOfOrderFailuresWhenProcessed(t *testing.T) {
-	base := time.Unix(1_800_000_000, 0)
-	fastFailureAt := base.Add(20 * time.Second)
-	slowFailureAt := base.Add(25 * time.Second)
-	clock := newStepClock(
-		base,
-		base.Add(10*time.Second),
-		fastFailureAt,
-		slowFailureAt,
-	)
-	slowStarted := make(chan struct{})
-	releaseSlow := make(chan struct{})
-	slowClient := &http.Client{Transport: qoeRoundTripFunc(func(*http.Request) (*http.Response, error) {
-		close(slowStarted)
-		<-releaseSlow
-		return nil, errors.New("slow route failed")
-	})}
-	fastClient := &http.Client{Transport: qoeRoundTripFunc(func(*http.Request) (*http.Response, error) {
-		return nil, errors.New("fast route failed")
-	})}
-	var directCalls atomic.Int32
-	directClient := &http.Client{Transport: qoeRoundTripFunc(func(*http.Request) (*http.Response, error) {
-		directCalls.Add(1)
-		return qoeResponse(http.StatusOK, bytes.Repeat([]byte{'x'}, 65536)), nil
-	})}
-	measurer := NewQoEMeasurer(QoEMeasurerConfig{
-		ClientFactory: func(address string) *http.Client {
-			if address == "slow" {
-				return slowClient
-			}
-			return fastClient
-		},
-		DirectClient: directClient,
-		SampleBytes:  65536,
-		Now:          clock.Now,
-	})
-
-	slowResult := make(chan qoe.Observation, 1)
-	go func() {
-		slowResult <- measurer.Measure(context.Background(), "candidate-slow", "slow")
-	}()
-	select {
-	case <-slowStarted:
-	case <-time.After(time.Second):
-		t.Fatal("slow route did not start")
-	}
-	fast := measurer.Measure(context.Background(), "candidate-fast", "fast")
-	close(releaseSlow)
-	slow := <-slowResult
-
-	for name, got := range map[string]qoe.Observation{"fast": fast, "slow": slow} {
-		if got.Success || got.Infrastructure || got.ErrorCode != "qoe_route_transport" {
-			t.Fatalf("%s observation=%+v", name, got)
-		}
-	}
-	if directCalls.Load() != 1 {
-		t.Fatalf("direct calls=%d; negative freshness caused duplicate control", directCalls.Load())
-	}
-	measurer.mu.Lock()
-	lastControlAttempt := measurer.lastControlAttempt
-	fastRecordedAt := measurer.recentFailures["candidate-fast"]
-	slowRecordedAt := measurer.recentFailures["candidate-slow"]
-	measurer.mu.Unlock()
-	if lastControlAttempt != fastFailureAt {
-		t.Fatalf("lastControlAttempt=%s want=%s", lastControlAttempt, fastFailureAt)
-	}
-	if fastRecordedAt != fastFailureAt || slowRecordedAt != slowFailureAt {
-		t.Fatalf("failure times fast=%s slow=%s", fastRecordedAt, slowRecordedAt)
-	}
-}
-
-func TestQoEMeasurerRecoversOpenCircuitAtMostOncePerMinute(t *testing.T) {
-	base := time.Unix(1_800_000_000, 0)
-	clock := newStepClock(
-		base,
-		base,
-		base.Add(time.Second),
-		base.Add(time.Second),
-		base.Add(2*time.Second),
-		base.Add(2*time.Second),
-		base.Add(61*time.Second),
-		base.Add(62*time.Second),
-		base.Add(64*time.Second),
-		base.Add(64*time.Second+200*time.Millisecond),
-		base.Add(64*time.Second+300*time.Millisecond),
-	)
-	var routeCalls atomic.Int32
-	routeClient := &http.Client{Transport: qoeRoundTripFunc(func(request *http.Request) (*http.Response, error) {
-		if routeCalls.Add(1) <= 3 {
-			return nil, errors.New("route failed")
-		}
-		trace := httptrace.ContextClientTrace(request.Context())
-		trace.GotFirstResponseByte()
-		return qoeResponse(http.StatusOK, bytes.Repeat([]byte{'x'}, 65536)), nil
-	})}
-	var directCalls atomic.Int32
-	directClient := &http.Client{Transport: qoeRoundTripFunc(func(*http.Request) (*http.Response, error) {
-		if directCalls.Add(1) <= 3 {
-			return nil, errors.New("endpoint failed")
-		}
-		return qoeResponse(http.StatusOK, bytes.Repeat([]byte{'x'}, 65536)), nil
-	})}
-	measurer := NewQoEMeasurer(QoEMeasurerConfig{
-		ClientFactory: func(string) *http.Client { return routeClient },
-		DirectClient:  directClient,
-		SampleBytes:   65536,
-		Now:           clock.Now,
-	})
-
-	first := measurer.Measure(context.Background(), "candidate-a", "127.0.0.1:1080")
-	second := measurer.Measure(context.Background(), "candidate-b", "127.0.0.1:1081")
-	opened := measurer.Measure(context.Background(), "candidate-c", "127.0.0.1:1082")
-	skipped := measurer.Measure(context.Background(), "candidate-d", "127.0.0.1:1083")
-	recovered := measurer.Measure(context.Background(), "candidate-e", "127.0.0.1:1084")
-
-	for name, observation := range map[string]qoe.Observation{
-		"first": first, "second": second, "opened": opened, "skipped": skipped,
-	} {
-		if !observation.Infrastructure || observation.ErrorCode != "qoe_endpoint_unavailable" {
-			t.Fatalf("%s observation=%+v", name, observation)
-		}
-	}
-	if !recovered.Success || recovered.Infrastructure || recovered.TTFB != 200*time.Millisecond ||
-		recovered.TransferDuration != 100*time.Millisecond {
-		t.Fatalf("recovered=%+v", recovered)
-	}
-	if routeCalls.Load() != 4 || directCalls.Load() != 4 {
-		t.Fatalf("route calls=%d direct calls=%d", routeCalls.Load(), directCalls.Load())
-	}
-}
-
-func TestQoEMeasurerFailedRecoveryKeepsCircuitOpen(t *testing.T) {
-	base := time.Unix(1_800_000_000, 0)
-	clock := newStepClock(
-		base,
-		base,
-		base.Add(time.Second),
-		base.Add(time.Second),
-		base.Add(2*time.Second),
-		base.Add(2*time.Second),
-		base.Add(62*time.Second),
-		base.Add(63*time.Second),
-		base.Add(63*time.Second),
-	)
-	var routeCalls atomic.Int32
-	routeClient := &http.Client{Transport: qoeRoundTripFunc(func(*http.Request) (*http.Response, error) {
-		routeCalls.Add(1)
-		return nil, errors.New("route failed")
-	})}
-	var directCalls atomic.Int32
-	directClient := &http.Client{Transport: qoeRoundTripFunc(func(*http.Request) (*http.Response, error) {
-		directCalls.Add(1)
-		return nil, errors.New("endpoint failed")
-	})}
-	measurer := NewQoEMeasurer(QoEMeasurerConfig{
-		ClientFactory: func(string) *http.Client { return routeClient },
-		DirectClient:  directClient,
-		SampleBytes:   65536,
-		Now:           clock.Now,
-	})
-
-	for _, candidateID := range []string{"candidate-a", "candidate-b", "candidate-c"} {
-		measurer.Measure(context.Background(), candidateID, "127.0.0.1:1080")
-	}
-	failedRecovery := measurer.Measure(context.Background(), "candidate-d", "127.0.0.1:1080")
-	skipped := measurer.Measure(context.Background(), "candidate-e", "127.0.0.1:1080")
-
-	for name, got := range map[string]qoe.Observation{"failed recovery": failedRecovery, "skipped": skipped} {
-		if got.Success || !got.Infrastructure || got.ErrorCode != "qoe_endpoint_unavailable" {
-			t.Fatalf("%s observation=%+v", name, got)
-		}
-	}
-	if routeCalls.Load() != 3 || directCalls.Load() != 4 {
 		t.Fatalf("route calls=%d direct calls=%d", routeCalls.Load(), directCalls.Load())
 	}
 }

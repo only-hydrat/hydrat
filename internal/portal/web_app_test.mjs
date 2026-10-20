@@ -6,6 +6,15 @@ import {createContext, runInContext} from "node:vm";
 const app = readFileSync(new URL("./web/app.js", import.meta.url), "utf8");
 const html = readFileSync(new URL("./web/index.html", import.meta.url), "utf8");
 
+test("idle client is not presented as active and keeps bootstrap separate", async () => {
+  const page = dashboard(async () => new Response(JSON.stringify({clients:[{id:"alice",name:"Alice",address:"10.44.0.2/32",paused:false,connection_state:"inactive",route_reserved:false}],assignments:[{client_id:"alice",tcp_outbound:"bootstrap",udp_outbound:"bootstrap"}]}),{status:200}));
+  await runInContext('adminToken="token"; loadClients()', page.context);
+  const row = page.elements.get("admin-clients").children[0];
+  const texts = (element) => [element.textContent,...(element.children||[]).flatMap(texts)];
+  assert.ok(texts(row).some(text => text.includes("резервация освобождена")));
+  assert.ok(!texts(row).includes("Активен"));
+});
+
 function dashboard(fetchAdmin) {
   let doc;
   const elements = new Map([...html.matchAll(/id="([^"]+)"/g)].map(([, id]) => [id, {

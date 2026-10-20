@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type Protocol string
@@ -37,6 +39,7 @@ type Outbound struct {
 }
 
 type ClientRoute struct {
+	Dormant            bool   `json:"dormant,omitempty"`
 	ClientID           string `json:"client_id"`
 	SourceCIDR         string `json:"source_cidr,omitempty"`
 	TCPOutbound        string `json:"tcp_outbound"`
@@ -59,7 +62,8 @@ type DesiredPlan struct {
 
 type AppliedPlan struct {
 	DesiredPlan
-	Digest string `json:"digest"`
+	Digest                string                `json:"digest"`
+	PendingFlowRecoveries []PendingFlowRecovery `json:"pending_flow_recoveries,omitempty"`
 }
 
 type Adapter interface {
@@ -94,6 +98,7 @@ type Reconciler struct {
 	pendingRemoves   map[string]Outbound
 	runtimeReady     bool
 	recoveryRequired atomic.Bool
+	applyDiagnostic  applyDiagnosticWindow
 }
 
 func NewReconciler(adapter Adapter, statePath string) (*Reconciler, error) {
@@ -122,13 +127,18 @@ func NewReconciler(adapter Adapter, statePath string) (*Reconciler, error) {
 }
 
 func (reconciler *Reconciler) Apply(ctx context.Context, desired DesiredPlan) error {
+	return reconciler.ApplyWithRecovery(ctx, desired, nil)
+}
+
+func (reconciler *Reconciler) ApplyWithRecovery(ctx context.Context, desired DesiredPlan, recoveries []FlowRecovery) error {
 	recoveringAtAdmission := reconciler.recoveryRequired.Load()
 	reconciler.mu.Lock()
 	defer reconciler.mu.Unlock()
 	if recoveringAtAdmission || reconciler.recoveryRequired.Load() {
+		reconciler.logApply(desired.Generation, "admission", ErrRuntimeRecovering, false, time.Now())
 		return ErrRuntimeRecovering
 	}
-	return reconciler.applyLocked(ctx, desired, false)
+	return reconciler.applyLocked(ctx, desired, false, recoveries)
 }
 
 // InvalidateRuntime marks all dynamic Xray state as lost. It is serialized with
@@ -148,8 +158,19 @@ func (reconciler *Reconciler) applyLocked(
 	ctx context.Context,
 	desired DesiredPlan,
 	recovering bool,
-) error {
+	recoveries []FlowRecovery,
+) (applyErr error) {
+	started := time.Now()
+	phase, noop := "validate", false
+	defer func() {
+		if !noop {
+			reconciler.logApply(desired.Generation, phase, applyErr, recovering, started)
+		}
+	}()
 	if err := desired.Validate(); err != nil {
+		return err
+	}
+	if err := ValidateFlowRecoveries(desired, recoveries); err != nil {
 		return err
 	}
 	digest, err := desired.digest()
@@ -161,15 +182,24 @@ func (reconciler *Reconciler) applyLocked(
 	}
 	if desired.Generation == reconciler.applied.Generation {
 		if reconciler.applied.Digest == digest && reconciler.runtimeReady {
+			noop = true
+			_ = reconciler.retryFlowRecoveriesLocked(ctx)
 			return nil
 		}
 		if reconciler.applied.Digest != digest {
 			return errors.New("plan generation was reused with different contents")
 		}
 	}
+	if !recovering && desired.Generation > reconciler.applied.Generation {
+		if err := validateFlowRecoveryTransition(reconciler.applied.DesiredPlan, recoveries); err != nil {
+			return err
+		}
+	}
+	pendingRecoveries := reconciler.prepareFlowRecoveriesLocked(ctx, desired, recoveries, recovering)
 
 	runtimeDesired := desired.Outbounds
 	if recovering {
+		phase = "normalize"
 		runtimeDesired, err = reconciler.normalizeRecoveryOutbounds(ctx, desired.Outbounds)
 		if err != nil {
 			return err
@@ -190,10 +220,12 @@ func (reconciler *Reconciler) applyLocked(
 	// must be treated as an unknown partial state rather than compared with the
 	// last acknowledged route snapshot.
 	reconciler.runtimeReady = false
+	phase = "pending_outbounds"
 	if err := reconciler.normalizePendingOutboundOperations(ctx, next); err != nil {
 		return err
 	}
 	current := cloneOutbounds(reconciler.runtimeOutbounds)
+	phase = "outbounds"
 	for _, outbound := range sortedOutboundsForAdd(runtimeDesired) {
 		previous, exists := current[outbound.ID]
 		if !exists || !equalOutbound(previous, outbound) {
@@ -206,6 +238,7 @@ func (reconciler *Reconciler) applyLocked(
 		}
 	}
 	routes := sortedRoutes(desired.Clients)
+	phase = "routes"
 	if batcher, ok := reconciler.adapter.(StagedRouteBatcher); ok {
 		previousRoutes := sortedRoutes(reconciler.applied.Clients)
 		if !runtimeWasReady {
@@ -234,6 +267,7 @@ func (reconciler *Reconciler) applyLocked(
 		}
 	}
 	sortOutboundsForRemoval(removed)
+	phase = "remove_outbounds"
 	for _, outbound := range removed {
 		if err := reconciler.adapter.DrainOutbound(ctx, outbound.ID); err != nil {
 			return fmt.Errorf("drain outbound %s: %w", outbound.ID, err)
@@ -246,15 +280,49 @@ func (reconciler *Reconciler) applyLocked(
 		delete(reconciler.runtimeOutbounds, outbound.ID)
 	}
 
-	applied := AppliedPlan{DesiredPlan: desired, Digest: digest}
+	applied := AppliedPlan{DesiredPlan: desired, Digest: digest, PendingFlowRecoveries: pendingRecoveries}
+	phase = "persist"
 	if err := writeAppliedPlan(reconciler.statePath, applied); err != nil {
 		return err
 	}
 	reconciler.applied = applied
 	if !recovering {
 		reconciler.runtimeReady = true
+		_ = reconciler.retryFlowRecoveriesLocked(ctx)
 	}
 	return nil
+}
+
+type applyDiagnosticWindow struct {
+	generation  int64
+	phase, code string
+	last        time.Time
+	suppressed  uint64
+}
+
+// Called with mu held, just like application itself. No adapter error or plan
+// payload is formatted here. Repeated retries are summarized on recovery.
+func (reconciler *Reconciler) logApply(generation int64, phase string, err error, recovering bool, started time.Time) {
+	code, outcome := "ok", "applied"
+	if err != nil {
+		outcome, code = "failed", "operation_failed"
+		switch {
+		case errors.Is(err, context.Canceled):
+			code = "canceled"
+		case errors.Is(err, context.DeadlineExceeded):
+			code = "deadline"
+		case errors.Is(err, ErrRuntimeRecovering):
+			code = "runtime_recovering"
+		}
+	}
+	w := &reconciler.applyDiagnostic
+	now := time.Now()
+	if err != nil && w.generation == generation && w.phase == phase && w.code == code && now.Before(w.last.Add(time.Minute)) {
+		w.suppressed++
+		return
+	}
+	log.Printf("plan_apply generation=%d phase=%s outcome=%s code=%s recovery=%t elapsed_ms=%d suppressed=%d", generation, phase, outcome, code, recovering, time.Since(started).Milliseconds(), w.suppressed)
+	*w = applyDiagnosticWindow{generation: generation, phase: phase, code: code, last: now}
 }
 
 func (reconciler *Reconciler) normalizeRecoveryOutbounds(
@@ -354,7 +422,7 @@ func (reconciler *Reconciler) Rehydrate(ctx context.Context) error {
 		reconciler.recoveryRequired.Store(false)
 		return nil
 	}
-	if err := reconciler.applyLocked(ctx, reconciler.applied.DesiredPlan, true); err != nil {
+	if err := reconciler.applyLocked(ctx, reconciler.applied.DesiredPlan, true, nil); err != nil {
 		return err
 	}
 	reconciler.runtimeReady = true

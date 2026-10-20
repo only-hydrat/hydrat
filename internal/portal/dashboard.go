@@ -51,15 +51,20 @@ func (server *Server) asset(response http.ResponseWriter, request *http.Request)
 
 type candidateView struct {
 	store.Candidate
-	State  *store.CandidateProbeState `json:"state,omitempty"`
-	Health *store.CandidateHealth     `json:"health,omitempty"`
-	QoE    *candidateQoEView          `json:"qoe,omitempty"`
+	SelectionReason string                     `json:"selection_reason"`
+	LastProbeAt     *time.Time                 `json:"last_probe_at,omitempty"`
+	State           *store.CandidateProbeState `json:"state,omitempty"`
+	Health          *store.CandidateHealth     `json:"health,omitempty"`
+	QoE             *candidateQoEView          `json:"qoe,omitempty"`
 }
 
 type candidateQoEView struct {
 	Status                 qoe.Status `json:"status"`
 	TTFBMS                 float64    `json:"ttfb_ms"`
 	ThroughputMbps         float64    `json:"throughput_mbps"`
+	MedianTTFBMS           float64    `json:"median_ttfb_ms"`
+	MedianThroughputMbps   float64    `json:"median_throughput_mbps"`
+	Quality                float64    `json:"quality"`
 	BaselineTTFBMS         float64    `json:"baseline_ttfb_ms"`
 	BaselineThroughputMbps float64    `json:"baseline_throughput_mbps"`
 	WindowValid            int        `json:"window_valid"`
@@ -74,6 +79,11 @@ func (server *Server) listCandidates(response http.ResponseWriter, request *http
 	statusFilter := strings.TrimSpace(request.URL.Query().Get("status"))
 	kindFilter := strings.TrimSpace(request.URL.Query().Get("kind"))
 	search := strings.ToLower(strings.TrimSpace(request.URL.Query().Get("q")))
+	excluded, err := server.policyExclusions(request.Context())
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "candidate policy unavailable")
+		return
+	}
 
 	candidates, err := server.store.ListCandidates(request.Context(), "")
 	if err != nil {
@@ -122,6 +132,14 @@ func (server *Server) listCandidates(response http.ResponseWriter, request *http
 			continue
 		}
 		view := candidateView{Candidate: candidate}
+		view.SelectionReason = probeReason(state, excluded[candidate.ID])
+		last := state.LastFastProbeAt
+		if state.LastFullProbeAt.After(last) {
+			last = state.LastFullProbeAt
+		}
+		if !last.IsZero() {
+			view.LastProbeAt = &last
+		}
 		if hasState {
 			stateCopy := state
 			stateCopy.LastErrorMessage = ""
@@ -154,6 +172,9 @@ func qoeView(state qoe.State) *candidateQoEView {
 		Status:                 state.Status,
 		TTFBMS:                 float64(state.CurrentTTFB) / float64(time.Millisecond),
 		ThroughputMbps:         state.CurrentThroughputMbps,
+		MedianTTFBMS:           float64(state.MedianTTFB) / float64(time.Millisecond),
+		MedianThroughputMbps:   state.MedianThroughputMbps,
+		Quality:                state.Quality(),
 		BaselineTTFBMS:         float64(state.BaselineTTFB) / float64(time.Millisecond),
 		BaselineThroughputMbps: state.BaselineThroughputMbps,
 		WindowValid:            state.WindowValid,
@@ -168,6 +189,12 @@ func qoeView(state qoe.State) *candidateQoEView {
 }
 
 func (server *Server) systemSummary(response http.ResponseWriter, request *http.Request) {
+	excluded, policyErr := server.policyExclusions(request.Context())
+	activity, activityErr := server.store.ProbeActivitySince(request.Context(), time.Now().Add(-5*time.Hour))
+	if err := errors.Join(policyErr, activityErr); err != nil {
+		writeError(response, http.StatusInternalServerError, "probe coverage unavailable")
+		return
+	}
 	clients, clientsErr := server.store.ListClients(request.Context())
 	sources, sourcesErr := server.store.ListSources(request.Context())
 	candidates, candidatesErr := server.store.ListCandidates(request.Context(), "")
@@ -223,7 +250,9 @@ func (server *Server) systemSummary(response http.ResponseWriter, request *http.
 	writeJSON(response, http.StatusOK, map[string]any{
 		"status": "ok", "client_count": len(clients), "source_count": len(sources),
 		"candidate_count": len(candidates), "working_pool_count": working,
-		"draining_count": draining, "candidate_statuses": statuses,
+		"probe_coverage":    probeCoverage(time.Now(), candidates, states, excluded),
+		"probe_activity_5h": activity,
+		"draining_count":    draining, "candidate_statuses": statuses,
 		"working_pool_by_kind": workingByKind,
 		"effective_capacity":   effective,
 		"probe_runtime":        runtimeSnapshot,

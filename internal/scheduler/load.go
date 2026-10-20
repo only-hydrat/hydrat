@@ -16,12 +16,13 @@ func rendezvous(
 	if len(candidates) == 0 {
 		return ""
 	}
+	candidates = preferSpareCapacity(candidates, candidates, load)
 	selected := ""
 	bestScore := -1.0
 	for _, candidate := range candidates {
 		candidateLoad := load[candidate.ID]
 		cDomainLoad := domainLoad[candidateDomain(candidate)]
-		effectiveScore := math.Max(candidate.Score, 0.001) /
+		effectiveScore := math.Max(selectionQuality(candidate), 0.001) /
 			(1.0 + 0.05*float64(candidateLoad) + 0.02*float64(cDomainLoad))
 
 		digest := sha256.Sum256([]byte(key + "\x00" + candidate.ID))
@@ -35,6 +36,53 @@ func rendezvous(
 		}
 	}
 	return selected
+}
+
+// The cap is soft: never reject the sole usable route. Duplicate subscription
+// entries share one physical route budget, and only comparable alternatives
+// may displace an overloaded winner.
+func preferSpareCapacity(eligible, inventory []Candidate, load map[string]int) []Candidate {
+	best := 0.0
+	for _, candidate := range eligible {
+		best = math.Max(best, selectionQuality(candidate))
+	}
+	spare := make([]Candidate, 0, len(eligible))
+	for _, candidate := range eligible {
+		if selectionQuality(candidate) >= best*0.8 && RouteLoad(candidate, inventory, load) < 2 {
+			spare = append(spare, candidate)
+		}
+	}
+	if len(spare) > 0 {
+		return spare
+	}
+	return eligible
+}
+
+func RouteLoad(candidate Candidate, inventory []Candidate, load map[string]int) int {
+	count := load[candidate.ID]
+	for _, other := range inventory {
+		if other.ID != candidate.ID && sameRouteIdentity(candidate, other) {
+			count += load[other.ID]
+		}
+	}
+	return count
+}
+
+func selectionQuality(candidate Candidate) float64 {
+	if candidate.QoEQuality > 0 {
+		return candidate.QoEQuality
+	}
+	if candidate.QoEEffective > 0 {
+		return 1 / candidate.QoEEffective.Seconds()
+	}
+	return candidate.Score
+}
+
+func ComparableQuality(candidate, incumbent Candidate) bool {
+	if candidate.QoEQuality > 0 && incumbent.QoEQuality > 0 {
+		return candidate.QoEQuality >= incumbent.QoEQuality*0.8
+	}
+	return candidate.Score >= incumbent.Score*0.8
 }
 
 func normalizeOpenDomains(candidates []Candidate) []Candidate {
@@ -97,21 +145,21 @@ func adjustAssignmentLoad(
 	byID map[string]Candidate,
 	delta int,
 ) {
-		tcpID := assignment.TCP
-		udpID := assignment.UDP
-		if tcpID != "" {
-			load[tcpID] += delta
-			domainLoad[candidateIDDomain(tcpID, byID)] += delta
+	tcpID := assignment.TCP
+	udpID := assignment.UDP
+	if tcpID != "" {
+		load[tcpID] += delta
+		domainLoad[candidateIDDomain(tcpID, byID)] += delta
+	}
+	if udpID != "" && udpID != tcpID {
+		load[udpID] += delta
+	}
+	if udpID != "" {
+		domainUDP := candidateIDDomain(udpID, byID)
+		if tcpID == "" || domainUDP != candidateIDDomain(tcpID, byID) {
+			domainLoad[domainUDP] += delta
 		}
-		if udpID != "" && udpID != tcpID {
-			load[udpID] += delta
-		}
-		if udpID != "" {
-			domainUDP := candidateIDDomain(udpID, byID)
-			if tcpID == "" || domainUDP != candidateIDDomain(tcpID, byID) {
-				domainLoad[domainUDP] += delta
-			}
-		}
+	}
 }
 
 func candidateIDDomain(candidateID string, byID map[string]Candidate) string {

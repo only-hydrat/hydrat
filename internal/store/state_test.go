@@ -83,12 +83,21 @@ func TestMarkAppliedPlanAtomicallyRecordsTransportMigrationReason(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := time.Unix(1_900_000_000, 0)
-	apply := func(generation int64, candidate Candidate, reason string) {
+	now := time.Now().Add(-11 * time.Second)
+	apply := func(generation int64, candidate Candidate, reason string, dormant bool) {
 		t.Helper()
 		encoded := vlessReservePlanBytes(
 			t, generation, "alice", candidate.ID, "", "", "",
 		)
+		var plan dataplane.DesiredPlan
+		if err := json.Unmarshal(encoded, &plan); err != nil {
+			t.Fatal(err)
+		}
+		plan.Clients[0].Dormant = dormant
+		encoded, err = json.Marshal(plan)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if err := database.SaveDesiredPlanSnapshotForCandidatesAndReservesWithReason(
 			ctx, generation, encoded, reason, epoch,
 			[]CandidatePlanExpectation{{Candidate: candidate}}, nil,
@@ -103,8 +112,10 @@ func TestMarkAppliedPlanAtomicallyRecordsTransportMigrationReason(t *testing.T) 
 			t.Fatal(err)
 		}
 	}
-	apply(1, candidates["old"], "startup_normalization")
-	apply(2, candidates["new"], "hard_failure")
+	apply(1, candidates["old"], "startup_normalization", true)
+	oldSince := time.Unix(now.Unix(), 0)
+	now = now.Add(11 * time.Second)
+	apply(2, candidates["new"], "hard_failure", false)
 	events, err := database.ListEvents(ctx, 10)
 	if err != nil {
 		t.Fatal(err)
@@ -114,16 +125,25 @@ func TestMarkAppliedPlanAtomicallyRecordsTransportMigrationReason(t *testing.T) 
 		t.Fatalf("migration events=%+v", events)
 	}
 	var detail struct {
-		Transport string `json:"transport"`
-		From      string `json:"from"`
-		To        string `json:"to"`
-		Reason    string `json:"reason"`
+		Transport   string `json:"transport"`
+		From        string `json:"from"`
+		To          string `json:"to"`
+		Reason      string `json:"reason"`
+		Trigger     string `json:"trigger"`
+		FromDormant bool   `json:"from_dormant"`
+		Dormant     bool   `json:"dormant"`
+		PreviousAge *int64 `json:"previous_assignment_age_ms"`
 	}
 	if err := json.Unmarshal([]byte(events[0].Message), &detail); err != nil {
 		t.Fatalf("migration message=%q: %v", events[0].Message, err)
 	}
+	minimumAge := events[0].CreatedAt.Sub(oldSince).Milliseconds()
+	if detail.PreviousAge == nil || *detail.PreviousAge < minimumAge || *detail.PreviousAge >= minimumAge+1000 {
+		t.Fatalf("missing or inaccurate previous assignment age: %+v", detail)
+	}
 	if detail.Transport != "tcp" || detail.From != candidates["old"].ID ||
-		detail.To != candidates["new"].ID || detail.Reason != "hard_failure" {
+		detail.To != candidates["new"].ID || detail.Reason != "hard_failure" ||
+		detail.Trigger != "hard_failure" || !detail.FromDormant || detail.Dormant {
 		t.Fatalf("migration detail=%+v", detail)
 	}
 }
@@ -1861,6 +1881,14 @@ func TestRoutingEvidenceSnapshotBoundsProbedInventoryToWorkingAndReferenced(t *t
 		[]string{candidates["referenced"].ID},
 		candidates["working"].ID, candidates["referenced"].ID,
 	)
+	exact, err := database.LoadRoutingReferencesSnapshot(ctx, []string{candidates["referenced"].ID})
+	if err != nil || len(exact.Candidates) != 1 || exact.Candidates[0].Candidate.ID != candidates["referenced"].ID {
+		t.Fatalf("reference-only snapshot loaded working pool: %+v %v", exact, err)
+	}
+	empty, err := database.LoadRoutingReferencesSnapshot(ctx, nil)
+	if err != nil || len(empty.Candidates) != 0 {
+		t.Fatalf("empty references expanded inventory: %+v %v", empty, err)
+	}
 }
 
 func TestSaveDesiredPlanForCandidatesAllowsOnlyPreReferencedDrainingIdentity(t *testing.T) {

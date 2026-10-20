@@ -4,6 +4,41 @@
 
 # 生产环境运维
 
+## 路由分配与非活跃设备
+
+每条路由的软上限为两个活跃客户端，不同订阅中的重复条目共用同一个上限。
+如果没有质量相近且已验证的替代路由，可以超过此上限以保持可用性。
+常规负载调整逐步进行；确认发生故障时，无需等待常规最短驻留时间。
+
+故障切换后，健康的主路由会保留标准的 30 分钟驻留时间，即使临时有两个以上的活跃客户端共用该路由。
+工作池更新、状态规范化和备用路由修复本身不会导致客户端再次切换。
+备用覆盖不完整时，常规负载调整也会等待修复完成。
+确认故障、紧急 QoE 疏散、手动切换和路由撤销不受此保护限制。
+仍符合准入条件的已安装备用路由会被保留；仅有排名或验证证据时效的波动，不会更换其检查目标，
+但目标失去准入资格时会被移除。
+
+连续五分钟没有收到用户流量后，释放该设备的专属路由预留。
+服务器发出的数据、WireGuard 握手和保活包不会延长预留；活跃状态依据隧道解密后的数据包确定。
+非活跃设备共用一组受监测的
+接入路由和备用路由；路由故障或失去使用资格时会被替换。
+设备恢复使用后会触发优先分配，不必等待常规周期。
+没有合格路由时仍采用 fail-closed 策略，不会改用直接出口。
+
+质量评分对吞吐量和首字节时间（TTFB）赋予相同权重，使用 QoE 窗口的中位数，
+而不是最近一次测量值。服务可用性、证据时效和 UDP 检查仍然是必要条件。
+切换出口无法保留现有 TCP 会话。
+
+`/api/admin/clients` 的 `connection_state` 和 `route_reserved` 用于区分设备活跃状态、
+路由预留和管理员暂停状态。候选路由的 `selection_reason` 说明等待、失败或策略排除的原因；
+`last_probe_at` 表示最近检查时间，而不是数据库记录的更新时间。
+`/api/admin/system` 的 `probe_coverage` 和 `probe_activity_5h` 区分不同候选的检查覆盖率
+与工作池内的重复检查次数。仅凭较大的 `unknown` 数量，不能认定检查队列已停止。
+
+完成有上限的紧急恢复任务后，检查队列按 3:1 的比例交替执行工作池维护和新候选探索，
+并交替处理不同来源。证据仍然有效的工作候选不会在每次唤醒时重复完整检查：
+常规间隔为 30 分钟，已分配候选为 5 分钟，且不超过重置窗口的一半。
+并行检查数量上限保持不变。
+
 ## 有效容量
 
 `GET /api/admin/system` 将清单规模与实际可用的路由多样性分开显示：
@@ -47,7 +82,9 @@
 
 `working_pool_by_kind` 统计当前池成员。有效 VLESS 容量只统计包含可用工作候选且 circuit 已关闭的故障域。有效 Tor 容量统计未进入 retirement 的 `warm` 配置。该摘要不会返回候选载荷、原始端点、故障域输入或 Tor SOCKS 地址。
 
-`recent_migrations` 最多包含最近 20 次成功应用的分配变化。事件与 applied generation 在同一事务中写入；原因包括 `hard_failure`、`quality_30_percent`、`capacity` 和 `manual`。
+`recent_migrations` 最多包含最近 20 次成功应用的分配变化。事件与 applied generation 在同一事务中写入；原因包括 `hard_failure`、`qoe_degraded`、`quality_30_percent`、`capacity` 和 `manual`。
+`previous_assignment_age_ms` 表示对应传输协议的上一次分配已持续的毫秒数；时间未知或位于未来时不输出该字段。
+结合 `trigger`、`from_dormant` 和 `dormant`，可以区分活跃设备的路由切换与预留释放、重新获取。
 
 生产验收要求至少一个同时支持 TCP 与 UDP 的有效 VLESS 故障域，以及至少一个支持 TCP 的 warm Tor 配置。只有大量清单条目或原始 working-pool 计数并不足够。
 
@@ -259,6 +296,51 @@ curl --fail --silent \
 Hydrat 从规范化 VLESS 配置派生不透明的路由和故障域标识。同一故障域在 5 分钟内出现 3 次不同 hard failure 后，circuit 会打开 10 分钟，placement 排除整个故障域。Qualification 会确定性选择一个当前 canary；成功 full probe 关闭 circuit，失败则延长打开时间。
 
 故障事件、候选健康和探测状态原子提交。早于后续成功的延迟事件会被忽略；时间戳同秒时故障优先。这可防止乱序 active 检查错误地重新打开或关闭已恢复故障域。
+
+## 故障诊断：避免逐请求日志
+
+QoE 检查失败时，`probe_infrastructure`、`qoe_application_failure`、
+`qoe_comparison_confirmed` 和 `qoe_comparison_unknown` 事件会包含安全的 HTTP 检查摘要。
+`route` 表示候选路由，`control` 表示通过独立 qualified 配置取得的新鲜结果，
+不再表示 VPS 直连 HTTP 请求。测速端点也遵循这一规则。例如：
+
+```text
+route_failed=1/6 control_failed=0/6 checks=route/youtube:headers:timeout:http_0:3000ms
+```
+
+该示例表示通过候选路由访问 YouTube 时等待 HTTP 响应头超时，但经另一个配置的对照检查成功。
+`qoe_comparison_unknown` 表示证据不足，并不证明服务已经故障；它不会改变 QoE 窗口或
+最近成功检查时间。最多两个独立对照共用现有四个 worker 和 3:1 队列。按需对照的频率
+不高于每 10 秒一次，只在需要时产生额外流量，不是单独的常驻监控。经配置的 TTFB 和下载测速继续执行。
+`qoe_proxy_unavailable` 表示无法连接检查 agent 的本地 SOCKS 套接字。
+QoE 和 active DNS 都不会将其记为候选节点故障。
+阶段包括 `request`、`dns`、`connect`、`tls`、`headers`、`body` 和 `status`。
+`http_0` 表示未收到 HTTP 响应。`budget_exhausted` 表示请求开始前总时间预算已经用尽，
+与网络超时不同。分母为零表示没有诊断数据，而不是检查成功，例如仍在使用旧版 agent 时。
+
+摘要仅列出失败的检查，每条路径最多保留 16 条检查元数据。自定义检查统一标为 `custom`，
+不包含名称或 URL。不同候选产生的相同故障按组聚合，每组每分钟最多记录一次；
+`suppressed` 表示该组自上次记录后省略的重复次数。计数在下一次同类故障出现时输出，
+没有额外定时器。聚合器最多保留 64 组，更多故障类型共用溢出组；controller 重启后计数清零。
+成功的 QoE 检查不会逐条记录。诊断时间和文本不参与评分；服务检查结果用于跨配置比较 HTTP 失败。
+
+紧急处理超时不会清除已确认 primary 故障的恢复任务。每次尝试最多 5 秒，重试间隔为
+1、2、最多 5 秒，并优先于普通再平衡。没有合格替代路由时保留已应用路由，但 readiness
+必须保持未就绪。检查更新时应区分 `hard_failure` 迁移完成与 primary/reserve 完整覆盖恢复。
+SQLite 迁移只做增量添加；今后部署前仍需验证 backup/restore，并确认对应 SHA 的 CI 全部成功。
+
+网关日志中的 `probe_runtime` 记录 recycle 的开始和结果，包括 `role=background|active`、
+原因、epoch、已完成检查数、RSS、文件描述符数量、阶段和耗时。`plan_apply` 记录计划的
+generation、阶段、结果和应用耗时。相同的重复应用失败在一分钟内聚合；成功应用时输出
+累计的 `suppressed`。重复应用已安装的同一计划不会产生记录。controller 日志中的
+`controller_readiness` 仅记录 ready/unready 状态切换，恢复时包含 `outage_ms`；
+轮询 `/api/ready` 不产生日志。订阅刷新错误区分 DNS、TLS、超时和 HTTP 状态码。
+新增诊断字段不包含原始错误、URL、密码、配置内容或服务响应，也不会重复现有 active-monitor 事件。
+
+就绪原因区分 `reserve_not_ready`、`primary_unusable`、`generation_pending`、`critical_limit`
+以及真正耗尽搜索预算的 `search_budget`。备用验证错误最多输出八条详情：
+`missing`、`proof_not_fresh` 或 `not_admitted`。等待验证证据不会被描述为搜索预算耗尽；
+没有符合准入条件且已验证的备用路由时，就绪检查仍返回 503。
 
 ## 诊断数据保留
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -20,7 +21,7 @@ import (
 	"github.com/only-hydrat/hydrat/internal/torpool"
 )
 
-func TestQoEWakeIntervalUsesShortestPositiveConfiguredCadence(t *testing.T) {
+func TestQoEWakeIntervalCapsAdmissionAtOneSecond(t *testing.T) {
 	for _, test := range []struct {
 		name                   string
 		active, idle, degraded time.Duration
@@ -33,8 +34,8 @@ func TestQoEWakeIntervalUsesShortestPositiveConfiguredCadence(t *testing.T) {
 		{name: "falls back", want: defaultQoEActiveInterval},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if got := QoEWakeInterval(test.active, test.idle, test.degraded); got != test.want {
-				t.Fatalf("QoEWakeInterval()=%s want=%s", got, test.want)
+			if got := QoEWakeInterval(test.active, test.idle, test.degraded); got != min(test.want, time.Second) {
+				t.Fatalf("QoEWakeInterval()=%s want=%s", got, min(test.want, time.Second))
 			}
 		})
 	}
@@ -226,14 +227,15 @@ func TestQoEMonitorSelectsTopThreeTCPAndUDPStandbyVLESSDeduplicated(t *testing.T
 	})
 	agent := &recordingQoEAgent{now: time.Unix(1_800_000_000, 0)}
 	monitor := &QoEMonitor{Store: database, Agent: agent, Policy: qoe.DefaultPolicy(), Workers: 1, StandbyCandidates: 3}
-	if err := monitor.Run(context.Background(), agent.now); err != nil {
-		t.Fatal(err)
-	}
+	drainDueQoEProbes(t, monitor, agent, agent.now)
 	want := []string{
 		candidates["both-100"].ID, candidates["udp-95"].ID, candidates["tcp-90"].ID,
 		candidates["udp-85"].ID, candidates["tcp-80"].ID,
 	}
-	if got := agent.callIDs(); fmt.Sprint(got) != fmt.Sprint(want) {
+	got := agent.callIDs()
+	sort.Strings(got)
+	sort.Strings(want)
+	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("calls=%v want=%v", got, want)
 	}
 }
@@ -251,10 +253,8 @@ func TestQoEMonitorRotatesStandbyBeyondTopThree(t *testing.T) {
 		Workers: 1, StandbyCandidates: 3}
 	for cycle := 0; cycle < 6; cycle++ {
 		agent.now = now.Add(time.Duration(cycle) * 31 * time.Second)
-		if err := monitor.Run(context.Background(), agent.now); err != nil {
-			t.Fatal(err)
-		}
-		if cycle < 5 {
+		drainDueQoEProbes(t, monitor, agent, agent.now)
+		if cycle < 4 {
 			for _, id := range agent.callIDs() {
 				if id == candidates["fourth"].ID {
 					t.Fatalf("rotated before third standby's full QoE window: cycle=%d calls=%v", cycle, agent.callIDs())
@@ -265,8 +265,8 @@ func TestQoEMonitorRotatesStandbyBeyondTopThree(t *testing.T) {
 	if got := mustQoESampleCount(t, database, candidates["third"].ID, 10); got < 5 {
 		t.Fatalf("third standby received only %d of 5 QoE samples", got)
 	}
-	if got := mustQoESampleCount(t, database, candidates["fourth"].ID, 10); got != 1 {
-		t.Fatalf("fourth standby samples=%d want 1", got)
+	if got := mustQoESampleCount(t, database, candidates["fourth"].ID, 10); got < 1 {
+		t.Fatalf("fourth standby samples=%d want at least 1 after third's complete window", got)
 	}
 }
 
@@ -286,9 +286,7 @@ func TestQoEMonitorSelectsAssignedAndWarmTorOnly(t *testing.T) {
 	})
 	agent := &recordingQoEAgent{now: now}
 	monitor := &QoEMonitor{Store: database, Agent: agent, Profiles: profiles, Policy: qoe.DefaultPolicy(), Workers: 1}
-	if err := monitor.Run(context.Background(), now); err != nil {
-		t.Fatal(err)
-	}
+	drainDueQoEProbes(t, monitor, agent, now)
 	want := []string{candidates["assigned-missing-warm"].ID, candidates["warm-standby"].ID}
 	if got := agent.callIDs(); fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("calls=%v want=%v", got, want)
@@ -313,23 +311,17 @@ func TestQoEMonitorRechecksPromotionStandbyAtActiveCadence(t *testing.T) {
 		ActiveInterval: 15 * time.Second, IdleInterval: 5 * time.Minute,
 		StandbyCandidates: 1,
 	}
-	if err := monitor.Run(context.Background(), now); err != nil {
-		t.Fatal(err)
-	}
+	drainDueQoEProbes(t, monitor, agent, now)
 	if got := len(agent.callIDs()); got != 2 {
 		t.Fatalf("initial probes=%d calls=%v", got, agent.callIDs())
 	}
 	agent.now = now.Add(14 * time.Second)
-	if err := monitor.Run(context.Background(), agent.now); err != nil {
-		t.Fatal(err)
-	}
+	drainDueQoEProbes(t, monitor, agent, agent.now)
 	if got := len(agent.callIDs()); got != 2 {
 		t.Fatalf("standby probed before active cadence: calls=%v", agent.callIDs())
 	}
 	agent.now = now.Add(15 * time.Second)
-	if err := monitor.Run(context.Background(), agent.now); err != nil {
-		t.Fatal(err)
-	}
+	drainDueQoEProbes(t, monitor, agent, agent.now)
 	if got := len(agent.callIDs()); got != 4 {
 		t.Fatalf("standby was not rechecked at active cadence: calls=%v", agent.callIDs())
 	}
@@ -397,7 +389,7 @@ func TestQoEMonitorSelectsDegradedVLESSOutsideWorkingPool(t *testing.T) {
 	}
 }
 
-func TestQoEMonitorPrioritizesAssignedThenDegradedThenStandby(t *testing.T) {
+func TestQoEMonitorPrioritizesAssignedThenRotatesBackgroundClasses(t *testing.T) {
 	database, candidates := qoeMonitorStore(t, []qoeCandidateSpec{
 		{name: "standby", tcp: true, score: 100},
 		{name: "degraded", tcp: true, score: 80},
@@ -408,10 +400,8 @@ func TestQoEMonitorPrioritizesAssignedThenDegradedThenStandby(t *testing.T) {
 	seedDegradedQoE(t, database, candidates["degraded"], now.Add(-time.Minute))
 	agent := &recordingQoEAgent{now: now}
 	monitor := &QoEMonitor{Store: database, Agent: agent, Policy: qoe.DefaultPolicy(), Workers: 1, StandbyCandidates: 1}
-	if err := monitor.Run(context.Background(), now); err != nil {
-		t.Fatal(err)
-	}
-	want := []string{candidates["assigned"].ID, candidates["degraded"].ID, candidates["standby"].ID}
+	drainDueQoEProbes(t, monitor, agent, now)
+	want := []string{candidates["assigned"].ID, candidates["standby"].ID, candidates["degraded"].ID}
 	if got := agent.callIDs(); fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("calls=%v want=%v", got, want)
 	}
@@ -471,7 +461,7 @@ func TestQoEMonitorCapsWorkersAtFour(t *testing.T) {
 	}
 }
 
-func TestQoEMonitorQueuedProbeUsesActualCompletionTime(t *testing.T) {
+func TestQoEMonitorNextBoundedSweepUsesActualCompletionTime(t *testing.T) {
 	database, candidates := qoeMonitorStore(t, []qoeCandidateSpec{
 		{name: "first", tcp: true, score: 100},
 		{name: "queued", tcp: true, score: 90},
@@ -479,7 +469,7 @@ func TestQoEMonitorQueuedProbeUsesActualCompletionTime(t *testing.T) {
 	sweepAt := time.Unix(1_800_000_000, 0)
 	for _, candidate := range candidates {
 		seedHealthyBaseline(t, database, candidate, sweepAt.Add(-30*time.Minute))
-		seedQoEObservation(t, database, candidate, failedQoE(sweepAt.Add(-10*time.Minute), "qoe_route_timeout"))
+		seedQoEObservation(t, database, candidate, failedQoE(sweepAt.Add(-time.Minute), "qoe_route_timeout"))
 	}
 	release := make(chan struct{}, 2)
 	agent := &recordingQoEAgent{
@@ -497,8 +487,12 @@ func TestQoEMonitorQueuedProbeUsesActualCompletionTime(t *testing.T) {
 	monitor.Now = clock.Now
 	done := runQoEMonitor(monitor, sweepAt)
 	waitQoEStarts(t, agent.started, 1)
-	clock.Advance(10 * time.Minute)
+	clock.Advance(10 * time.Second)
 	release <- struct{}{}
+	if err := waitQoERun(t, done); err != nil {
+		t.Fatal(err)
+	}
+	done = runQoEMonitor(monitor, clock.Now())
 
 	var queuedID string
 	select {
@@ -507,7 +501,7 @@ func TestQoEMonitorQueuedProbeUsesActualCompletionTime(t *testing.T) {
 		t.Fatal("queued QoE probe did not start")
 	}
 	queuedStartedAt := clock.Now()
-	clock.Advance(time.Minute)
+	clock.Advance(time.Second)
 	release <- struct{}{}
 	if err := waitQoERun(t, done); err != nil {
 		t.Fatal(err)
@@ -592,7 +586,7 @@ func TestQoEMonitorInfrastructureAndTransportFailuresDoNotPersistOrTrigger(t *te
 			if err != nil || len(states) != 0 {
 				t.Fatalf("states=%+v err=%v", states, err)
 			}
-			if events, _ := database.ListEvents(context.Background(), 10); len(events) != 0 {
+			if events, _ := database.ListEvents(context.Background(), 10); len(events) != 1 || events[0].Kind != "probe_infrastructure" {
 				t.Fatalf("events=%+v", events)
 			}
 			select {
@@ -647,9 +641,7 @@ func TestQoEMonitorCanceledQueuedJobsDoNotConsumeCadence(t *testing.T) {
 	if got := len(agent.callIDs()); got != 1 {
 		t.Fatalf("calls after canceled run=%v want one started probe", agent.callIDs())
 	}
-	if err := monitor.Run(context.Background(), now); err != nil {
-		t.Fatal(err)
-	}
+	drainDueQoEProbes(t, monitor, agent, now)
 	if got := len(agent.callIDs()); got != len(specs) {
 		t.Fatalf("calls after immediate retry=%v want all %d candidates attempted once", agent.callIDs(), len(specs))
 	}
@@ -1001,6 +993,7 @@ func TestQoEMonitorPrunesRetentionAtMostHourlyInBoundedBatches(t *testing.T) {
 
 type qoeCandidateSpec struct {
 	name     string
+	domain   string
 	kind     sources.Kind
 	tcp, udp bool
 	score    float64
@@ -1029,10 +1022,15 @@ func qoeMonitorStoreAtPath(t *testing.T, path string, specs []qoeCandidateSpec) 
 			kind = sources.KindVLESS
 		}
 		payload := fmt.Sprintf("vless://%s@example.net:443?security=tls", spec.name)
+		routeKey := ""
+		if spec.domain != "" {
+			routeKey = spec.name
+			payload = fmt.Sprintf("vless://%s@%s.example.net:443?security=tls", spec.name, spec.name)
+		}
 		if kind == sources.KindTorBridge {
 			payload = fmt.Sprintf("Bridge 192.0.2.%d:443 %040d", index+1, index+1)
 		}
-		inputs = append(inputs, store.CandidateInput{Kind: kind, Label: spec.name, Fingerprint: spec.name, Payload: payload})
+		inputs = append(inputs, store.CandidateInput{Kind: kind, Label: spec.name, Fingerprint: spec.name, Payload: payload, FailureDomain: spec.domain, RouteKey: routeKey})
 	}
 	preview := sources.PreviewInput("https://example.net/subscription")
 	if _, err := database.ImportSources(context.Background(), preview.Items); err != nil {

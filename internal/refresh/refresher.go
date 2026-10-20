@@ -2,6 +2,8 @@ package refresh
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -146,6 +148,23 @@ func (refresher *Refresher) Source(ctx context.Context, sourceID string) error {
 }
 
 func safeRefreshError(err error) error {
+	var dnsError *net.DNSError
+	var tlsError *tls.CertificateVerificationError
+	var recordError tls.RecordHeaderError
+	var certError x509.UnknownAuthorityError
+	var netError net.Error
+	switch {
+	case errors.Is(err, context.Canceled):
+		return errors.New("fetch subscription failed: canceled")
+	case errors.Is(err, context.DeadlineExceeded):
+		return errors.New("fetch subscription failed: timeout")
+	case errors.As(err, &dnsError):
+		return errors.New("fetch subscription failed: dns")
+	case errors.As(err, &tlsError), errors.As(err, &recordError), errors.As(err, &certError):
+		return errors.New("fetch subscription failed: tls")
+	case errors.As(err, &netError) && netError.Timeout():
+		return errors.New("fetch subscription failed: timeout")
+	}
 	message := err.Error()
 	switch {
 	case strings.Contains(message, "x-hwid-not-supported"):
@@ -153,10 +172,18 @@ func safeRefreshError(err error) error {
 	case strings.Contains(message, "x-hwid-max-devices-reached"):
 		return errors.New("subscription device limit reached (x-hwid-max-devices-reached)")
 	case strings.Contains(message, "inventory limit"):
-		return err
+		var count, limit int
+		if _, scanErr := fmt.Sscanf(message, "inventory limit exceeded: %d candidates (limit %d)", &count, &limit); scanErr == nil && message == fmt.Sprintf("inventory limit exceeded: %d candidates (limit %d)", count, limit) {
+			return errors.New(message)
+		}
+		return errors.New("inventory limit exceeded")
 	case strings.Contains(message, "HTTP "):
 		index := strings.LastIndex(message, "HTTP ")
-		return errors.New(message[index:])
+		status, parseErr := strconv.Atoi(message[index+5:])
+		if parseErr == nil && status >= 100 && status <= 599 {
+			return fmt.Errorf("HTTP %d", status)
+		}
+		return errors.New("fetch subscription failed")
 	case strings.Contains(message, "subscription exceeds size limit"):
 		return errors.New("subscription exceeds size limit")
 	case strings.Contains(message, "no valid VLESS or Tor candidates"):

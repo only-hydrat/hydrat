@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -269,7 +270,12 @@ func runAgent(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 	defer dnsSupervisors.StopAndWait()
-	xraySupervisors := startXraySupervisors(ctx, supervised, cfg.Xray.Binary, cfg.Xray.MainConfig)
+	flowSocket, err := flowControlSocket(cfg.Paths.AgentSock)
+	if err != nil {
+		return err
+	}
+	mainSupervised := flowControlledSupervisor(log.Writer(), flowSocket)
+	xraySupervisors := startXraySupervisors(ctx, mainSupervised, cfg.Xray.Binary, cfg.Xray.MainConfig)
 	defer xraySupervisors.StopAndWait()
 
 	torManager, err := torpool.NewManager(torpool.Config{
@@ -303,6 +309,7 @@ func runAgent(ctx context.Context, cfg config.Config) error {
 		cfg.Xray.Binary, cfg.Xray.APIAddress, cfg.Xray.EffectiveDNSResolvers(), nil,
 	)
 	xray.ConfigureRouting(cfg.Routing.DirectSuffixes, cfg.Routing.DirectDomains, cfg.Routing.GeoRules.Enabled)
+	xray.ConfigureFlowControl(flowSocket)
 	reconciler, err := dataplane.NewReconciler(xray, cfg.Paths.AppliedPlan)
 	if err != nil {
 		return err
@@ -321,13 +328,21 @@ func runAgent(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 	defer geoUpdater.Close()
-	mainXrayReadiness := tcpReadiness(
+	mainEndpointReadiness := tcpReadiness(
 		cfg.Xray.APIAddress, net.JoinHostPort(cfg.WireGuard.DNS, "53"),
 	)
+	mainXrayReadiness := func(ctx context.Context) error {
+		if err := mainEndpointReadiness(ctx); err != nil {
+			return err
+		}
+		_, err := xray.FlowSnapshot(ctx)
+		return err
+	}
 	xraySupervisors.StartRehydration(mainXrayReadiness, reconciler.InvalidateRuntime, reconciler.Rehydrate)
 	if err := waitForReadiness(ctx, xraySupervisors.Readiness(mainXrayReadiness), 60*time.Second); err != nil {
 		return err
 	}
+	xraySupervisors.StartFlowRecovery(reconciler.RetryFlowRecoveries)
 	probeControl := probexray.New(cfg.Xray.Binary, cfg.Xray.ProbeAPIAddress, gateway.TotalProbeSlots, nil)
 	probeRuntime, err := proberuntime.New(agentProbeRuntimeConfig(cfg), probeControl)
 	if err != nil {
@@ -386,7 +401,7 @@ func runAgent(ctx context.Context, cfg config.Config) error {
 			wgManager := wireguard.Manager{Config: wireguard.ManagerConfig{
 				Interface: cfg.WireGuard.Interface, Endpoint: cfg.WireGuard.Endpoint, DNS: cfg.WireGuard.DNS, MTU: cfg.WireGuard.MTU,
 			}}
-			collector := wireguard.Collector{Interface: cfg.WireGuard.Interface}
+			collector := wireguard.Collector{Interface: cfg.WireGuard.Interface, TrackUserTraffic: true}
 			socketGID := 10001
 			if value := os.Getenv("HYDRAT_SOCKET_GID"); value != "" {
 				parsed, err := strconv.Atoi(value)
@@ -498,16 +513,18 @@ func agentQoEMeasurerConfig(cfg config.Config) probe.QoEMeasurerConfig {
 			Acceptable: probe.StatusesAcceptable(cg.AcceptableStatuses),
 		})
 	}
+	applicationPolicy, _ := json.Marshal(struct {
+		Gates  any
+		Custom any
+	}{cfg.Probes.GateEndpoints, cfg.Probes.CustomGates})
 	return probe.QoEMeasurerConfig{
-		SampleBytes:  cfg.QoE.SampleBytes,
-		Deadline:     cfg.QoE.Deadline,
-		DNSResolvers: cfg.Xray.EffectiveDNSResolvers(),
-		UDPCheck:     agentQUICCheck(cfg),
+		SampleBytes:       cfg.QoE.SampleBytes,
+		Deadline:          cfg.QoE.Deadline,
+		DNSResolvers:      cfg.Xray.EffectiveDNSResolvers(),
+		UDPCheck:          agentQUICCheck(cfg),
+		ApplicationPolicy: string(applicationPolicy),
 		ApplicationGates: func(ctx context.Context, client *http.Client) probe.HTTPGateResult {
 			return probe.CheckHTTPGatesWithConfig(ctx, client, gateConfig)
-		},
-		ApplicationControl: func(ctx context.Context, client *http.Client) probe.HTTPGateResult {
-			return probe.CheckHTTPReachabilityWithConfig(ctx, client, gateConfig)
 		},
 	}
 }
@@ -521,6 +538,7 @@ func agentQUICCheck(cfg config.Config) func(context.Context, string) bool {
 
 func agentProbeRuntimeConfig(cfg config.Config) proberuntime.Config {
 	return proberuntime.Config{
+		Role:             "background",
 		Binary:           cfg.Xray.Binary,
 		ConfigPath:       cfg.Xray.ProbeConfig,
 		APIAddress:       cfg.Xray.ProbeAPIAddress,
@@ -535,6 +553,7 @@ func agentProbeRuntimeConfig(cfg config.Config) proberuntime.Config {
 
 func agentActiveProbeRuntimeConfig(cfg config.Config) proberuntime.Config {
 	result := agentProbeRuntimeConfig(cfg)
+	result.Role = "active"
 	result.ConfigPath = cfg.Xray.ActiveConfig
 	result.APIAddress = cfg.Xray.ActiveAPIAddress
 	result.MaxProbes = proberuntime.UnlimitedProbes
@@ -767,10 +786,9 @@ func runController(ctx context.Context, cfg config.Config) error {
 		controller.WithRouting(cfg.Routing.DirectSuffixes, cfg.Routing.DirectDomains),
 		controller.WithDisallowRUEgress(cfg.Routing.DisallowRUEgress),
 		controller.WithQoEEnabled(cfg.QoE.Enabled),
+		controller.WithClientReservations(),
 		controller.WithQoEPromotionEvidence(
-			cfg.QoE.WindowSize, cfg.QoEPromotionFreshness(),
-			cfg.QoEPromotionWindowFreshness(),
-			cfg.QoEPromotionMaximumSampleGap(),
+			cfg.QoE.WindowSize,
 		),
 		controller.WithDNSResolvers(cfg.Xray.EffectiveDNSResolvers()),
 		controller.WithActiveProofFreshness(cfg.ActiveProofFreshness()),
@@ -870,6 +888,8 @@ func runController(ctx context.Context, cfg config.Config) error {
 		RetiredRetention: cfg.Inventory.RetiredRetention,
 	}
 	controllerRuntime := controller.Runtime{
+		Reservations:        engine.ReservationChanges,
+		ReservationInterval: time.Second,
 		Maintenance: func(ctx context.Context, now time.Time) error {
 			if err := diagnosticRetention.Run(ctx, now); err != nil {
 				return err
@@ -987,6 +1007,7 @@ func newControllerActiveMonitor(
 
 func controllerSchedulerPolicy(cfg config.Config) scheduler.Policy {
 	policy := scheduler.PolicyDefaults()
+	policy.InactiveAfter = store.ClientInactiveAfter
 	policy.MinimumImprovement = cfg.Scheduler.ImproveRatio
 	policy.MaxPlannedMoves = cfg.Scheduler.MaxMoves
 	policy.QoEAlternativeSpeedup = cfg.QoE.AlternativeSpeedup

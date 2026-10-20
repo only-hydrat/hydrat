@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/only-hydrat/hydrat/internal/dataplane"
+	"github.com/only-hydrat/hydrat/internal/qoe"
 )
 
 func (store *Store) initialize(ctx context.Context) error {
@@ -208,7 +209,81 @@ func (store *Store) initialize(ctx context.Context) error {
 	if err := store.migrateCandidateProbeLookupIndex(ctx); err != nil {
 		return err
 	}
-	return store.migrateCandidateQoEWindowStartedAt(ctx)
+	if err := store.migrateCandidateQoEWindowStartedAt(ctx); err != nil {
+		return err
+	}
+	if err := store.migrateRoutingEvidence(ctx); err != nil {
+		return err
+	}
+	return store.migrateRouteRecovery(ctx)
+}
+
+func (store *Store) migrateRoutingEvidence(ctx context.Context) error {
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	backfillMedians := false
+	for _, column := range []struct{ table, name, definition string }{
+		{"candidate_qoe_state", "median_ttfb_ms", "REAL NOT NULL DEFAULT 0"},
+		{"candidate_qoe_state", "median_throughput_mbps", "REAL NOT NULL DEFAULT 0"},
+		{"clients", "latest_handshake", "INTEGER"},
+	} {
+		var exists int
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info(?) WHERE name=?`, column.table, column.name).Scan(&exists); err != nil {
+			return err
+		}
+		if exists == 0 {
+			if _, err := tx.ExecContext(ctx, `ALTER TABLE `+column.table+` ADD COLUMN `+column.name+` `+column.definition); err != nil {
+				return err
+			}
+			backfillMedians = backfillMedians || column.table == "candidate_qoe_state"
+		}
+	}
+	if backfillMedians {
+		if err := backfillQoEWindowMedians(ctx, tx); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (18, unixepoch())`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func backfillQoEWindowMedians(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `SELECT candidate_id,window_valid FROM candidate_qoe_state WHERE window_valid>0`)
+	if err != nil {
+		return err
+	}
+	type window struct {
+		id   string
+		size int
+	}
+	var windows []window
+	for rows.Next() {
+		var item window
+		if err := rows.Scan(&item.id, &item.size); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		windows = append(windows, item)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+	for _, item := range windows {
+		samples, err := loadCandidateQoESamplesTx(ctx, tx, item.id, false, min(item.size, qoe.MaxWindowSize))
+		if err != nil {
+			return err
+		}
+		ttfb, speed := qoe.WindowMedians(samples)
+		if _, err := tx.ExecContext(ctx, `UPDATE candidate_qoe_state SET median_ttfb_ms=?,median_throughput_mbps=? WHERE candidate_id=?`, milliseconds(ttfb), speed, item.id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (store *Store) migrateCandidateQoEWindowStartedAt(ctx context.Context) error {

@@ -4,6 +4,48 @@
 
 # Production operations
 
+## Distribution and inactive devices
+
+The soft limit is two active clients per route, including duplicate entries
+across subscriptions. It may be exceeded when no comparable, verified
+alternative exists. Routine rebalancing is gradual; confirmed outages do not
+wait for the normal dwell period.
+
+After failover, a healthy primary stays in place for the standard 30-minute
+dwell, even if more than two active clients temporarily share the route.
+Pool promotion, normalization and reserve repair do not by themselves move
+the client. Routine rebalancing also waits while reserve coverage is incomplete.
+Confirmed failure, urgent QoE evacuation, manual reassignment and route
+revocation bypass this protection. An admissible installed reserve is retained;
+its proof targets do not change merely because rankings or proof freshness
+fluctuate, but are discarded when they lose admission eligibility.
+
+A personal reservation is released after five minutes without incoming user
+traffic. Server-originated traffic, WireGuard handshakes and keepalives do not
+extend it: activity is measured from decrypted tunnel packets.
+Inactive devices share a monitored bootstrap path and reserve, replaced when
+the path fails or loses eligibility. Returning devices trigger priority
+placement rather than waiting for the periodic cycle. With no eligible route,
+traffic remains fail-closed.
+
+Quality gives throughput and TTFB equal weight using QoE window medians, not
+the latest isolated measurement. Service, freshness and UDP checks remain
+mandatory. Changing exits cannot preserve existing TCP sessions.
+
+In `/api/admin/clients`, `connection_state` and `route_reserved` distinguish
+presence and reservation from an administrative pause. Candidate
+`selection_reason` explains waiting, failures or policy exclusions;
+`last_probe_at` is the last probe time, not the record update time.
+`probe_coverage` and `probe_activity_5h` in `/api/admin/system` distinguish
+distinct-candidate coverage from repeated checks of the working pool.
+A large `unknown` count alone does not mean the queue has stopped.
+
+After bounded urgent recovery work, probe admission alternates pool maintenance
+and discovery at a 3:1 ratio, interleaving sources. Fresh working candidates do
+not receive a full probe on every wake: the normal interval is 30 minutes, or
+5 minutes for assigned candidates, capped at half the reset window.
+Probe concurrency limits are unchanged.
+
 ## Effective capacity
 
 `GET /api/admin/system` separates inventory from usable route diversity:
@@ -52,7 +94,11 @@ raw endpoints, failure-domain inputs and Tor SOCKS addresses are not returned
 by this summary.
 `recent_migrations` contains up to 20 most recently applied assignment changes.
 Each event is written atomically with the applied generation. Reasons are
-`hard_failure`, `quality_30_percent`, `capacity`, and `manual`.
+`hard_failure`, `qoe_degraded`, `quality_30_percent`, `capacity`, and `manual`.
+`previous_assignment_age_ms` reports the previous assignment's age for that
+transport; it is omitted for unknown or future timestamps. `trigger`,
+`from_dormant` and `dormant` distinguish active-device moves from releasing
+and reacquiring a reservation.
 
 Production acceptance requires at least one effective VLESS failure domain
 with TCP and UDP plus at least one warm Tor profile with TCP. Inventory or a
@@ -325,6 +371,70 @@ The failure event, candidate health and probe state are committed atomically.
 Delayed events older than a later success are ignored, and a failure wins an
 equal-second timestamp tie. This prevents out-of-order active checks from
 reopening or closing a recovered domain incorrectly.
+
+## Incident diagnosis without per-request logging
+
+On QoE failures, `probe_infrastructure`, `qoe_application_failure`,
+`qoe_comparison_confirmed` and `qoe_comparison_unknown` events
+include a safe HTTP-check summary: `route` is the candidate path and `control`
+is fresh evidence through an independent qualified configuration, never
+host-direct HTTP. This also applies to the speed endpoint. For example:
+
+```text
+route_failed=1/6 control_failed=0/6 checks=route/youtube:headers:timeout:http_0:3000ms
+```
+
+This means the routed YouTube request timed out waiting for HTTP headers while
+control through another configuration passed. `qoe_comparison_unknown` means
+insufficient evidence, not a proven service outage; it changes neither the QoE
+window nor the last successful check time. Up to two independent controls use
+the existing four workers and 3:1 queues. On-demand controls run no more often
+than every 10 seconds, adding traffic only while requested, not as a separate
+permanent monitor. Routed TTFB and download measurements continue.
+`qoe_proxy_unavailable` identifies a failed dial to the checking agent's local
+SOCKS socket. Neither QoE nor active DNS treats it as candidate failure.
+Phases are `request`, `dns`, `connect`, `tls`, `headers`,
+`body` and `status`. `http_0` means no HTTP response. `budget_exhausted` means
+the budget had already expired before the request began, not a network timeout.
+A zero denominator means diagnostics are absent, not that the check passed
+(for example, when using an older agent).
+
+Only failed checks appear in the summary. Metadata is capped at 16 checks per
+path. Custom checks are labelled `custom`, without names or URLs. Identical
+failures across candidates are aggregated to at most one event per minute;
+`suppressed` counts repeats omitted since the previous event in that group.
+The count is emitted on the next matching failure, not by a separate timer.
+The aggregator keeps at most 64 groups; further groups share an overflow group.
+Counters reset on controller restart. Successful QoE probes are not logged
+individually. Diagnostic timing and text do not affect scoring; service outcomes
+provide evidence for comparing HTTP failures across configurations.
+
+An expired urgent deadline cannot discard recovery debt for a confirmed failed
+primary. Attempts are bounded to five seconds and retried after 1, 2, then at
+most 5 seconds, ahead of ordinary rebalancing. Without a usable replacement,
+the applied route is retained but readiness must remain negative. Distinguish
+completed `hard_failure` placement from restored primary/reserve coverage.
+SQLite migration is additive; a future deployment still requires backup/restore
+proof and successful CI for its exact SHA.
+
+In gateway logs, `probe_runtime` records recycle start and outcome, including
+`role=background|active`, reason, epoch, completed probes, RSS, file descriptors,
+phase and duration. `plan_apply` records generation, phase, outcome and apply
+duration. Repeated identical apply failures are aggregated for one minute;
+a successful apply emits the accumulated `suppressed` count. Reapplying an
+already installed plan produces no entry. In controller logs,
+`controller_readiness` records ready/unready transitions only; recovery includes
+`outage_ms`. Polling `/api/ready` produces no entries. Subscription refresh
+errors distinguish DNS, TLS, timeout and HTTP status. New diagnostic fields
+contain no raw errors, URLs, passwords, payloads or service responses.
+Existing active-monitor events are not duplicated.
+
+Readiness reasons distinguish `reserve_not_ready`, `primary_unusable`,
+`generation_pending`, `critical_limit` and genuine search exhaustion,
+`search_budget`. Reserve-validation errors include up to eight details:
+`missing`, `proof_not_fresh` or `not_admitted`. Waiting for proof is not
+reported as exhausted search; without an admissible, proved reserve,
+readiness remains 503.
 
 ## Diagnostic retention
 
