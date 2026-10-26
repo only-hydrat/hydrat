@@ -28,7 +28,7 @@ func SafeHTTPChecks(checks []HTTPCheck) []HTTPCheck {
 	for _, check := range checks[:min(len(checks), 32)] {
 		c := &check
 		switch c.Service {
-		case "youtube", "chatgpt", "openai", "telegram", "instagram", "qoe_endpoint":
+		case "youtube", "chatgpt", "openai", "telegram", "telegram_obfuscated", "telegram_padded", "instagram", "qoe_endpoint":
 		default:
 			c.Service = "custom"
 		}

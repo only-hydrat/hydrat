@@ -518,11 +518,12 @@ func agentQoEMeasurerConfig(cfg config.Config) probe.QoEMeasurerConfig {
 		Custom any
 	}{cfg.Probes.GateEndpoints, cfg.Probes.CustomGates})
 	return probe.QoEMeasurerConfig{
-		SampleBytes:       cfg.QoE.SampleBytes,
-		Deadline:          cfg.QoE.Deadline,
-		DNSResolvers:      cfg.Xray.EffectiveDNSResolvers(),
-		UDPCheck:          agentQUICCheck(cfg),
-		ApplicationPolicy: string(applicationPolicy),
+		SampleBytes:        cfg.QoE.SampleBytes,
+		Deadline:           cfg.QoE.Deadline,
+		DNSResolvers:       cfg.Xray.EffectiveDNSResolvers(),
+		UDPCheck:           agentQUICCheck(cfg),
+		ApplicationPolicy:  string(applicationPolicy),
+		TelegramTransports: probe.CheckTelegramTransports,
 		ApplicationGates: func(ctx context.Context, client *http.Client) probe.HTTPGateResult {
 			return probe.CheckHTTPGatesWithConfig(ctx, client, gateConfig)
 		},

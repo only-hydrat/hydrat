@@ -105,7 +105,7 @@ func confirmsHTTPFailure(target qoe.Observation, checks []qoe.HTTPCheck) bool {
 	if target.ErrorCode != qoe.ReasonApplicationGates {
 		return routeFailure("qoe_endpoint") && peer["qoe_endpoint"]
 	}
-	for _, service := range []string{"youtube", "telegram"} {
+	for _, service := range []string{"youtube", "telegram", "telegram_obfuscated", "telegram_padded"} {
 		if routeFailure(service) && peer[service] {
 			return true
 		}

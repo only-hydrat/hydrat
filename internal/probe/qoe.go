@@ -51,14 +51,15 @@ type DNSRouteChecker func(context.Context, string, string) error
 type DNSDirectChecker func(context.Context, string) error
 
 type QoEMeasurerConfig struct {
-	ClientFactory    func(string) *http.Client
-	DirectClient     *http.Client // Deprecated: ignored; HTTP controls use other configurations.
-	Endpoint         string
-	SampleBytes      int64
-	Deadline         time.Duration
-	Now              func() time.Time
-	Nonce            func() string
-	ApplicationGates ApplicationGateChecker
+	ClientFactory      func(string) *http.Client
+	DirectClient       *http.Client // Deprecated: ignored; HTTP controls use other configurations.
+	Endpoint           string
+	SampleBytes        int64
+	Deadline           time.Duration
+	Now                func() time.Time
+	Nonce              func() string
+	ApplicationGates   ApplicationGateChecker
+	TelegramTransports func(context.Context, string) []qoe.HTTPCheck
 	// Deprecated: ignored. HTTP control is routed by the controller.
 	ApplicationControl ApplicationGateChecker
 	ApplicationPolicy  string
@@ -71,19 +72,20 @@ type QoEMeasurerConfig struct {
 }
 
 type QoEMeasurer struct {
-	clientFactory    func(string) *http.Client
-	endpoint         string
-	sampleBytes      int64
-	deadline         time.Duration
-	now              func() time.Time
-	nonce            func() string
-	applicationGates ApplicationGateChecker
-	comparisonPolicy string
-	dnsResolvers     []string
-	dnsRouteCheck    DNSRouteChecker
-	dnsDirectCheck   DNSDirectChecker
-	udpCheck         func(context.Context, string) bool
-	udpNon443Check   func(context.Context, string) bool
+	clientFactory      func(string) *http.Client
+	endpoint           string
+	sampleBytes        int64
+	deadline           time.Duration
+	now                func() time.Time
+	nonce              func() string
+	applicationGates   ApplicationGateChecker
+	telegramTransports func(context.Context, string) []qoe.HTTPCheck
+	comparisonPolicy   string
+	dnsResolvers       []string
+	dnsRouteCheck      DNSRouteChecker
+	dnsDirectCheck     DNSDirectChecker
+	udpCheck           func(context.Context, string) bool
+	udpNon443Check     func(context.Context, string) bool
 }
 
 type qoeRequestResult struct {
@@ -130,29 +132,35 @@ func NewQoEMeasurer(config QoEMeasurerConfig) *QoEMeasurer {
 	if config.UDPNon443Check == nil {
 		config.UDPNon443Check = CheckNon443UDP
 	}
+	nativeEndpoint := ""
+	if config.TelegramTransports != nil {
+		nativeEndpoint = telegramTransportAddress
+	}
 	encodedPolicy, _ := json.Marshal(struct {
-		Version      string
-		Endpoint     string
-		Bytes        int64
-		DNS          []string
-		Applications string
-		Deadline     time.Duration
-	}{"hydrat-http-qoe-v1", config.Endpoint, config.SampleBytes, dnsResolvers, config.ApplicationPolicy, config.Deadline})
+		Version        string
+		Endpoint       string
+		Bytes          int64
+		DNS            []string
+		Applications   string
+		Deadline       time.Duration
+		NativeTelegram string
+	}{"hydrat-http-qoe-v2", config.Endpoint, config.SampleBytes, dnsResolvers, config.ApplicationPolicy, config.Deadline, nativeEndpoint})
 	policyDigest := sha256.Sum256(encodedPolicy)
 	return &QoEMeasurer{
-		clientFactory:    config.ClientFactory,
-		endpoint:         config.Endpoint,
-		sampleBytes:      config.SampleBytes,
-		deadline:         config.Deadline,
-		now:              config.Now,
-		nonce:            config.Nonce,
-		applicationGates: config.ApplicationGates,
-		comparisonPolicy: hex.EncodeToString(policyDigest[:]),
-		dnsResolvers:     dnsResolvers,
-		dnsRouteCheck:    config.DNSRouteCheck,
-		dnsDirectCheck:   config.DNSDirectCheck,
-		udpCheck:         config.UDPCheck,
-		udpNon443Check:   config.UDPNon443Check,
+		clientFactory:      config.ClientFactory,
+		endpoint:           config.Endpoint,
+		sampleBytes:        config.SampleBytes,
+		deadline:           config.Deadline,
+		now:                config.Now,
+		nonce:              config.Nonce,
+		applicationGates:   config.ApplicationGates,
+		telegramTransports: config.TelegramTransports,
+		comparisonPolicy:   hex.EncodeToString(policyDigest[:]),
+		dnsResolvers:       dnsResolvers,
+		dnsRouteCheck:      config.DNSRouteCheck,
+		dnsDirectCheck:     config.DNSDirectCheck,
+		udpCheck:           config.UDPCheck,
+		udpNon443Check:     config.UDPNon443Check,
 	}
 }
 
@@ -376,27 +384,51 @@ func (measurer *QoEMeasurer) measure(
 		observation.ErrorCode = qoeEndpointSize
 		return observation
 	}
-	if measurer.applicationGates != nil {
+	if measurer.applicationGates != nil || measurer.telegramTransports != nil {
 		// Service reachability is user-facing latency, not a bulk-transfer
 		// measurement. Bound it independently so a route that regularly stalls
 		// YouTube or Telegram for several seconds cannot remain healthy merely
 		// because the overall QoE measurement still has time left.
 		gateBudget := min(applicationGateDeadline, max(0, time.Until(contextDeadline(ctx))-250*time.Millisecond))
 		gateCtx, gateCancel := context.WithTimeout(ctx, gateBudget)
-		routeGates := measurer.applicationGates(gateCtx, routeClient)
+		var nativeChecks []qoe.HTTPCheck
+		nativeDone := make(chan struct{})
+		go func() {
+			defer close(nativeDone)
+			if measurer.telegramTransports != nil {
+				nativeChecks = measurer.telegramTransports(gateCtx, socksAddress)
+			}
+		}()
+		routeGates := HTTPGateResult{}
+		if measurer.applicationGates != nil {
+			routeGates = measurer.applicationGates(gateCtx, routeClient)
+		}
+		<-nativeDone
 		gateCancel()
+		// Preserve mandatory native evidence even when custom HTTP checks fill
+		// the bounded diagnostic projection.
+		routeGates.Checks = append(nativeChecks, routeGates.Checks...)
 		for _, check := range routeGates.Checks {
 			check.Path = "route"
 			observation.ApplicationChecks = append(observation.ApplicationChecks, check)
 		}
 		observation.ApplicationChecks = qoe.SafeHTTPChecks(observation.ApplicationChecks)
-		if !applicationRouteGatesHealthy(routeGates) {
+		nativeHealthy := measurer.telegramTransports == nil || len(nativeChecks) > 0
+		nativeFailure := false
+		for _, check := range nativeChecks {
+			nativeHealthy = nativeHealthy && check.OK
+			if !check.OK && check.Code != "canceled" && check.Code != "budget_exhausted" && check.Code != "invalid_request" {
+				nativeFailure = true
+			}
+		}
+		webHealthy := measurer.applicationGates == nil || applicationRouteGatesHealthy(routeGates)
+		if !webHealthy || !nativeHealthy {
 			observation.Infrastructure = true
 			if ctx.Err() != nil {
 				observation.ErrorCode = qoeMeasurementCanceled
 				return observation
 			}
-			observation.UnconfirmedHTTP = true
+			observation.UnconfirmedHTTP = !webHealthy || nativeFailure
 			observation.ErrorCode = qoeApplicationGates
 			return observation
 		}

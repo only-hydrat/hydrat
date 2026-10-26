@@ -91,3 +91,95 @@ func TestAvailabilityLocalSOCKSDialFailureCannotConfirmCandidateOutage(t *testin
 		t.Fatalf("checking socket failure confirmed candidate outage: %+v direct checks=%d", got, directChecks)
 	}
 }
+
+func TestQoENativeTelegramFailureCannotHideBehindHealthyWeb(t *testing.T) {
+	for _, code := range []string{"ok", "timeout", "budget_exhausted", "canceled", "invalid_request"} {
+		t.Run(code, func(t *testing.T) {
+			measurer := NewQoEMeasurer(QoEMeasurerConfig{
+				ClientFactory: func(string) *http.Client { return qoeSuccessClient() }, SampleBytes: 65536,
+				ApplicationGates: func(context.Context, *http.Client) HTTPGateResult {
+					return HTTPGateResult{YouTubeWeb: true, TelegramWeb: true, OpenAI401: true}
+				},
+				TelegramTransports: func(_ context.Context, address string) []qoe.HTTPCheck {
+					if address != "candidate-socks" {
+						t.Errorf("wrong route: %s", address)
+					}
+					return []qoe.HTTPCheck{{Service: "telegram_padded", Code: code, OK: code == "ok"}}
+				},
+			})
+			got := measurer.Measure(context.Background(), "candidate", "candidate-socks")
+			if code == "ok" {
+				if !got.Success {
+					t.Fatalf("healthy native transport: %+v", got)
+				}
+			} else if got.Success || !got.Infrastructure || got.UnconfirmedHTTP != (code == "timeout") {
+				t.Fatalf("unsafe failure classification: %+v", got)
+			}
+			found := false
+			for _, c := range got.ApplicationChecks {
+				if c.Service == "telegram_padded" && c.Path == "route" {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("missing safe native diagnostic: %+v", got.ApplicationChecks)
+			}
+		})
+	}
+}
+
+func TestQoEAvailabilityDoesNotRunNativeTelegram(t *testing.T) {
+	calls := 0
+	measurer := NewQoEMeasurer(QoEMeasurerConfig{
+		DNSResolver: "1.1.1.1", DNSRouteCheck: func(context.Context, string, string) error { return nil },
+		TelegramTransports: func(context.Context, string) []qoe.HTTPCheck { calls++; return nil },
+	})
+	if got := measurer.MeasureAvailability(context.Background(), "candidate", "socks"); !got.Success || calls != 0 {
+		t.Fatalf("availability=%+v native calls=%d", got, calls)
+	}
+}
+
+func TestQoENativePolicyCannotReuseWebOnlyEvidence(t *testing.T) {
+	old := NewQoEMeasurer(QoEMeasurerConfig{}).comparisonPolicy
+	native := NewQoEMeasurer(QoEMeasurerConfig{TelegramTransports: CheckTelegramTransports}).comparisonPolicy
+	if old == native {
+		t.Fatal("native and web-only evidence share a comparison policy")
+	}
+}
+
+func TestQoENativeChecksRunAlongsideWebAndJoinBeforeReturn(t *testing.T) {
+	nativeStarted := make(chan struct{})
+	webFinished := make(chan struct{})
+	nativeFinished := make(chan struct{})
+	measurer := NewQoEMeasurer(QoEMeasurerConfig{
+		ClientFactory: func(string) *http.Client { return qoeSuccessClient() }, SampleBytes: 65536,
+		ApplicationGates: func(ctx context.Context, _ *http.Client) HTTPGateResult {
+			select {
+			case <-nativeStarted:
+			case <-ctx.Done():
+				t.Error("native not started concurrently")
+			}
+			close(webFinished)
+			return HTTPGateResult{YouTubeWeb: true, TelegramWeb: true, OpenAI401: true}
+		},
+		TelegramTransports: func(ctx context.Context, _ string) []qoe.HTTPCheck {
+			close(nativeStarted)
+			select {
+			case <-webFinished:
+			case <-ctx.Done():
+				t.Error("web check did not complete")
+			}
+			close(nativeFinished)
+			return []qoe.HTTPCheck{{Service: "telegram_obfuscated", Code: "ok", OK: true}, {Service: "telegram_padded", Code: "ok", OK: true}}
+		},
+	})
+	got := measurer.Measure(context.Background(), "candidate", "socks")
+	if !got.Success {
+		t.Fatalf("concurrent check: %+v", got)
+	}
+	select {
+	case <-nativeFinished:
+	default:
+		t.Fatal("probe returned before native checks finished")
+	}
+}

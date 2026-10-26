@@ -114,6 +114,13 @@ func TestQoEComparisonPolicyAndMandatoryServiceMatrix(t *testing.T) {
 	}{
 		{"youtube", []qoe.HTTPCheck{check("youtube", false)}, []qoe.HTTPCheck{check("youtube", true)}, true},
 		{"telegram", []qoe.HTTPCheck{check("telegram", false)}, []qoe.HTTPCheck{check("telegram", true)}, true},
+		{"obfuscated Telegram", []qoe.HTTPCheck{check("telegram_obfuscated", false)}, []qoe.HTTPCheck{check("telegram_obfuscated", true)}, true},
+		{"padded Telegram", []qoe.HTTPCheck{check("telegram_padded", false)}, []qoe.HTTPCheck{check("telegram_padded", true)}, true},
+		{"web cannot confirm native", []qoe.HTTPCheck{check("telegram_obfuscated", false)}, []qoe.HTTPCheck{check("telegram", true)}, false},
+		{"different native transport", []qoe.HTTPCheck{check("telegram_padded", false)}, []qoe.HTTPCheck{check("telegram_obfuscated", true)}, false},
+		{"common native outage", []qoe.HTTPCheck{check("telegram_padded", false)}, []qoe.HTTPCheck{check("telegram_padded", false)}, false},
+		{"native canceled", []qoe.HTTPCheck{{Service: "telegram_padded", Path: "route", Code: "canceled"}}, []qoe.HTTPCheck{check("telegram_padded", true)}, false},
+		{"native budget exhausted", []qoe.HTTPCheck{{Service: "telegram_padded", Path: "route", Code: "budget_exhausted"}}, []qoe.HTTPCheck{check("telegram_padded", true)}, false},
 		{"unrelated", []qoe.HTTPCheck{check("telegram", false)}, []qoe.HTTPCheck{check("youtube", true)}, false},
 		{"instagram optional", []qoe.HTTPCheck{check("instagram", false)}, []qoe.HTTPCheck{check("instagram", true)}, false},
 		{"AI disjunction", []qoe.HTTPCheck{check("chatgpt", false), check("openai", false)}, []qoe.HTTPCheck{check("openai", true)}, true},
@@ -163,5 +170,36 @@ func TestQoEComparisonMemoryAndControlAdmissionAreBounded(t *testing.T) {
 	}
 	if controls := monitor.requestedQoEControls(at.Add(2*time.Minute), candidates, func(string) bool { return true }); len(controls) != 0 {
 		t.Fatal("stale control requests survived")
+	}
+}
+
+func TestQoENativeTelegramPeerEvidenceSurvivesSafeProjection(t *testing.T) {
+	for _, service := range []string{"telegram_obfuscated", "telegram_padded"} {
+		for _, peerService := range []string{service, "telegram"} {
+			t.Run(service+"/peer_"+peerService, func(t *testing.T) {
+				database, candidates := qoeMonitorStore(t, []qoeCandidateSpec{{name: "target", domain: "a", tcp: true, score: 90}, {name: "peer", domain: "b", tcp: true, score: 90}})
+				at := time.Unix(1800000000, 0)
+				good := healthyQoE(at)
+				good.ComparisonPolicy = "native-policy"
+				good.ApplicationChecks = []qoe.HTTPCheck{{Service: peerService, Path: "route", Code: "ok", OK: true}}
+				agent := &recordingQoEAgent{customResponse: true, response: agentapi.ProbeResponse{Success: true, QoE: &good}}
+				monitor := &QoEMonitor{Store: database, Agent: agent}
+				if err := monitor.probe(context.Background(), at, monitor.clockNow(), candidates["peer"]); err != nil {
+					t.Fatal(err)
+				}
+				bad := qoe.Observation{Infrastructure: true, UnconfirmedHTTP: true, ComparisonPolicy: "native-policy", ErrorCode: qoe.ReasonApplicationGates, ApplicationChecks: []qoe.HTTPCheck{{Service: service, Path: "route", Code: "timeout"}}}
+				agent.response = agentapi.ProbeResponse{FailureClass: agentapi.FailureInfrastructure, QoE: &bad}
+				if err := monitor.probe(context.Background(), at.Add(time.Second), monitor.clockNow(), candidates["target"]); err != nil {
+					t.Fatal(err)
+				}
+				want := 0
+				if service == peerService {
+					want = 1
+				}
+				if got := mustQoESampleCount(t, database, candidates["target"].ID, 20); got != want {
+					t.Fatalf("negative samples=%d want=%d", got, want)
+				}
+			})
+		}
 	}
 }

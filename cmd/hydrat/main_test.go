@@ -247,7 +247,7 @@ func TestAgentQoEMeasurerUsesConfiguredBounds(t *testing.T) {
 	got := agentQoEMeasurerConfig(cfg)
 	if got.SampleBytes != cfg.QoE.SampleBytes || got.Deadline != cfg.QoE.Deadline ||
 		!reflect.DeepEqual(got.DNSResolvers, cfg.Xray.EffectiveDNSResolvers()) ||
-		got.ApplicationGates == nil || got.ApplicationControl != nil || got.ApplicationPolicy == "" || got.UDPCheck == nil {
+		got.ApplicationGates == nil || got.TelegramTransports == nil || got.ApplicationControl != nil || got.ApplicationPolicy == "" || got.UDPCheck == nil {
 		t.Fatalf("QoE measurer config=%+v, want bytes=%d deadline=%s", got, cfg.QoE.SampleBytes, cfg.QoE.Deadline)
 	}
 }
