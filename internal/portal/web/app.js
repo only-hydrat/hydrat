@@ -4,6 +4,10 @@ let candidateOffset = 0;
 let artifactConfig = "";
 let artifactName = "wireguard";
 
+// Текущий режим сортировки клиентов. Значение сохраняется в localStorage,
+// чтобы порядок не сбрасывался при перезагрузке страницы.
+let clientSortMode = localStorage.getItem("hydrat.clientSort") || "name-asc";
+
 function notify(message, error = false) {
   const toast = $("message");
   toast.textContent = message;
@@ -138,6 +142,49 @@ async function loadOverview() {
   }
 }
 
+function clientSortKey(client) {
+  const address = (client.address || "").split("/")[0];
+  const ipParts = address.split(".").map((part) => Number(part) || 0);
+  return { name: (client.name || "").toLowerCase(), ip: ipParts };
+}
+
+function sortClients(clients, mode) {
+  const sorted = [...clients];
+  sorted.sort((a, b) => {
+    const ka = clientSortKey(a);
+    const kb = clientSortKey(b);
+    switch (mode) {
+      case "name-desc":
+        return kb.name.localeCompare(ka.name, "ru");
+      case "address-asc":
+        for (let i = 0; i < 4; i++) {
+          if (ka.ip[i] !== kb.ip[i]) return ka.ip[i] - kb.ip[i];
+        }
+        return 0;
+      case "address-desc":
+        for (let i = 0; i < 4; i++) {
+          if (ka.ip[i] !== kb.ip[i]) return kb.ip[i] - ka.ip[i];
+        }
+        return 0;
+      case "state": {
+        // Сначала «В сети», затем «Неактивен», затем «Нет маршрута», затем «Пауза».
+        const order = { online: 0, inactive: 1, unavailable: 2, paused: 3 };
+        const sa = order[a.connection_state] ?? 4;
+        const sb = order[b.connection_state] ?? 4;
+        if (sa !== sb) return sa - sb;
+        return ka.name.localeCompare(kb.name, "ru");
+      }
+      case "paused-last":
+        if (a.paused !== b.paused) return a.paused ? 1 : -1;
+        return ka.name.localeCompare(kb.name, "ru");
+      case "name-asc":
+      default:
+        return ka.name.localeCompare(kb.name, "ru");
+    }
+  });
+  return sorted;
+}
+
 async function loadClients() {
   const data = await request("/api/admin/clients", {}, true);
   const assignments = new Map((data.assignments || []).map((item) => [item.client_id, item]));
@@ -149,7 +196,12 @@ async function loadClients() {
     target.textContent = "Создайте первый WireGuard-клиент";
     return;
   }
-  data.clients.forEach((client) => {
+  const sortSelect = $("client-sort");
+  if (sortSelect && sortSelect.value !== clientSortMode) {
+    sortSelect.value = clientSortMode;
+  }
+  const ordered = sortClients(data.clients, clientSortMode);
+  ordered.forEach((client) => {
     const assignment = assignments.get(client.id) || {};
     const row = node("article", "data-row");
     const identity = node("div");
@@ -190,6 +242,15 @@ $("client-form").addEventListener("submit", async (event) => {
     notify("Клиент создан");
   } catch (error) { notify(error.message, true); }
 });
+
+const clientSortSelect = $("client-sort");
+if (clientSortSelect) {
+  clientSortSelect.addEventListener("change", (event) => {
+    clientSortMode = event.target.value;
+    localStorage.setItem("hydrat.clientSort", clientSortMode);
+    loadClients();
+  });
+}
 
 async function showArtifacts(client) {
   try {

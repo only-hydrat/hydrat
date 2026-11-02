@@ -73,10 +73,22 @@
         <div class="panel">
           <div class="panel-head">
             <div><p class="eyebrow">WIREGUARD</p><h2>Клиенты</h2><p>Конфиг и QR доступны сразу после создания.</p></div>
-            <form id="client-form" class="inline-form">
-              <input id="client-name" aria-label="Имя клиента" placeholder="Например, Pixel 9" required>
-              <button id="client-create" class="button primary" type="submit">Создать</button>
-            </form>
+            <div class="filters" style="align-items:flex-end; gap: 10px;">
+              <div>
+                <select id="client-sort" aria-label="Сортировка клиентов" style="min-width:200px;">
+                  <option value="name-asc">Имя (А→Я)</option>
+                  <option value="name-desc">Имя (Я→А)</option>
+                  <option value="address-asc">Адрес (по возрастанию)</option>
+                  <option value="address-desc">Адрес (по убыванию)</option>
+                  <option value="state">Сначала активные</option>
+                  <option value="paused-last">Сначала без паузы</option>
+                </select>
+              </div>
+              <form id="client-form" class="inline-form">
+                <input id="client-name" aria-label="Имя клиента" placeholder="Например, Pixel 9" required>
+                <button id="client-create" class="button primary" type="submit">Создать</button>
+              </form>
+            </div>
           </div>
           <div id="admin-clients" class="data-list empty">Нет данных</div>
         </div>
