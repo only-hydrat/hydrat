@@ -256,7 +256,6 @@ func TestOrdinaryMovesAndObsoleteRecoveryNeverResetHealthyFlows(t *testing.T) {
 	for _, mutate := range []func(*FlowRecovery){
 		func(q *FlowRecovery) { q.SourceCIDR = "10.44.0.3/32" },
 		func(q *FlowRecovery) { q.ClientID = "other" },
-		func(q *FlowRecovery) { q.FailedOutbound = "unrelated" },
 	} {
 		bad := next
 		bad.Generation = 3
@@ -265,6 +264,67 @@ func TestOrdinaryMovesAndObsoleteRecoveryNeverResetHealthyFlows(t *testing.T) {
 		if err := r.ApplyWithRecovery(t.Context(), bad, badScopes); err == nil {
 			t.Fatalf("unsafe scope accepted: %+v", badScopes)
 		}
+	}
+}
+
+func TestRecoveryStaleControllerDoesNotBlockNewPlanOrResetHealthyFlows(t *testing.T) {
+	a := &recoveryAdapter{registry: xrayflow.NewRegistry()}
+	path := filepath.Join(t.TempDir(), "applied.json")
+	r, _ := NewReconciler(a, path)
+	old, next, scopes := recoveryPlans()
+	if err := r.Apply(t.Context(), old); err != nil {
+		t.Fatal(err)
+	}
+	// The gateway applied generation 2 but its reply never reached the controller.
+	if err := r.ApplyWithRecovery(t.Context(), next, scopes); err != nil {
+		t.Fatal(err)
+	}
+	r, _ = NewReconciler(a, path)
+	if err := r.Rehydrate(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	healthyClosed := 0
+	_, done := a.registry.Track(t.Context(), "new", "10.44.0.2", "tcp", func() { healthyClosed++ })
+	defer done()
+	staleClosed := 0
+	_, doneOld := a.registry.Track(t.Context(), "old", "10.44.0.2", "tcp", func() { staleClosed++ })
+	defer doneOld()
+	// Controller still computes recovery from generation 1, but now wants a third route.
+	third := next
+	third.Generation = 3
+	third.Outbounds = []Outbound{{ID: "third", Protocol: ProtocolVLESS}}
+	third.Clients = append([]ClientRoute(nil), next.Clients...)
+	third.Clients[0].TCPOutbound, third.Clients[0].UDPOutbound = "third", "third"
+	scopes[0].ReplacementOutbound = "third"
+	if err := r.ApplyWithRecovery(t.Context(), third, scopes); err != nil {
+		t.Fatalf("stale recovery blocked reconciliation: %v", err)
+	}
+	if r.applied.Generation != 3 || healthyClosed != 0 || staleClosed != 0 || len(r.applied.PendingFlowRecoveries) != 0 {
+		t.Fatalf("unsafe stale recovery: generation=%d healthy=%d stale=%d pending=%d", r.applied.Generation, healthyClosed, staleClosed, len(r.applied.PendingFlowRecoveries))
+	}
+}
+
+func TestRecoveryStaleScopeDoesNotSuppressOtherClientRecovery(t *testing.T) {
+	old, next, scopes := recoveryPlans()
+	old.Clients = append(old.Clients, ClientRoute{ClientID: "bob", SourceCIDR: "10.44.0.3/32", TCPOutbound: "old", UDPOutbound: "old"})
+	next.Clients = append(next.Clients, ClientRoute{ClientID: "bob", SourceCIDR: "10.44.0.3/32", TCPOutbound: "new", UDPOutbound: "new"})
+	scopes[0].FailedOutbound = "obsolete"
+	scopes = append(scopes, FlowRecovery{ClientID: "bob", SourceCIDR: "10.44.0.3/32", FailedOutbound: "old", ReplacementOutbound: "new"})
+	a := &recoveryAdapter{registry: xrayflow.NewRegistry()}
+	r, _ := NewReconciler(a, filepath.Join(t.TempDir(), "applied.json"))
+	if err := r.Apply(t.Context(), old); err != nil {
+		t.Fatal(err)
+	}
+	closedAlice, closedBob := 0, 0
+	_, doneAlice := a.registry.Track(t.Context(), "old", "10.44.0.2", "tcp", func() { closedAlice++ })
+	defer doneAlice()
+	_, doneBob := a.registry.Track(t.Context(), "old", "10.44.0.3", "tcp", func() { closedBob++ })
+	defer doneBob()
+	if err := r.ApplyWithRecovery(t.Context(), next, scopes); err != nil {
+		t.Fatal(err)
+	}
+	if closedAlice != 0 || closedBob != 1 {
+		t.Fatalf("closed alice=%d bob=%d", closedAlice, closedBob)
 	}
 }
 

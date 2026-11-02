@@ -65,20 +65,29 @@ func ValidateFlowRecoveries(plan DesiredPlan, recoveries []FlowRecovery) error {
 	return nil
 }
 
-func validateFlowRecoveryTransition(previous DesiredPlan, recoveries []FlowRecovery) error {
+func currentFlowRecoveries(previous DesiredPlan, recoveries []FlowRecovery) ([]FlowRecovery, error) {
+	var current []FlowRecovery
 	for _, q := range recoveries {
 		matched := false
 		for _, route := range previous.Clients {
-			if route.ClientID == q.ClientID && route.SourceCIDR == q.SourceCIDR && !route.BlockTCP && route.TCPOutbound == q.FailedOutbound {
+			if route.ClientID == q.ClientID && route.SourceCIDR == q.SourceCIDR && !route.BlockTCP && route.TCPOutbound != "" {
 				matched = true
+				if route.TCPOutbound == q.FailedOutbound {
+					current = append(current, q)
+				} else {
+					// An apply reply can be lost after the gateway persists its plan.
+					// Never recapture a reset token from that stale controller intent,
+					// but do not let optional flow cleanup prevent routing convergence.
+					log.Printf("flow recovery client=%s outcome=skipped reason=previous_route_changed generation=%d", q.ClientID, previous.Generation)
+				}
 				break
 			}
 		}
 		if !matched {
-			return errors.New("flow recovery does not match previous serving route")
+			return nil, errors.New("flow recovery does not match previous serving route")
 		}
 	}
-	return nil
+	return current, nil
 }
 
 func recoveryStillApplicable(plan DesiredPlan, q FlowRecovery) bool {

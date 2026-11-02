@@ -191,7 +191,8 @@ func (reconciler *Reconciler) applyLocked(
 		}
 	}
 	if !recovering && desired.Generation > reconciler.applied.Generation {
-		if err := validateFlowRecoveryTransition(reconciler.applied.DesiredPlan, recoveries); err != nil {
+		recoveries, err = currentFlowRecoveries(reconciler.applied.DesiredPlan, recoveries)
+		if err != nil {
 			return err
 		}
 	}
