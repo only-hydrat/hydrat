@@ -24,6 +24,7 @@ services:
       WIREGUARD_PORT: "${WIREGUARD_PORT:-51820}"
       HYDRAT_HWID: "${HYDRAT_HWID:-}"
       XRAY_LOCATION_ASSET: "/data/geo"
+      HYDRAT_METRICS_ENABLED: "${HYDRAT_METRICS_ENABLED:-false}"
     volumes:
       - ${DATA_DIR:-./data}:/data
       - hydrat-run:/run/hydrat
@@ -63,6 +64,7 @@ services:
       HYDRAT_CONFIG: /etc/hydrat/config.yml
       HYDRAT_LOG_DIR: /data/logs
       HYDRAT_LOG_RETENTION: "72h"
+      HYDRAT_METRICS_ENABLED: "${HYDRAT_METRICS_ENABLED:-false}"
       HYDRAT_ADMIN_PASSWORD: "${HYDRAT_ADMIN_PASSWORD:?HYDRAT_ADMIN_PASSWORD is required}"
       WIREGUARD_ENDPOINT: "${WIREGUARD_ENDPOINT:?WIREGUARD_ENDPOINT is required}"
       WIREGUARD_PORT: "${WIREGUARD_PORT:-51820}"

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/only-hydrat/hydrat/internal/dataplane"
+	"github.com/only-hydrat/hydrat/internal/metrics"
 	"github.com/only-hydrat/hydrat/internal/scheduler"
 	"github.com/only-hydrat/hydrat/internal/sources"
 	"github.com/only-hydrat/hydrat/internal/store"
@@ -421,6 +422,21 @@ func (engine *Engine) updateActivity(ctx context.Context, now time.Time) error {
 		if err := engine.store.RecordPeerActivity(ctx, client.ID, now, peer); err != nil {
 			return err
 		}
+	}
+
+	// Publish the same absolute counters that were just persisted to SQLite.
+	// Reset first so deleted/removed peers and renamed clients do not leave
+	// stale Prometheus time series behind.
+	metrics.WireGuardRXBytes.Reset()
+	metrics.WireGuardTXBytes.Reset()
+	for _, peer := range peers {
+		client, exists := byKey[peer.PublicKey]
+		if !exists {
+			continue
+		}
+		labels := []string{client.Name, client.PublicKey}
+		metrics.WireGuardRXBytes.WithLabelValues(labels...).Set(float64(peer.RXBytes))
+		metrics.WireGuardTXBytes.WithLabelValues(labels...).Set(float64(peer.TXBytes))
 	}
 	return nil
 }

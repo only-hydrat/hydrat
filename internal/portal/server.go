@@ -20,6 +20,7 @@ import (
 	"github.com/only-hydrat/hydrat/internal/store"
 	"github.com/only-hydrat/hydrat/internal/torpool"
 	"github.com/only-hydrat/hydrat/internal/wireguard"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/skip2/go-qrcode"
 )
 
@@ -33,6 +34,7 @@ type ServerConfig struct {
 	Health              HealthChecker
 	ControllerReadiness HealthChecker
 	AdminPassword       string
+	MetricsEnabled      bool
 	MaxBodyBytes        int64
 	RetirementGrace     time.Duration
 	InternalToken       string
@@ -152,6 +154,9 @@ func New(config ServerConfig) http.Handler {
 		routing:           config.Routing,
 		wireguardEndpoint: strings.TrimSpace(config.WireGuardEndpoint),
 		mux:               http.NewServeMux(),
+	}
+	if config.MetricsEnabled {
+		server.mux.Handle("GET /metrics", promhttp.Handler())
 	}
 	server.mux.HandleFunc("GET /{$}", server.dashboard)
 	server.mux.HandleFunc("GET /assets/{name}", server.asset)

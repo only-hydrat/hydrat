@@ -722,6 +722,14 @@ func runController(ctx context.Context, cfg config.Config) error {
 	}
 	ctx, cancelController := context.WithCancel(ctx)
 	defer cancelController()
+	metricsEnabled := false
+	if value := os.Getenv("HYDRAT_METRICS_ENABLED"); value != "" {
+		parsed, parseErr := strconv.ParseBool(value)
+		if parseErr != nil {
+			return fmt.Errorf("parse HYDRAT_METRICS_ENABLED: %w", parseErr)
+		}
+		metricsEnabled = parsed
+	}
 	adminPassword := os.Getenv("HYDRAT_ADMIN_PASSWORD")
 	if adminPassword == "" {
 		return errors.New("HYDRAT_ADMIN_PASSWORD is required")
@@ -844,7 +852,7 @@ func runController(ctx context.Context, cfg config.Config) error {
 		qualification: &qualification,
 	}
 	handler := portal.New(portal.ServerConfig{
-		Store: database, Health: agent, AdminPassword: adminPassword, Refresher: refresher, Profiles: torProfiles,
+		Store: database, Health: agent, AdminPassword: adminPassword, MetricsEnabled: metricsEnabled, Refresher: refresher, Profiles: torProfiles,
 		ProbeRuntime:        agent,
 		ControllerReadiness: controllerReadiness,
 		RetirementGrace:     cfg.Inventory.RetirementGrace,
