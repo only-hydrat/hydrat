@@ -215,7 +215,10 @@ func (store *Store) initialize(ctx context.Context) error {
 	if err := store.migrateRoutingEvidence(ctx); err != nil {
 		return err
 	}
-	return store.migrateRouteRecovery(ctx)
+	if err := store.migrateRouteRecovery(ctx); err != nil {
+		return err
+	}
+	return store.migrateWireGuardTrafficTotals(ctx)
 }
 
 func (store *Store) migrateRoutingEvidence(ctx context.Context) error {
@@ -1659,4 +1662,36 @@ func normalizeSchemaSQL(value string) string {
 			return character
 		}
 	}, strings.ToLower(value))
+}
+
+// migrateWireGuardTrafficTotals adds persistent cumulative peer byte counters.
+func (store *Store) migrateWireGuardTrafficTotals(ctx context.Context) error {
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, column := range []string{"rx_bytes_total", "tx_bytes_total"} {
+		var exists int
+		if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM pragma_table_info('clients') WHERE name=?`, column).Scan(&exists); err != nil {
+			return err
+		}
+		if exists == 0 {
+			if _, err := tx.ExecContext(ctx, `ALTER TABLE clients ADD COLUMN `+column+` INTEGER NOT NULL DEFAULT 0`); err != nil {
+				return err
+			}
+			// Preserve already observed bytes when upgrading from snapshot-only storage.
+			sourceColumn := "rx_bytes"
+			if column == "tx_bytes_total" {
+				sourceColumn = "tx_bytes"
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE clients SET `+column+`=`+sourceColumn); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO schema_migrations(version, applied_at) VALUES (19, unixepoch())`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
