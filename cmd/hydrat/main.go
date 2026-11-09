@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -24,6 +25,7 @@ import (
 	"github.com/only-hydrat/hydrat/internal/dataplane"
 	"github.com/only-hydrat/hydrat/internal/failoverbudget"
 	"github.com/only-hydrat/hydrat/internal/gateway"
+	"github.com/only-hydrat/hydrat/internal/metrics"
 	"github.com/only-hydrat/hydrat/internal/portal"
 	"github.com/only-hydrat/hydrat/internal/probe"
 	"github.com/only-hydrat/hydrat/internal/proberuntime"
@@ -856,6 +858,31 @@ func runController(ctx context.Context, cfg config.Config) error {
 		WireGuardEndpoint: endpoint,
 	})
 	server := &http.Server{Addr: cfg.Portal.Bind, Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
+	metricsEnabled := strings.EqualFold(strings.TrimSpace(os.Getenv("HYDRAT_METRICS_ENABLED")), "true") ||
+		strings.TrimSpace(os.Getenv("HYDRAT_METRICS_ENABLED")) == "1"
+	if metricsEnabled {
+		metricsAddr := strings.TrimSpace(os.Getenv("HYDRAT_METRICS_BIND"))
+		if metricsAddr == "" {
+			metricsAddr = ":9090"
+		}
+		metricsListener, err := net.Listen("tcp", metricsAddr)
+		if err != nil {
+			return fmt.Errorf("listen metrics endpoint %s: %w", metricsAddr, err)
+		}
+		metricsServer := &http.Server{Handler: metrics.Handler(database), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
+		go func() {
+			if err := metricsServer.Serve(metricsListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("metrics server stopped: %v", err)
+			}
+		}()
+		go func() {
+			<-ctx.Done()
+			shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = metricsServer.Shutdown(shutdown)
+		}()
+		log.Printf("Prometheus metrics listening on %s", metricsAddr)
+	}
 	go func() {
 		<-ctx.Done()
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)

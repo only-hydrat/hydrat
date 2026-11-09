@@ -20,6 +20,8 @@ type ClientRecord struct {
 	LatestHandshake *int64 `json:"latest_handshake,omitempty"`
 	RXBytes         int64  `json:"rx_bytes"`
 	TXBytes         int64  `json:"tx_bytes"`
+	RXBytesTotal    int64  `json:"rx_bytes_total"`
+	TXBytesTotal    int64  `json:"tx_bytes_total"`
 }
 
 const ClientInactiveAfter = 5 * time.Minute
@@ -36,14 +38,36 @@ func (store *Store) RecordPeerActivity(ctx context.Context, id string, at time.T
 	if traffic.After(at) {
 		traffic = at
 	}
-	result, err := store.db.ExecContext(ctx, `UPDATE clients SET
-		last_traffic_at=CASE WHEN ? IS NOT NULL THEN MAX(COALESCE(last_traffic_at,0),?) ELSE last_traffic_at END,
-		latest_handshake=?, activity_seen=1, rx_bytes=?, tx_bytes=?, updated_at=? WHERE id=?`,
-		unixOrNil(traffic), unixOrNil(traffic), unixOrNil(peer.LatestHandshake), peer.RXBytes, peer.TXBytes, at.Unix(), id)
+	tx, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	return requireAffected(result, "client")
+	defer tx.Rollback()
+	var previousRX, previousTX, totalRX, totalTX int64
+	if err := tx.QueryRowContext(ctx, `SELECT rx_bytes, tx_bytes, rx_bytes_total, tx_bytes_total FROM clients WHERE id=?`, id).
+		Scan(&previousRX, &previousTX, &totalRX, &totalTX); err != nil {
+		return err
+	}
+	deltaRX, deltaTX := peer.RXBytes-previousRX, peer.TXBytes-previousTX
+	if deltaRX < 0 {
+		deltaRX = peer.RXBytes
+	}
+	if deltaTX < 0 {
+		deltaTX = peer.TXBytes
+	}
+	totalRX += deltaRX
+	totalTX += deltaTX
+	result, err := tx.ExecContext(ctx, `UPDATE clients SET
+		last_traffic_at=CASE WHEN ? IS NOT NULL THEN MAX(COALESCE(last_traffic_at,0),?) ELSE last_traffic_at END,
+		latest_handshake=?, activity_seen=1, rx_bytes=?, tx_bytes=?, rx_bytes_total=?, tx_bytes_total=?, updated_at=? WHERE id=?`,
+		unixOrNil(traffic), unixOrNil(traffic), unixOrNil(peer.LatestHandshake), peer.RXBytes, peer.TXBytes, totalRX, totalTX, at.Unix(), id)
+	if err != nil {
+		return err
+	}
+	if err := requireAffected(result, "client"); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (store *Store) PutClient(ctx context.Context, client ClientRecord, wireGuardConfig string) error {
@@ -67,7 +91,7 @@ func (store *Store) PutClient(ctx context.Context, client ClientRecord, wireGuar
 
 func (store *Store) ListClients(ctx context.Context) ([]ClientRecord, error) {
 	rows, err := store.db.QueryContext(ctx, `
-        SELECT id, name, address, public_key, paused, created_at, updated_at, last_traffic_at, rx_bytes, tx_bytes, latest_handshake
+        SELECT id, name, address, public_key, paused, created_at, updated_at, last_traffic_at, rx_bytes, tx_bytes, latest_handshake, rx_bytes_total, tx_bytes_total
         FROM clients ORDER BY address, id
     `)
 	if err != nil {
@@ -78,7 +102,7 @@ func (store *Store) ListClients(ctx context.Context) ([]ClientRecord, error) {
 	for rows.Next() {
 		var client ClientRecord
 		if err := rows.Scan(&client.ID, &client.Name, &client.Address, &client.PublicKey, &client.Paused,
-			&client.CreatedAt, &client.UpdatedAt, &client.LastTrafficAt, &client.RXBytes, &client.TXBytes, &client.LatestHandshake); err != nil {
+			&client.CreatedAt, &client.UpdatedAt, &client.LastTrafficAt, &client.RXBytes, &client.TXBytes, &client.LatestHandshake, &client.RXBytesTotal, &client.TXBytesTotal); err != nil {
 			return nil, err
 		}
 		result = append(result, client)

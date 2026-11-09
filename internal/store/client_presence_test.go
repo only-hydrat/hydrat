@@ -45,3 +45,27 @@ func TestPeerActivityDoesNotReviveOnServerTXOrKeepalive(t *testing.T) {
 		t.Fatal("server output resurrected idle client")
 	}
 }
+
+func TestPeerTrafficTotalsSurviveWireGuardCounterReset(t *testing.T) {
+	db, _ := qoeCandidateStore(t)
+	ctx := context.Background()
+	if err := db.PutClient(ctx, ClientRecord{ID: "peer", Name: "Peer", Address: "10.44.0.9/32"}, "config"); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Unix(1800000100, 0)
+	for i, rx := range []int64{100, 250, 400, 20, 80} {
+		if err := db.RecordPeerActivity(ctx, "peer", at.Add(time.Duration(i)*time.Second), wireguard.PeerActivity{RXBytes: rx, TXBytes: rx * 2}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clients, err := db.ListClients(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := clients[0].RXBytesTotal; got != 480 {
+		t.Fatalf("RX total=%d want 480", got)
+	}
+	if got := clients[0].TXBytesTotal; got != 960 {
+		t.Fatalf("TX total=%d want 960", got)
+	}
+}
