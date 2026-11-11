@@ -101,7 +101,7 @@ docker compose -f docker-compose.yml -f docker-compose.i2p.yml up -d
 ## 使用前需要了解
 
 - **WireGuard 必须能连接到网关。** Hydrat 不会伪装这一段连接。如果运营商封锁 WireGuard 或服务器 IP，更换出口代理无法解决问题。
-- **切换保留隧道，但不保证保留每个会话。** 路由故障或出口 IP 变化后，应用可能需要重新建立 TCP/QUIC 连接。TCP 和 UDP 也可能使用不同出口。
+- **切换保留隧道，但不保证保留每个会话。** 路由故障或出口 IP 变化后，应用可能需要重新建立 TCP/QUIC 连接。TCP 和 UDP 也可能使用不同路由。
 - **检测从网关发起。** 它不衡量设备到服务器之间的网络质量，也不能保证每个网站都能访问。
 - **Tor 和 I2P 访问默认关闭。** 访问这些网站需要网关 DNS；浏览器的 DNS over HTTPS 可能绕过它。预热期间或切换配置后的首次连接可能需要等待。普通浏览器仍会保留 Cookie 和指纹，禁用中继也不会向网络隐藏 Tor/I2P 的使用情况。
 
@@ -128,6 +128,13 @@ curl -i http://127.0.0.1:8088/api/ready
 
 ```sh
 sudo tail -n 100 "${DATA_DIR:-./data}/logs/gateway/gateway-current.log" \
+  "${DATA_DIR:-./data}/logs/controller/controller-current.log"
+```
+
+gateway 和 controller 使用独立日志目录。读取保留的日志需要 root 或 sudo 权限。如需持续查看新记录：
+
+```sh
+sudo tail -F "${DATA_DIR:-./data}/logs/gateway/gateway-current.log" \
   "${DATA_DIR:-./data}/logs/controller/controller-current.log"
 ```
 

@@ -101,7 +101,7 @@ Keep using this pair of Compose files for future updates. System settings includ
 ## Things to know
 
 - **WireGuard must reach the gateway.** Hydrat does not disguise this part of the connection. If your ISP blocks WireGuard or the server IP, changing the outbound proxy will not help.
-- **Failover preserves the tunnel, not every session.** A failed route or changed exit IP may require applications to reconnect their TCP/QUIC sessions. TCP and UDP can use different exits.
+- **Failover preserves the tunnel, not every session.** A failed route or changed exit IP may require applications to reconnect their TCP/QUIC sessions. TCP and UDP can use different routes.
 - **Probes run from the gateway.** They do not measure the connection between your device and the server or guarantee access to every website.
 - **Tor and I2P access are off by default.** Their sites require the gateway DNS; browser DNS over HTTPS can bypass it. The first connection during warmup or after a profile change may take time. A regular browser keeps cookies and its fingerprint, and disabling transit does not hide Tor/I2P use from the network.
 
@@ -128,6 +128,13 @@ curl -i http://127.0.0.1:8088/api/ready
 
 ```sh
 sudo tail -n 100 "${DATA_DIR:-./data}/logs/gateway/gateway-current.log" \
+  "${DATA_DIR:-./data}/logs/controller/controller-current.log"
+```
+
+The gateway and controller keep separate log directories. Reading retained logs requires root or sudo. To follow new entries:
+
+```sh
+sudo tail -F "${DATA_DIR:-./data}/logs/gateway/gateway-current.log" \
   "${DATA_DIR:-./data}/logs/controller/controller-current.log"
 ```
 
