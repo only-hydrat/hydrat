@@ -959,3 +959,18 @@ probes:
 		}
 	})
 }
+
+func TestOnionReservedResourcesCannotOverlapRuntime(t *testing.T) {
+	for _, mutate := range []func(*Config){
+		func(c *Config) { c.WireGuard.Network = "198.18.0.0/24"; c.WireGuard.DNS = "198.18.0.1" },
+		func(c *Config) { c.Xray.APIAddress = "127.0.0.1:1053" },
+		func(c *Config) { c.Tor.SocksPortBase = 1053 },
+		func(c *Config) { c.Xray.ActiveSocksPortBase = 1053 },
+	} {
+		c := Defaults()
+		mutate(&c)
+		if err := c.Validate(); err == nil {
+			t.Fatal("reserved onion resource accepted")
+		}
+	}
+}

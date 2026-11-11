@@ -184,3 +184,18 @@ func TestBackgroundProbeRejectsDrainingRuntimeBeforeRunner(t *testing.T) {
 		t.Fatal("probe entered unavailable runtime")
 	}
 }
+
+func TestOnionComparisonMetadataSurvivesAgentBoundary(t *testing.T) {
+	instance := strings.Repeat("b", 32)
+	runner := probeRunnerFunc(func(context.Context, ProbeMode, ProbeRequest) (ProbeResponse, error) {
+		return ProbeResponse{CandidateID: "tor", ProfileInstance: instance, FailureClass: FailureInfrastructure, QoE: &qoe.Observation{Infrastructure: true, UnconfirmedHTTP: true, ComparisonPolicy: qoe.OnionComparisonPolicy, ErrorCode: qoe.ReasonApplicationGates, ApplicationChecks: []qoe.HTTPCheck{{Service: "onion_search", Path: "route", Code: "timeout"}}}}, nil
+	})
+	response, err := sendProbeHandler(t.Context(), NewServer(&recordingApplier{}, 4096, WithProbeRunner(runner)), "/v1/probes/qoe", ProbeRequest{CandidateID: "tor", Kind: sources.KindTorBridge, Payload: "test", Onion: true, ProfileInstance: instance})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.sanitizeHTTPDiagnostics() // client validates the projection again
+	if response.QoE == nil || !response.QoE.UnconfirmedHTTP || response.QoE.ComparisonPolicy != qoe.OnionComparisonPolicy || response.ProfileInstance != instance || response.QoE.ApplicationChecks[0].Service != "onion_search" {
+		t.Fatalf("onion evidence lost at HTTP boundary: %+v", response.QoE)
+	}
+}

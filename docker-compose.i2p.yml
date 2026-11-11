@@ -1,0 +1,36 @@
+# Optional I2P web access. No published ports, relay service, or Docker socket.
+# Prebuilt optional image; use docker-compose.i2p.dev.yml for a source build.
+services:
+  gateway:
+    volumes:
+      - hydrat-i2p-run:/run/hydrat-i2p:ro
+  i2pd:
+    image: ${HYDRAT_I2P_IMAGE:-ghcr.io/only-hydrat/hydrat:1.2.0-i2p}
+    restart: unless-stopped
+    init: true
+    user: "10001:10001"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    volumes:
+      - hydrat-i2p-data:/data/i2p
+      - hydrat-i2p-run:/run/hydrat-i2p
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    networks: [egress]
+    mem_limit: 384m
+    cpus: 0.5
+    pids_limit: 64
+    ulimits:
+      nofile: {soft: 2048, hard: 4096}
+    logging:
+      driver: json-file
+      options: {max-size: "5m", max-file: "2"}
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--unix-socket", "/run/hydrat-i2p/control.sock", "http://localhost/status"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+volumes:
+  hydrat-i2p-data:
+  hydrat-i2p-run:

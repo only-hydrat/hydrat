@@ -15,6 +15,8 @@ import (
 )
 
 type routeCandidateSnapshot struct {
+	onionCandidates     []scheduler.Candidate
+	onionQoE            map[string]store.OnionQoEState
 	allByID             map[string]scheduler.Candidate
 	placementCandidates []scheduler.Candidate
 	rowsByID            map[string]store.Candidate
@@ -56,6 +58,14 @@ func (engine *Engine) routeCandidateSnapshot(ctx context.Context, now time.Time,
 		payloadByCandidate:  make(map[string]string),
 		evidenceByCandidate: make(map[string]string),
 	}
+	result.onionQoE = map[string]store.OnionQoEState{}
+	if profiles != nil {
+		for _, p := range profiles.Profiles() {
+			if p.Role == "warm" {
+				referencedIDs = append(append([]string(nil), referencedIDs...), p.CandidateID)
+			}
+		}
+	}
 	var evidence store.RoutingEvidenceSnapshot
 	var err error
 	if referencesOnly {
@@ -77,6 +87,9 @@ func (engine *Engine) routeCandidateSnapshot(ctx context.Context, now time.Time,
 	qoeByID := make(map[string]qoe.State)
 	for _, row := range evidence.Candidates {
 		candidateID := row.Candidate.ID
+		if row.OnionQoE != nil {
+			result.onionQoE[candidateID] = *row.OnionQoE
+		}
 		result.rowsByID[candidateID] = row.Candidate
 		result.payloadByCandidate[candidateID] = row.Payload
 		result.evidenceByCandidate[candidateID] = row.Digest
@@ -149,8 +162,9 @@ func (engine *Engine) routeCandidateSnapshot(ctx context.Context, now time.Time,
 			ID: candidate.ID, Protocol: protocol, RouteKey: candidate.RouteKey,
 			ProfileID: profileID, Score: health.Score,
 			TCPQualified: tcpQualified, UDPQualified: udpQualified,
-			ReserveEligible: reserveEligible,
-			ActiveEligible:  health.ActiveSuccess && health.ActiveCurrent,
+			ReserveEligible:  reserveEligible,
+			ActiveEligible:   health.ActiveSuccess && health.ActiveCurrent,
+			ActiveObservedAt: health.ActiveObservedAt, ActiveSuccess: health.ActiveSuccess, ActiveCurrent: health.ActiveCurrent,
 			ActiveFresh: engine.reserveActiveObservationFresh(
 				now, health.ActiveObservedAt,
 			),
@@ -169,6 +183,9 @@ func (engine *Engine) routeCandidateSnapshot(ctx context.Context, now time.Time,
 			),
 		}
 		result.allByID[candidate.ID] = routeCandidate
+		if protocol == scheduler.ProtocolTor && health.Available && tcpQualified && !health.ActiveHardFailure && (!hasProbe || probe.Status == store.CandidateQualified && !probe.Stale && !probe.Draining) && candidate.Lifecycle == store.CandidateLifecycleActive {
+			result.onionCandidates = append(result.onionCandidates, routeCandidate)
+		}
 		placementEligible := false
 		if health.Available && (!engine.disallowRUEgress || !sources.IsRussianEgress(candidate.Label, result.payloadByCandidate[candidate.ID])) {
 			if len(probeByID) == 0 {
@@ -194,6 +211,21 @@ func (engine *Engine) routeCandidateSnapshot(ctx context.Context, now time.Time,
 func snapshotDecisionTime(at, started time.Time) time.Time { return at.Add(time.Since(started)) }
 
 func (engine *Engine) ActiveTargets(
+	ctx context.Context,
+	now time.Time,
+) ([]ActiveTarget, error) {
+	targets, err := engine.ordinaryActiveTargets(ctx, now)
+	if err != nil {
+		return nil, err
+	}
+	state, err := engine.store.LoadPlanState(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return appendOnionActiveTargets(ctx, engine.store, state.AppliedPlan, targets)
+}
+
+func (engine *Engine) ordinaryActiveTargets(
 	ctx context.Context,
 	now time.Time,
 ) ([]ActiveTarget, error) {

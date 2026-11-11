@@ -85,7 +85,20 @@ Active monitoring continuously evaluates the real user experience:
 
 ---
 
+## New in 1.2.0
+
+- **Access .onion websites through WireGuard.** Enable access per client; the portal includes browser setup instructions. [Set up .onion access](onion.md).
+- **Tor quality checks for .onion.** Hydrat probes websites through running profiles, compares failures against an independent profile, and selects a primary route and reserve. It continues exploring candidates without moving clients away from a healthy primary.
+- **Optional I2P access.** Open `.i2p` websites through a separate client container without relaying third-party transit traffic. Features include idle sleep, manual warmup, an address book with 71 built-in names, and `hosts.txt` imports and subscriptions. [Install I2P](i2p.md).
+- **Updated portal.** A compact overview, clearer client lists, consistent forms and mobile navigation. Tor/I2P guides are under System.
+
+Both access features are disabled by default. They require Hydrat gateway DNS; browser DNS can bypass it. Opening a site after warmup or a profile change may take time. Disabling transit does not hide Tor/I2P usage from the network, and a regular browser retains cookies and its fingerprint.
+
+---
+
 ## Interface
+
+All screenshots use demonstration data. Client names, subscriptions and routes do not come from production.
 
 The administration portal is available inside the VPN at `http://10.44.0.1/`. On the host, Compose publishes it only on `127.0.0.1:8088` by default. Use WireGuard or an authenticated HTTPS reverse proxy for external access. Never expose the portal directly as `0.0.0.0:8088`.
 
@@ -115,6 +128,17 @@ Inspect server test results, quality scores, success streaks, QoE state, TTFB, a
 
 <p align="center">
   <img src="../../assets/candidates.png" alt="Candidates and tournament table" width="900" />
+</p>
+
+### 5. System and mobile portal
+
+Manage Tor/I2P and routing under System. On phones, the main sections are accessible through bottom navigation.
+
+<p align="center">
+  <img src="../../assets/system.png" alt="Hydrat system settings" width="900" />
+</p>
+<p align="center">
+  <img src="../../assets/mobile.png" alt="Hydrat mobile portal" width="320" />
 </p>
 
 ---
@@ -166,13 +190,13 @@ HYDRAT_ADMIN_PASSWORD=choose_a_strong_password
 
 ### Step 3. Start Hydrat
 
-By default, Hydrat pulls and runs the official prebuilt public image `ghcr.io/only-hydrat/hydrat:1.1.0`:
+By default, Hydrat pulls and runs the official prebuilt public image `ghcr.io/only-hydrat/hydrat:1.2.0`:
 
 ```bash
 docker compose up -d
 ```
 
-> **Note:** you can override the image and version using `HYDRAT_IMAGE` in `.env` (e.g. `HYDRAT_IMAGE=ghcr.io/only-hydrat/hydrat:1.1.0`).
+> **Note:** you can override the image and version using `HYDRAT_IMAGE` in `.env` (e.g. `HYDRAT_IMAGE=ghcr.io/only-hydrat/hydrat:1.2.0`).
 
 ### Build from source (development)
 

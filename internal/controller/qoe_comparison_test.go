@@ -35,13 +35,13 @@ func TestQoEPeerConfirmsOnlyIndependentFreshServiceEvidence(t *testing.T) {
 			control.ApplicationChecks = []qoe.HTTPCheck{{Service: "telegram", Path: "route", Code: "ok", OK: test.pass}}
 			agent := &recordingQoEAgent{customResponse: true, response: agentapi.ProbeResponse{Success: true, QoE: &control}}
 			monitor := &QoEMonitor{Store: database, Agent: agent}
-			if err := monitor.probe(context.Background(), at, monitor.clockNow(), candidates["peer"]); err != nil {
+			if err := monitor.probe(context.Background(), at, monitor.clockNow(), qoeProbeJob{candidate: candidates["peer"]}); err != nil {
 				t.Fatal(err)
 			}
 			failed := qoe.Observation{Infrastructure: true, UnconfirmedHTTP: true, ComparisonPolicy: "same-policy", ErrorCode: qoe.ReasonApplicationGates, ApplicationChecks: []qoe.HTTPCheck{{Service: "telegram", Path: "route", Code: "timeout"}}}
 			agent.response = agentapi.ProbeResponse{FailureClass: agentapi.FailureInfrastructure, QoE: &failed}
 			probeAt := at.Add(test.age)
-			if err := monitor.probe(context.Background(), probeAt, monitor.clockNow(), candidates["target"]); err != nil {
+			if err := monitor.probe(context.Background(), probeAt, monitor.clockNow(), qoeProbeJob{candidate: candidates["target"]}); err != nil {
 				t.Fatal(err)
 			}
 			samples, err := database.ListCandidateQoESamples(context.Background(), candidates["target"].ID, 20)
@@ -67,7 +67,7 @@ func TestQoEComparisonDoesNotRetroactivelyApplyOrReuseFailedControl(t *testing.T
 		if observation.Infrastructure {
 			agent.response.FailureClass = agentapi.FailureInfrastructure
 		}
-		if err := monitor.probe(context.Background(), at, monitor.clockNow(), candidates[id]); err != nil {
+		if err := monitor.probe(context.Background(), at, monitor.clockNow(), qoeProbeJob{candidate: candidates[id]}); err != nil {
 			t.Fatal(err)
 		}
 		at = at.Add(time.Second)
@@ -184,12 +184,12 @@ func TestQoENativeTelegramPeerEvidenceSurvivesSafeProjection(t *testing.T) {
 				good.ApplicationChecks = []qoe.HTTPCheck{{Service: peerService, Path: "route", Code: "ok", OK: true}}
 				agent := &recordingQoEAgent{customResponse: true, response: agentapi.ProbeResponse{Success: true, QoE: &good}}
 				monitor := &QoEMonitor{Store: database, Agent: agent}
-				if err := monitor.probe(context.Background(), at, monitor.clockNow(), candidates["peer"]); err != nil {
+				if err := monitor.probe(context.Background(), at, monitor.clockNow(), qoeProbeJob{candidate: candidates["peer"]}); err != nil {
 					t.Fatal(err)
 				}
 				bad := qoe.Observation{Infrastructure: true, UnconfirmedHTTP: true, ComparisonPolicy: "native-policy", ErrorCode: qoe.ReasonApplicationGates, ApplicationChecks: []qoe.HTTPCheck{{Service: service, Path: "route", Code: "timeout"}}}
 				agent.response = agentapi.ProbeResponse{FailureClass: agentapi.FailureInfrastructure, QoE: &bad}
-				if err := monitor.probe(context.Background(), at.Add(time.Second), monitor.clockNow(), candidates["target"]); err != nil {
+				if err := monitor.probe(context.Background(), at.Add(time.Second), monitor.clockNow(), qoeProbeJob{candidate: candidates["target"]}); err != nil {
 					t.Fatal(err)
 				}
 				want := 0
@@ -200,6 +200,18 @@ func TestQoENativeTelegramPeerEvidenceSurvivesSafeProjection(t *testing.T) {
 					t.Fatalf("negative samples=%d want=%d", got, want)
 				}
 			})
+		}
+	}
+}
+
+func TestOnionComparisonRequiresSameServiceSuccess(t *testing.T) {
+	target := qoe.Observation{ErrorCode: qoe.ReasonApplicationGates, ComparisonPolicy: qoe.OnionComparisonPolicy, ApplicationChecks: []qoe.HTTPCheck{{Service: "onion_search", Path: "route", Code: "timeout"}}}
+	for _, tt := range []struct {
+		service  string
+		ok, want bool
+	}{{"onion_search", true, true}, {"onion_search", false, false}, {"onion_project", true, false}, {"youtube", true, false}} {
+		if got := confirmsHTTPFailure(target, []qoe.HTTPCheck{{Service: tt.service, Path: "route", OK: tt.ok}}); got != tt.want {
+			t.Fatalf("peer=%+v confirmed=%v", tt, got)
 		}
 	}
 }

@@ -567,7 +567,9 @@ func TestDashboardAssetsExposeQoE(t *testing.T) {
 	handler := New(ServerConfig{Store: testStore(t), AdminPassword: "admin"})
 	for path, hooks := range map[string][]string{
 		"/": {
-			"VLESS working", "VLESS domains", "Tor candidates", "Warm Tor",
+			"Маршруты VLESS", "Группы VLESS", "Кандидаты Tor", "Готовые Tor",
+			`data-stat="vless-working"`, `data-stat="vless-domains"`,
+			`data-stat="tor-candidates"`, `data-stat="tor-warm"`,
 		},
 		"/assets/app.js": {
 			"candidate.qoe", "QoE ${qoeText}", "system.qoe_statuses",

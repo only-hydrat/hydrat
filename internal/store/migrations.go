@@ -215,7 +215,13 @@ func (store *Store) initialize(ctx context.Context) error {
 	if err := store.migrateRoutingEvidence(ctx); err != nil {
 		return err
 	}
-	return store.migrateRouteRecovery(ctx)
+	if err := store.migrateRouteRecovery(ctx); err != nil {
+		return err
+	}
+	if err := store.migrateOnionPermission(ctx); err != nil {
+		return err
+	}
+	return store.migrateOnionQoE(ctx)
 }
 
 func (store *Store) migrateRoutingEvidence(ctx context.Context) error {

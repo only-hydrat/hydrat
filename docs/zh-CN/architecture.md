@@ -21,7 +21,7 @@ Agent 会持久化已应用计划。重启后，它等待 Xray 就绪，对保�
 
 TCP 与 UDP 分配彼此独立。存在通过 UDP 验证的 VLESS 时，调度器会尽量同时用于 TCP 与 UDP。TCP 可以使用 VLESS 或已预热的单网桥 Tor 配置；UDP 只能使用已验证的 VLESS。紧急替换时，Tor 与 VLESS 一同参与 TCP 候选池，并按故障域、负载和评分成为替代路由；常规主路由仍优先 VLESS。
 
-识别出的 `.ru`、`.su`、`.xn--p1ai` 域名以及 `direct_domains` 中的地址会直连。启用 `routing.geo_rules.enabled: true` 后，GeoRules 使用定期更新的 GeoSite 和 GeoIP 数据库（默认每 24 小时更新 `russia-blocked-geosite` 与 `russia-blocked-geoip`）：`geosite:category-ru` 和 `geoip:ru` 走 `direct`，`geosite:russia-blocked` 与 `geoip:russia-blocked` 强制代理。`routing.disallow_ru_egress: true` 会在预探测阶段排除俄罗斯境内的出口节点；状态保存到配置和 `routing.json`。未知流量继续走代理，无合格路由时故障关闭。当前不支持 IPv6、NaiveProxy、onion 路由和 core 自动更新。
+识别出的 `.ru`、`.su`、`.xn--p1ai` 域名以及 `direct_domains` 中的地址会直连。启用 `routing.geo_rules.enabled: true` 后，GeoRules 使用定期更新的 GeoSite 和 GeoIP 数据库（默认每 24 小时更新 `russia-blocked-geosite` 与 `russia-blocked-geoip`）：`geosite:category-ru` 和 `geoip:ru` 走 `direct`，`geosite:russia-blocked` 与 `geoip:russia-blocked` 强制代理。`routing.disallow_ru_egress: true` 会在预探测阶段排除俄罗斯境内的出口节点；状态保存到配置和 `routing.json`。未知流量继续走代理，无合格路由时故障关闭。当前不支持 IPv6、NaiveProxy 和 core 自动更新。
 
 来源通过管理面板维护。混合输入预览接受 VLESS 链接、VLESS 订阅 URL、Tor 网桥行和网桥列表 URL。`obfs4` 与 `webtunnel` 可以省略可选的 `Bridge` 前缀；解析器以 `Bridge <原始行>` 的规范形式保存。未知传输、无效地址和指纹仍会判定为无效。
 
@@ -131,3 +131,9 @@ TCP 与 UDP 独立表示。TCP 可使用 VLESS 或 warm Tor，但 Tor 仅提供 
 Tor 预留 3 个 warm 配置和 1 个 explorer。第一个在 fast success 后获得两次成功 full probe 的网桥会成为 eligible，转入 warm 配置并立即触发 placement。其他网桥继续在后台串行 discovery，不占用或替换 warm 配置。Working pool 已满时仍使用共同 promotion threshold：挑战者必须比最差 working candidate 至少高 15%。
 
 目标配置：2 vCPU、1 GiB 内存、最多 50 个 WireGuard 客户端，其中约 10 个同时活跃。VLESS probe Xray 使用互不重叠的范围：4 个 full、8 个 fast、4 个 active 和 4 个 QoE slot。
+
+[Onion 访问](onion.md)使用独立 Tor 路由和本地虚拟地址映射表。
+
+## I2P
+
+可选 i2pd 与普通路由池隔离。已应用计划中的权限控制 DNS 和独立 SOCKS 桥接；撤销权限只关闭该客户端的 I2P 连接。私有管理进程按需启动路由器，并在空闲后停止它，无需访问 Docker socket。[管理、地址簿与限制](i2p.md)。

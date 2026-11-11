@@ -37,3 +37,14 @@ jobs:
 
       - name: Build hydrat
         run: go build -v ./cmd/hydrat
+
+      - name: Verify optional I2P process in an isolated container
+        run: |
+          docker build -f Dockerfile.i2p -t hydrat-i2p:ci .
+          CGO_ENABLED=0 go test -c -o "$RUNNER_TEMP/i2p-test" ./internal/i2p
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --tmpfs /tmp:size=32m,mode=1777,exec \
+            -v "$RUNNER_TEMP/i2p-test:/i2p-test:ro" \
+            -e HYDRAT_I2PD_BINARY=/usr/local/bin/i2pd \
+            --entrypoint /i2p-test hydrat-i2p:ci \
+            -test.run '^TestRealI2PProcessIsClientOnlyAndStops$' -test.v -test.timeout 40s

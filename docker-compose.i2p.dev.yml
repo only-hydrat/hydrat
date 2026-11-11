@@ -1,0 +1,6 @@
+services:
+  i2pd:
+    image: hydrat-i2p:dev
+    build:
+      context: .
+      dockerfile: Dockerfile.i2p

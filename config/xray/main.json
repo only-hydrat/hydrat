@@ -7,6 +7,7 @@
   },
   "stats": {},
   "policy": {
+    "levels": {"19819": {"handshake": 300}},
     "system": {"statsInboundUplink": true, "statsInboundDownlink": true}
   },
   "inbounds": [
@@ -46,6 +47,8 @@
     "domainStrategy": "AsIs",
     "rules": [
       {"type": "field", "ruleTag": "hydrat-api", "inboundTag": ["api"], "outboundTag": "api"},
+      {"type": "field", "ruleTag": "hydrat-onion-block", "ip": ["198.18.0.0/15"], "outboundTag": "block"},
+      {"type": "field", "ruleTag": "hydrat-onion-domain-block", "domain": ["domain:onion", "domain:i2p"], "outboundTag": "block"},
       {"type": "field", "ruleTag": "hydrat-direct-ru", "domain": ["regexp:.*\\.ru$"], "outboundTag": "direct"},
       {"type": "field", "ruleTag": "hydrat-fail-closed", "network": "tcp,udp", "outboundTag": "block"}
     ]

@@ -156,3 +156,27 @@ func TestDialerNegotiatesAuthenticatedDomainConnect(t *testing.T) {
 		t.Fatalf("target=%s", got)
 	}
 }
+
+func TestOptionalLongHandshakeAllowsSlowI2PDestinationLookup(t *testing.T) {
+	client, server := net.Pipe()
+	defer server.Close()
+	go func() {
+		defer server.Close()
+		var hello [3]byte
+		io.ReadFull(server, hello[:])
+		server.Write([]byte{5, 0})
+		var req [10]byte
+		io.ReadFull(server, req[:])
+		time.Sleep(6 * time.Second)
+		server.Write([]byte{5, 0, 0, 1, 127, 0, 0, 1, 0, 80})
+		io.Copy(io.Discard, server)
+	}()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	dialer := Dialer{ProxyAddress: "127.0.0.1:4447", HandshakeTimeout: 9 * time.Second, Dial: func(context.Context, string, string) (net.Conn, error) { return client, nil }}
+	c, err := dialer.DialContext(ctx, "tcp", "198.19.0.1:80")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Close()
+}

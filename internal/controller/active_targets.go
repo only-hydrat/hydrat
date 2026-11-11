@@ -191,6 +191,19 @@ func (monitor *ActiveMonitor) reconcileAppliedTargetGeneration(
 	if err := monitor.validateActiveTargets(targets); err != nil {
 		return activeTargetSnapshot{}, err
 	}
+	// A cached ordinary target plan can survive an onion-only generation
+	// change. Include newly bound onion profiles before probing that snapshot.
+	latest, err := monitor.Store.LoadPlanState(ctx)
+	if err != nil {
+		return activeTargetSnapshot{}, err
+	}
+	if latest.AppliedGeneration != generation {
+		return activeTargetSnapshot{}, store.ErrCandidateInventoryChanged
+	}
+	targets, err = appendOnionActiveTargets(ctx, monitor.Store, latest.AppliedPlan, targets)
+	if err != nil {
+		return activeTargetSnapshot{}, err
+	}
 	reconciled := activeTargetSnapshot{
 		targets: targets, appliedGeneration: generation,
 	}
@@ -346,4 +359,3 @@ func mergeActiveTargetRole(current, incoming ActiveTargetRole) ActiveTargetRole 
 	}
 	return current
 }
-

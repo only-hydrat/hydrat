@@ -20,6 +20,7 @@ type qoeComparison struct {
 	policy     string
 	checks     []qoe.HTTPCheck
 	version    uint64
+	instance   string
 }
 
 // Unknown identities are not independent controls. In particular, two labels
@@ -30,19 +31,30 @@ func independentQoERoutes(a, b store.Candidate) bool {
 		a.FailureDomain != "" && b.FailureDomain != "" && a.FailureDomain != b.FailureDomain
 }
 
-func (monitor *QoEMonitor) forgetComparison(id string) {
+func comparisonKey(id, policy string) string {
+	if policy == qoe.OnionComparisonPolicy {
+		return id + "\x00onion"
+	}
+	return id
+}
+
+func (monitor *QoEMonitor) forgetComparison(id string, policy ...string) {
+	if len(policy) > 0 {
+		id = comparisonKey(id, policy[0])
+	}
 	monitor.mu.Lock()
 	delete(monitor.comparisons, id)
 	monitor.mu.Unlock()
 }
 
-func (monitor *QoEMonitor) rememberComparison(candidate store.Candidate, generation int64, observation qoe.Observation, at time.Time) {
+func (monitor *QoEMonitor) rememberComparison(candidate store.Candidate, generation int64, observation qoe.Observation, at time.Time, instance ...string) {
 	monitor.mu.Lock()
 	defer monitor.mu.Unlock()
+	key := comparisonKey(candidate.ID, observation.ComparisonPolicy)
 	if monitor.comparisons == nil {
 		monitor.comparisons = make(map[string]qoeComparison)
 	}
-	delete(monitor.comparisons, candidate.ID)
+	delete(monitor.comparisons, key)
 	if observation.ComparisonPolicy == "" || len(observation.ComparisonPolicy) > 64 || len(observation.ApplicationChecks) == 0 {
 		return
 	}
@@ -63,8 +75,13 @@ func (monitor *QoEMonitor) rememberComparison(candidate store.Candidate, generat
 		}
 	}
 	monitor.comparisonVersion++
-	monitor.comparisons[candidate.ID] = qoeComparison{candidate: candidate, generation: generation, at: at, policy: observation.ComparisonPolicy, checks: checks[:min(16, len(checks))], version: monitor.comparisonVersion}
-	if observation.Success {
+	monitor.comparisons[key] = qoeComparison{candidate: candidate, generation: generation, at: at, policy: observation.ComparisonPolicy, checks: checks[:min(16, len(checks))], version: monitor.comparisonVersion}
+	if len(instance) > 0 {
+		entry := monitor.comparisons[key]
+		entry.instance = instance[0]
+		monitor.comparisons[key] = entry
+	}
+	if observation.Success && observation.ComparisonPolicy != qoe.OnionComparisonPolicy {
 		delete(monitor.controlRequests, candidate.ID)
 	}
 }
@@ -105,6 +122,14 @@ func confirmsHTTPFailure(target qoe.Observation, checks []qoe.HTTPCheck) bool {
 	if target.ErrorCode != qoe.ReasonApplicationGates {
 		return routeFailure("qoe_endpoint") && peer["qoe_endpoint"]
 	}
+	if target.ComparisonPolicy == qoe.OnionComparisonPolicy {
+		for _, service := range []string{"onion_search", "onion_project"} {
+			if routeFailure(service) && peer[service] {
+				return true
+			}
+		}
+		return false
+	}
 	for _, service := range []string{"youtube", "telegram", "telegram_obfuscated", "telegram_padded"} {
 		if routeFailure(service) && peer[service] {
 			return true
@@ -118,13 +143,20 @@ func confirmsHTTPFailure(target qoe.Observation, checks []qoe.HTTPCheck) bool {
 }
 
 func (monitor *QoEMonitor) compareHTTPFailure(ctx context.Context, candidate store.Candidate, observation qoe.Observation, now time.Time) (bool, []qoe.HTTPCheck, error) {
+	onionScope := observation.ComparisonPolicy == qoe.OnionComparisonPolicy
+	maxAge := qoeComparisonMaxAge
+	// Four serial onion admissions can span four ten-second worker sweeps.
+	// Keep ordinary freshness unchanged; process and failure fences still apply.
+	if onionScope {
+		maxAge = time.Minute
+	}
 	if !comparableHTTPFailure(observation) {
 		return false, nil, nil
 	}
 	monitor.mu.Lock()
 	entries := make([]qoeComparison, 0, len(monitor.comparisons))
 	for _, entry := range monitor.comparisons {
-		if entry.policy == observation.ComparisonPolicy && !entry.at.After(now) && now.Sub(entry.at) <= qoeComparisonMaxAge && independentQoERoutes(candidate, entry.candidate) {
+		if entry.policy == observation.ComparisonPolicy && !entry.at.After(now) && now.Sub(entry.at) <= maxAge && (independentQoERoutes(candidate, entry.candidate) || onionScope && candidate.Kind == sources.KindTorBridge && entry.candidate.Kind == sources.KindTorBridge && candidate.ID != entry.candidate.ID && candidate.Fingerprint != entry.candidate.Fingerprint) {
 			entries = append(entries, entry)
 		}
 	}
@@ -142,6 +174,9 @@ func (monitor *QoEMonitor) compareHTTPFailure(ctx context.Context, candidate sto
 	for _, entry := range entries {
 		ids = append(ids, entry.candidate.ID)
 	}
+	if onionScope {
+		ids = append(ids, candidate.ID)
+	}
 	snapshot, err := monitor.Store.LoadRoutingReferencesSnapshot(ctx, ids)
 	if err != nil {
 		return false, nil, err
@@ -155,22 +190,34 @@ func (monitor *QoEMonitor) compareHTTPFailure(ctx context.Context, candidate sto
 	for _, entry := range entries {
 		row, exists := current[entry.candidate.ID]
 		if !exists || row.Candidate.Fingerprint != entry.candidate.Fingerprint || row.Candidate.RouteKey != entry.candidate.RouteKey || row.Candidate.FailureDomain != entry.candidate.FailureDomain || row.FailureGeneration != entry.generation ||
-			!row.Health.Available || row.Health.ActiveHardFailure || !row.Health.TCPQualified || !row.HasProbe || row.Probe.Status != store.CandidateQualified || row.Probe.Stale || !row.Probe.InWorkingPool || row.Probe.Draining || row.QoE.Status == qoe.StatusDegraded || row.FailureDomain.OpenUntil.After(now) {
+			!row.Health.Available || row.Health.ActiveHardFailure || !row.Health.TCPQualified || !row.HasProbe || row.Probe.Status != store.CandidateQualified || row.Probe.Stale || (observation.ComparisonPolicy != qoe.OnionComparisonPolicy && (!row.Probe.InWorkingPool || row.QoE.Status == qoe.StatusDegraded)) || row.Probe.Draining || row.FailureDomain.OpenUntil.After(now) {
 			continue
 		}
-		if row.Candidate.Kind == sources.KindTorBridge && !monitor.warmQoEControl(row.Candidate.ID) {
+		if onionScope {
+			target, exists := current[candidate.ID]
+			if !exists || target.Candidate.Fingerprint != candidate.Fingerprint || !sources.IndependentTorBridges(target.Payload, row.Payload) {
+				continue
+			}
+			if !monitor.onionInstanceCurrent(row.Candidate.ID, entry.instance) {
+				continue
+			}
+		} else if row.Candidate.Kind == sources.KindTorBridge && !monitor.warmQoEControl(row.Candidate.ID) {
 			continue
 		}
 		independent := true
 		for _, other := range selected {
-			independent = independent && independentQoERoutes(row.Candidate, other)
+			if onionScope {
+				independent = independent && sources.IndependentTorBridges(row.Payload, current[other.ID].Payload)
+			} else {
+				independent = independent && independentQoERoutes(row.Candidate, other)
+			}
 		}
 		if !independent {
 			continue
 		}
 		// Another worker may have replaced this control during the DB read.
 		monitor.mu.Lock()
-		latest, exists := monitor.comparisons[entry.candidate.ID]
+		latest, exists := monitor.comparisons[comparisonKey(entry.candidate.ID, entry.policy)]
 		stillCurrent := exists && latest.version == entry.version
 		monitor.mu.Unlock()
 		if !stillCurrent {

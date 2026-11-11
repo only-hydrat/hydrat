@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Git tag to build and publish (e.g. v1.1.0)'
+        description: 'Git tag to build and publish (e.g. v1.2.0)'
         required: true
-        default: 'v1.1.0'
+        default: 'v1.2.0'
         type: string
 
 permissions:
@@ -75,4 +75,20 @@ jobs:
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.description=Hydrat anti-censorship routing gateway and controller
             org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.version=${{ steps.resolve-tag.outputs.version }}
+
+      - name: Build and push optional I2P image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.i2p
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.image-name.outputs.name }}:${{ steps.resolve-tag.outputs.version }}-i2p
+            ${{ steps.image-name.outputs.name }}:${{ steps.resolve-tag.outputs.tag }}-i2p
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=Hydrat optional I2P client without third-party transit
+            org.opencontainers.image.licenses=MIT AND BSD-3-Clause
             org.opencontainers.image.version=${{ steps.resolve-tag.outputs.version }}

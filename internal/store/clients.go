@@ -14,6 +14,8 @@ type ClientRecord struct {
 	Address         string `json:"address"`
 	PublicKey       string `json:"public_key"`
 	Paused          bool   `json:"paused"`
+	I2PEnabled      bool   `json:"i2p_enabled"`
+	OnionEnabled    bool   `json:"onion_enabled"`
 	CreatedAt       int64  `json:"created_at"`
 	UpdatedAt       int64  `json:"updated_at"`
 	LastTrafficAt   *int64 `json:"last_traffic_at,omitempty"`
@@ -67,7 +69,7 @@ func (store *Store) PutClient(ctx context.Context, client ClientRecord, wireGuar
 
 func (store *Store) ListClients(ctx context.Context) ([]ClientRecord, error) {
 	rows, err := store.db.QueryContext(ctx, `
-        SELECT id, name, address, public_key, paused, created_at, updated_at, last_traffic_at, rx_bytes, tx_bytes, latest_handshake
+        SELECT id, name, address, public_key, paused, created_at, updated_at, last_traffic_at, rx_bytes, tx_bytes, latest_handshake, onion_enabled, i2p_enabled
         FROM clients ORDER BY address, id
     `)
 	if err != nil {
@@ -78,7 +80,7 @@ func (store *Store) ListClients(ctx context.Context) ([]ClientRecord, error) {
 	for rows.Next() {
 		var client ClientRecord
 		if err := rows.Scan(&client.ID, &client.Name, &client.Address, &client.PublicKey, &client.Paused,
-			&client.CreatedAt, &client.UpdatedAt, &client.LastTrafficAt, &client.RXBytes, &client.TXBytes, &client.LatestHandshake); err != nil {
+			&client.CreatedAt, &client.UpdatedAt, &client.LastTrafficAt, &client.RXBytes, &client.TXBytes, &client.LatestHandshake, &client.OnionEnabled, &client.I2PEnabled); err != nil {
 			return nil, err
 		}
 		result = append(result, client)
@@ -106,8 +108,25 @@ func (store *Store) UpdateClient(ctx context.Context, id, name string, paused bo
 	return requireAffected(result, "client")
 }
 
+// UpdateClientNetworkOptions changes permissions atomically with other client options.
+func (store *Store) UpdateClientNetworkOptions(ctx context.Context, id, name string, paused bool, onion, i2p *bool) error {
+	result, err := store.db.ExecContext(ctx, `UPDATE clients SET name=?,paused=?,onion_enabled=COALESCE(?,onion_enabled),i2p_enabled=COALESCE(?,i2p_enabled),updated_at=? WHERE id=?`, name, paused, onion, i2p, time.Now().Unix(), id)
+	if err != nil {
+		return err
+	}
+	return requireAffected(result, "client")
+}
+
 func (store *Store) DeleteClient(ctx context.Context, id string) error {
 	result, err := store.db.ExecContext(ctx, `DELETE FROM clients WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	return requireAffected(result, "client")
+}
+
+func (store *Store) SetOnionEnabled(ctx context.Context, id string, enabled bool) error {
+	result, err := store.db.ExecContext(ctx, `UPDATE clients SET onion_enabled=?, updated_at=? WHERE id=?`, enabled, time.Now().Unix(), id)
 	if err != nil {
 		return err
 	}
@@ -120,6 +139,14 @@ func (store *Store) RecordActivity(ctx context.Context, id string, at time.Time,
           last_traffic_at=CASE WHEN activity_seen=1 AND (rx_bytes != ? OR tx_bytes != ?) THEN ? ELSE last_traffic_at END,
           activity_seen=1, rx_bytes=?, tx_bytes=?, updated_at=? WHERE id=?
     `, rxBytes, txBytes, at.Unix(), rxBytes, txBytes, time.Now().Unix(), id)
+	if err != nil {
+		return err
+	}
+	return requireAffected(result, "client")
+}
+
+func (store *Store) SetI2PEnabled(ctx context.Context, id string, enabled bool) error {
+	result, err := store.db.ExecContext(ctx, `UPDATE clients SET i2p_enabled=?,updated_at=? WHERE id=?`, enabled, time.Now().Unix(), id)
 	if err != nil {
 		return err
 	}

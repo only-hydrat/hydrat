@@ -1,0 +1,22 @@
+FROM debian:12-slim AS i2pd-build
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git g++ make libboost-system-dev libboost-program-options-dev libboost-filesystem-dev libssl-dev zlib1g-dev && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+RUN git init && git remote add origin https://github.com/PurpleI2P/i2pd.git && git fetch --depth 1 origin 635b013a612ff47278ef02acf8580a28e10e26c5 && git checkout --detach FETCH_HEAD && test "$(git rev-parse HEAD)" = 635b013a612ff47278ef02acf8580a28e10e26c5
+RUN make -j2 USE_UPNP=no
+FROM golang:1.26.5-bookworm AS hydrat-build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd ./cmd
+COPY internal ./internal
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /hydrat ./cmd/hydrat
+FROM debian:12-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl libboost-system1.74.0 libboost-program-options1.74.0 libboost-filesystem1.74.0 libssl3 zlib1g && rm -rf /var/lib/apt/lists/*
+COPY --from=i2pd-build /src/i2pd /usr/local/bin/i2pd
+COPY --from=i2pd-build /src/LICENSE /usr/share/doc/i2pd/copyright
+COPY LICENSE /usr/share/doc/hydrat/copyright
+COPY --from=i2pd-build /src/contrib/certificates /usr/local/share/i2pd/certificates
+COPY --from=hydrat-build /hydrat /usr/local/bin/hydrat
+RUN mkdir -p /data/i2p /run/hydrat-i2p && chown -R 10001:10001 /data/i2p /run/hydrat-i2p
+USER 10001:10001
+ENTRYPOINT ["/usr/local/bin/hydrat","i2p-runtime"]

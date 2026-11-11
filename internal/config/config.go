@@ -447,6 +447,9 @@ func (c Config) Validate() error {
 	) {
 		return errors.New("background and active Xray probe SOCKS ranges must be distinct")
 	}
+	if portRangesOverlap(c.Xray.ProbeSocksPortBase, xrayBackgroundProbeSlots, 1053, 1) || portRangesOverlap(c.Xray.ActiveSocksPortBase, c.Probes.ActiveWorkers, 1053, 1) {
+		return errors.New("Xray SOCKS range overlaps internal DNS backend port 1053")
+	}
 	xrayAPIAddresses := []string{
 		c.Xray.APIAddress, c.Xray.ProbeAPIAddress, c.Xray.ActiveAPIAddress,
 	}
@@ -455,6 +458,9 @@ func (c Config) Validate() error {
 		port, err := tcpListenerPort(address)
 		if err != nil {
 			return fmt.Errorf("invalid Xray API address %q: %w", address, err)
+		}
+		if port == 1053 {
+			return errors.New("Xray API overlaps internal DNS backend port 1053")
 		}
 		xrayAPIPorts = append(xrayAPIPorts, port)
 		if portRangesOverlap(c.Xray.ProbeSocksPortBase, xrayBackgroundProbeSlots, port, 1) ||
@@ -655,6 +661,9 @@ func (c Config) Validate() error {
 		{name: "serving", base: c.Tor.SocksPortBase},
 		{name: "probe", base: c.Tor.ProbeSocksPortBase},
 	} {
+		if portRangesOverlap(torRange.base, torProfiles, 1053, 1) {
+			return errors.New("Tor SOCKS range overlaps internal DNS backend port 1053")
+		}
 		if portRangesOverlap(
 			torRange.base, torProfiles,
 			c.Xray.ProbeSocksPortBase, xrayBackgroundProbeSlots,
@@ -675,6 +684,12 @@ func (c Config) Validate() error {
 	}
 	if c.WireGuard.ListenPort <= 0 || c.WireGuard.ListenPort > 65535 {
 		return errors.New("WireGuard listen_port must be between 1 and 65535")
+	}
+	if _, network, err := net.ParseCIDR(c.WireGuard.Network); err == nil {
+		_, onionPool, _ := net.ParseCIDR("198.18.0.0/15")
+		if network.Contains(onionPool.IP) || onionPool.Contains(network.IP) {
+			return errors.New("WireGuard network overlaps reserved onion address pool")
+		}
 	}
 	if err := validateWireGuardDNS(c.WireGuard.Network, c.WireGuard.DNS); err != nil {
 		return err
@@ -870,4 +885,27 @@ func (q QoEConfig) Policy() qoe.Policy {
 		ThroughputRatio:       q.ThroughputRatio,
 		EWMAWeight:            0.1,
 	}
+}
+
+// I2PBridgeConflict disables only the optional bridge when a previously valid
+// configuration uses its port. Ordinary services retain their configured ports.
+func (c Config) I2PBridgeConflict() error {
+	const port = 19447
+	for _, address := range []string{c.Xray.APIAddress, c.Xray.ProbeAPIAddress, c.Xray.ActiveAPIAddress} {
+		p, err := tcpListenerPort(address)
+		if err == nil && p == port {
+			return fmt.Errorf("I2P bridge port %d is used by Xray API", port)
+		}
+	}
+	for _, r := range []struct{ base, count int }{
+		{c.Xray.ProbeSocksPortBase, xrayBackgroundProbeSlots},
+		{c.Xray.ActiveSocksPortBase, c.Probes.ActiveWorkers},
+		{c.Tor.SocksPortBase, c.Tor.WarmProfiles + c.Tor.ExplorerProfiles},
+		{c.Tor.ProbeSocksPortBase, c.Tor.WarmProfiles + c.Tor.ExplorerProfiles},
+	} {
+		if portRangesOverlap(r.base, r.count, port, 1) {
+			return fmt.Errorf("I2P bridge port %d overlaps a configured SOCKS range", port)
+		}
+	}
+	return nil
 }

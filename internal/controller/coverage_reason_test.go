@@ -35,7 +35,7 @@ func TestMissingReserveProofIsNotSearchBudgetExhaustion(t *testing.T) {
 	if !retryActiveCriticalCoverage(err) {
 		t.Fatal("proof wait stopped recovery retries")
 	}
-	if !strings.Contains(err.Error(), "alice:tcp:proof_not_fresh") {
+	if !strings.Contains(err.Error(), "alice:tcp:proof_missing") {
 		t.Fatalf("missing bounded proof-wait detail: %v", err)
 	}
 	candidates[1].ActiveFresh = true
@@ -44,7 +44,7 @@ func TestMissingReserveProofIsNotSearchBudgetExhaustion(t *testing.T) {
 	}
 	candidates[1].CircuitOpen = true
 	err = validateScheduledCriticalCapacity(ctx, selector, now, 16, clients, candidates, result, reserves)
-	if err == nil || !strings.Contains(err.Error(), "alice:tcp:not_admitted") || strings.Contains(err.Error(), "proof_not_fresh") {
+	if err == nil || !strings.Contains(err.Error(), "alice:tcp:not_admitted") || strings.Contains(err.Error(), "proof_") {
 		t.Fatalf("rejected reserve mislabeled as proof wait: %v", err)
 	}
 	delete(reserves, "alice")
@@ -150,5 +150,32 @@ func TestCanonicalProofWaitIsNotSearchExhaustionAndRetainsItsTargets(t *testing.
 		if target.ID == "r" {
 			t.Fatal("failed reserve survived proof-target admission")
 		}
+	}
+}
+
+func TestReserveProofDiagnosticsDistinguishRejection(t *testing.T) {
+	now := time.Unix(1900000000, 0)
+	for _, tc := range []struct {
+		name                              string
+		eligible, fresh, success, current bool
+		at                                time.Time
+		want                              string
+	}{
+		{name: "missing", want: "proof_missing"},
+		{name: "expired", eligible: true, success: true, current: true, at: now.Add(-time.Minute), want: "proof_expired"},
+		{name: "failed", fresh: true, current: true, at: now.Add(-time.Second), want: "proof_failed"},
+		{name: "superseded", fresh: true, success: true, at: now.Add(-time.Second), want: "proof_superseded"},
+		{name: "future", eligible: true, success: true, current: true, at: now.Add(time.Second), want: "proof_future"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			candidates := []scheduler.Candidate{
+				{ID: "p", Protocol: scheduler.ProtocolVLESS, TCPQualified: true, UDPQualified: true, ReserveEligible: true, ActiveEligible: true, ActiveFresh: true},
+				{ID: "r", Protocol: scheduler.ProtocolVLESS, TCPQualified: true, UDPQualified: true, ReserveEligible: true, ActiveEligible: tc.eligible, ActiveFresh: tc.fresh, ActiveObservedAt: tc.at, ActiveSuccess: tc.success, ActiveCurrent: tc.current},
+			}
+			err := validateScheduledCriticalCapacity(context.Background(), scheduler.New(scheduler.PolicyDefaults()), now, 16, []scheduler.Client{{ID: "alice"}}, candidates, scheduler.Result{Assignments: map[string]scheduler.Assignment{"alice": {TCP: "p", UDP: "p"}}}, map[string]scheduler.ReserveSelection{"alice": {TCP: "r", UDP: "r"}})
+			if err == nil || !strings.Contains(err.Error(), "alice:tcp:"+tc.want+":candidate=r:age_ms=") {
+				t.Fatalf("wrong diagnostic: %v", err)
+			}
+		})
 	}
 }

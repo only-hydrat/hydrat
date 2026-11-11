@@ -21,7 +21,7 @@ The agent persists the applied plan. After restart it waits for Xray, performs a
 
 TCP and UDP assignments are independent. When a UDP-qualified VLESS route is available, the scheduler attempts to co-assign it for both protocols. TCP may use VLESS or a warmed single-bridge Tor profile; UDP uses only qualified VLESS. During emergency replacement, Tor participates in the common TCP pool with VLESS and can become the replacement according to failure domain, load, and score. Normal primary placement still prefers VLESS.
 
-Recognized `.ru`, `.su`, and `.xn--p1ai` domains and addresses in `direct_domains` go directly. When `routing.geo_rules.enabled: true`, GeoRules uses periodically refreshed GeoSite and GeoIP databases (`russia-blocked-geosite` and `russia-blocked-geoip`, every 24 hours by default): `geosite:category-ru` and `geoip:ru` go to `direct`, while `geosite:russia-blocked` and `geoip:russia-blocked` are forced through a proxy. During pre-probe filtering, `routing.disallow_ru_egress: true` excludes egress nodes in Russia; the setting is persisted in configuration and `routing.json`. Unknown traffic remains proxied and fails closed when no eligible route exists. IPv6, NaiveProxy, onion routing, and automatic core updates are not supported.
+Recognized `.ru`, `.su`, and `.xn--p1ai` domains and addresses in `direct_domains` go directly. When `routing.geo_rules.enabled: true`, GeoRules uses periodically refreshed GeoSite and GeoIP databases (`russia-blocked-geosite` and `russia-blocked-geoip`, every 24 hours by default): `geosite:category-ru` and `geoip:ru` go to `direct`, while `geosite:russia-blocked` and `geoip:russia-blocked` are forced through a proxy. During pre-probe filtering, `routing.disallow_ru_egress: true` excludes egress nodes in Russia; the setting is persisted in configuration and `routing.json`. Unknown traffic remains proxied and fails closed when no eligible route exists. IPv6, NaiveProxy, and automatic core updates are not supported.
 
 Sources are managed in the administration portal. Mixed-input preview accepts VLESS links, VLESS subscription URLs, Tor bridge lines, and bridge-list URLs. `obfs4` and `webtunnel` bridges may omit the optional `Bridge` prefix; the parser stores them canonically as `Bridge <original line>`. Unknown transports, invalid addresses, and invalid fingerprints remain invalid.
 
@@ -129,3 +129,9 @@ TCP and UDP are represented independently. TCP may use VLESS or warm Tor, but To
 Tor reserves three warm profiles and one explorer. The first bridge that receives two successful full probes after fast success becomes eligible, moves into a warm profile, and immediately triggers placement. Other bridges continue serial discovery in the background without consuming or replacing warm profiles. When the working pool is full, the common promotion threshold remains: a challenger must be at least 15% better than the worst working candidate.
 
 Sizing target: 2 vCPU, 1 GiB RAM, up to 50 WireGuard clients, and about 10 simultaneously active clients. VLESS probe Xray uses non-overlapping ranges: four full, eight fast, four active, and four QoE slots.
+
+[Onion access](onion.md) uses separate Tor routes and a local virtual-address book.
+
+## I2P
+
+Optional i2pd is isolated from the ordinary route pool. Applied-plan permissions govern DNS and a separate SOCKS bridge; revocation closes only the client’s I2P connections. A private supervisor starts the process on demand and stops it after inactivity, without access to the Docker socket. [Management, address book and limits](i2p.md).

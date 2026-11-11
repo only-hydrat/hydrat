@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -24,6 +25,8 @@ import (
 	"github.com/only-hydrat/hydrat/internal/dataplane"
 	"github.com/only-hydrat/hydrat/internal/failoverbudget"
 	"github.com/only-hydrat/hydrat/internal/gateway"
+	"github.com/only-hydrat/hydrat/internal/i2p"
+	"github.com/only-hydrat/hydrat/internal/onion"
 	"github.com/only-hydrat/hydrat/internal/portal"
 	"github.com/only-hydrat/hydrat/internal/probe"
 	"github.com/only-hydrat/hydrat/internal/proberuntime"
@@ -58,6 +61,11 @@ func run() error {
 func runWithServiceLogOpener(openLog serviceLogOpener) (runErr error) {
 	if len(os.Args) < 2 {
 		return errors.New("usage: hydrat <agent|controller|backup|restore>")
+	}
+	if os.Args[1] == "i2p-runtime" {
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+		return i2p.ServeSupervisor(ctx, "/usr/local/bin/i2pd", "/data/i2p", "/run/hydrat-i2p/control.sock")
 	}
 	configPath := os.Getenv("HYDRAT_CONFIG")
 	if configPath == "" {
@@ -278,8 +286,18 @@ func runAgent(ctx context.Context, cfg config.Config) error {
 	xraySupervisors := startXraySupervisors(ctx, mainSupervised, cfg.Xray.Binary, cfg.Xray.MainConfig)
 	defer xraySupervisors.StopAndWait()
 
+	// Failure of optional onion state must not take ordinary DNS/VPN down.
+	onionRuntime, onionErr := onion.NewRuntime(filepath.Join(filepath.Dir(cfg.Paths.AppliedPlan), "onion-mappings.json"))
+	prepareOnion := func(context.Context, torpool.Profile) error { return errors.New("onion address book unavailable") }
+	if onionErr != nil {
+		log.Printf("onion access unavailable: %v", onionErr)
+	} else {
+		defer onionRuntime.Close()
+		prepareOnion = onionRuntime.Prepare
+	}
 	torManager, err := torpool.NewManager(torpool.Config{
 		Binary: cfg.Tor.Binary, LyrebirdBinary: cfg.Tor.LyrebirdBinary, DataDir: cfg.Tor.DataDir,
+		PrepareOnion:  prepareOnion,
 		SocksPortBase: cfg.Tor.SocksPortBase, WarmProfiles: cfg.Tor.WarmProfiles, ExplorerProfiles: cfg.Tor.ExplorerProfiles,
 	}, nil)
 	if err != nil {
@@ -314,6 +332,69 @@ func runAgent(ctx context.Context, cfg config.Config) error {
 	if err != nil {
 		return err
 	}
+	dnsHandler := onion.DNS{Forward: onion.Forward("127.0.0.1:1053")}
+	if onionRuntime != nil {
+		onionRuntime.Policy = reconciler.OnionPolicy
+		onionRuntime.Profiles = torManager.Profiles
+		dnsHandler.Resolve = onionRuntime.Resolve
+		dnsHandler.Allowed = onionRuntime.Allowed
+		dnsHandler.Install = onionRuntime.Install
+	}
+	// Optional I2P keeps its own process, permissions, DNS budget and address book.
+	i2pControl := i2p.ControlClient{Socket: "/run/hydrat-i2p/control.sock"}
+	i2pBook, i2pErr := i2p.OpenBook(filepath.Join(filepath.Dir(cfg.Paths.AppliedPlan), "i2p-book.json"))
+	if i2pErr == nil {
+		i2pErr = i2pBook.SeedDefaultHosts()
+		if i2pErr != nil {
+			i2pBook.Close()
+		}
+	}
+	i2pAvailable := i2pErr == nil && onionRuntime != nil
+	if onionRuntime != nil {
+		for _, value := range onionRuntime.Mappings.Snapshot() {
+			ip, e := netip.ParseAddr(value)
+			if e != nil || i2p.Pool.Contains(ip) {
+				i2pAvailable = false
+			}
+		}
+	}
+	xray.ConfigureI2P(i2pAvailable)
+	var i2pAdmin http.Handler
+	if i2pErr != nil {
+		log.Printf("I2P address book unavailable: %v", i2pErr)
+	} else {
+		defer i2pBook.Close()
+		access := &i2p.Access{Policy: reconciler.OnionPolicy, Available: i2pAvailable, Control: i2pControl}
+		bridge := &i2p.Bridge{Book: i2pBook, Control: i2pControl, Proxy: "i2pd:4447", Grants: access.Grants}
+		dns := i2p.DNS{Book: i2pBook, Allowed: bridge.Allowed, Wake: func(ctx context.Context) error { _, err := i2pControl.Do(ctx, "POST", "/wake", nil); return err }}
+		dnsHandler.I2P = dns.Handle
+		bridgeListener, listenErr := listenI2PBridge(cfg)
+		if listenErr != nil {
+			access.Available = false
+			i2pAvailable = false
+			xray.ConfigureI2P(false)
+			log.Printf("I2P bridge unavailable: %v", listenErr)
+		} else {
+			go func() {
+				if err := bridge.ServeListener(ctx, bridgeListener); err != nil {
+					log.Printf("I2P bridge stopped: %v", err)
+				}
+			}()
+		}
+		go access.Watch(ctx)
+		admin, err := i2p.NewAdmin(i2pBook, i2pControl, filepath.Join(filepath.Dir(cfg.Paths.AppliedPlan), "i2p-settings.json"), "i2pd:4447", i2pAvailable)
+		if err != nil {
+			log.Printf("I2P settings unavailable: %v", err)
+		} else {
+			i2pAdmin = admin
+			go admin.Run(ctx)
+		}
+	}
+	dnsListener, err := onion.Listen(ctx, net.JoinHostPort(cfg.WireGuard.DNS, "53"), dnsHandler)
+	if err != nil {
+		return fmt.Errorf("client DNS listener: %w", err)
+	}
+	defer dnsListener.Close()
 	geoUpdater, err := gateway.NewGeoUpdater(gateway.GeoUpdaterConfig{
 		Enabled:        cfg.Routing.GeoRules.Enabled,
 		AutoUpdate:     cfg.Routing.GeoRules.AutoUpdate,
@@ -329,7 +410,7 @@ func runAgent(ctx context.Context, cfg config.Config) error {
 	}
 	defer geoUpdater.Close()
 	mainEndpointReadiness := tcpReadiness(
-		cfg.Xray.APIAddress, net.JoinHostPort(cfg.WireGuard.DNS, "53"),
+		cfg.Xray.APIAddress, net.JoinHostPort(cfg.WireGuard.DNS, "53"), "127.0.0.1:1053",
 	)
 	mainXrayReadiness := func(ctx context.Context) error {
 		if err := mainEndpointReadiness(ctx); err != nil {
@@ -388,6 +469,14 @@ func runAgent(ctx context.Context, cfg config.Config) error {
 			if err != nil {
 				return err
 			}
+			prober.ConfigureOnionQoE(torManager, func() bool {
+				for _, route := range reconciler.OnionPolicy() {
+					if route.OnionEnabled {
+						return true
+					}
+				}
+				return false
+			})
 			criticalActiveProber, err := gateway.NewCriticalActiveProber(
 				activeControl, activeRuntime, cfg.ProbeRuntime.CleanupTimeout,
 				probe.Liveness{ResponseBudget: 25 * time.Millisecond}, torManager,
@@ -436,6 +525,7 @@ func runAgent(ctx context.Context, cfg config.Config) error {
 				agentapi.WithProbeRuntime(probeRuntime),
 				agentapi.WithActiveProbeRuntime(activeRuntime),
 				agentapi.WithGeoManager(geoUpdater),
+				agentapi.WithI2PHandler(i2pAdmin),
 				agentapi.WithProbeRunner(prober), agentapi.WithProbeWorkers(cfg.Probes.FastWorkers, cfg.Probes.FullWorkers, gateway.BackgroundActiveProbeSlots),
 				agentapi.WithCriticalActiveProbeRunner(criticalActiveProber, cfg.Probes.ActiveWorkers),
 				agentapi.WithQoEProbeWorkers(cfg.QoE.Workers),
@@ -663,7 +753,7 @@ func dnsmasqArgs(listenAddress string, resolvers []string) ([]string, error) {
 	}
 	args := []string{
 		"--keep-in-foreground", "--no-resolv", "--no-hosts",
-		"--listen-address=" + listenAddress, "--port=53", "--bind-interfaces",
+		"--listen-address=127.0.0.1", "--port=1053", "--bind-interfaces",
 	}
 	for _, resolver := range resolvers {
 		args = append(args, "--server="+resolver)
@@ -845,6 +935,7 @@ func runController(ctx context.Context, cfg config.Config) error {
 		qualification: &qualification,
 	}
 	handler := portal.New(portal.ServerConfig{
+		I2P:   agent.I2PHandler(),
 		Store: database, Health: agent, AdminPassword: adminPassword, Refresher: refresher, Profiles: torProfiles,
 		ProbeRuntime:        agent,
 		ControllerReadiness: controllerReadiness,
@@ -1183,4 +1274,11 @@ func logSupervisor(name string, err error) {
 	if err != nil && !errors.Is(err, context.Canceled) {
 		log.Printf("%s supervisor stopped: %v", name, err)
 	}
+}
+
+func listenI2PBridge(cfg config.Config) (net.Listener, error) {
+	if err := cfg.I2PBridgeConflict(); err != nil {
+		return nil, err
+	}
+	return net.Listen("tcp4", "127.0.0.1:19447")
 }

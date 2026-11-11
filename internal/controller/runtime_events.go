@@ -140,6 +140,7 @@ func (runtime Runtime) inspectStartupHardFailure(
 func retryablePlacementError(err error) bool {
 	if errors.Is(err, dataplane.ErrRuntimeRecovering) ||
 		errors.Is(err, ErrTorProfileUnavailable) ||
+		errors.Is(err, store.ErrClientInventoryChanged) ||
 		errors.Is(err, store.ErrCandidateInventoryChanged) {
 		return true
 	}

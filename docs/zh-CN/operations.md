@@ -339,7 +339,7 @@ generation、阶段、结果和应用耗时。相同的重复应用失败在一�
 
 就绪原因区分 `reserve_not_ready`、`primary_unusable`、`generation_pending`、`critical_limit`
 以及真正耗尽搜索预算的 `search_budget`。备用验证错误最多输出八条详情：
-`missing`、`proof_not_fresh` 或 `not_admitted`。等待验证证据不会被描述为搜索预算耗尽；
+`missing`、`proof_missing`, `proof_failed`, `proof_superseded`, `proof_expired`, `proof_future` 或 `not_admitted`。等待验证证据不会被描述为搜索预算耗尽；
 没有符合准入条件且已验证的备用路由时，就绪检查仍返回 503。
 
 ## 诊断数据保留
@@ -585,3 +585,7 @@ docker compose ps gateway controller
 ```
 
 旧 gateway 绝不会带着新数据平面的不兼容快照启动。被拒绝版本的快照保存在 `FAILED_APPLIED_PLAN_PATH`，精确的部署前计划在启动前恢复。旧 controller 绝不会在新数据库上启动。Restore 将被替换数据库保存为 `/data/controller/hydrat.db.before-restore-<UTC timestamp>`，而回滚制品仍是记录的 `BACKUP_PATH`。命令仅针对指定服务，不会停止其他 Compose 项目或修改主机 DNS。内嵌配置随精确旧镜像恢复；主机 checkout 不会复制进回滚镜像。启动后还需检查 controller 可见的 Tor 配置、非空 TCP assignments，并通过一次性 WireGuard peer 发起真实请求。回滚有意不调用 `scripts/deploy.sh`：旧镜像可能没有 `/api/ready`，该端点仅为新版本验收所必需。
+
+Onion 访问：[设置、故障排查与地址表备份](onion.md)。SQLite 备份不包含网关映射表。
+
+正在使用的已分配路由出现经确认的可用性故障后，下一次 QoE 检查在上次检查结束 5 秒后执行；若常规间隔更短，则仍使用较短间隔。仍需三次确认。检查成功、路由进入降级状态，或一分钟内没有新的有效故障结果时，恢复原有检查频率。基础设施错误不会延长该时限。空闲客户端和仅吞吐量下降的情况仍使用原有间隔。“系统”分别显示网关/API 健康状态和严格的路由就绪状态；进程健康不代表所有备用路由均可用。

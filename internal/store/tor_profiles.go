@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/only-hydrat/hydrat/internal/qoe"
 	"sort"
+	"time"
 
 	"github.com/only-hydrat/hydrat/internal/sources"
 )
@@ -42,7 +44,6 @@ type TorProfileSetSnapshot struct {
 	InventoryEpoch        int64
 	SemanticDigest        string
 }
-
 
 func (store *Store) LoadTorProfileSetSnapshot(
 	ctx context.Context,
@@ -197,7 +198,6 @@ type retirementRowScanner interface {
 	Scan(...any) error
 }
 
-
 func loadTorProfileSetSnapshotTx(
 	ctx context.Context,
 	tx *sql.Tx,
@@ -207,6 +207,39 @@ func loadTorProfileSetSnapshotTx(
 		Open(string, []byte) ([]byte, error)
 	},
 ) ([]TorProfileCandidate, error) {
+	onionAssigned, err := assignedOnionCandidatesTx(ctx, tx)
+	if err != nil {
+		return nil, err
+	}
+	var onionEnabled bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM clients WHERE onion_enabled=1 AND paused=0)`).Scan(&onionEnabled); err != nil {
+		return nil, err
+	}
+	onionQuality := map[string]OnionQoEState{}
+	if onionEnabled {
+		rows, err := tx.QueryContext(ctx, `SELECT candidate_id,evidence FROM candidate_onion_qoe`)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var id string
+			var raw []byte
+			var state OnionQoEState
+			if err = rows.Scan(&id, &raw); err == nil {
+				err = json.Unmarshal(raw, &state)
+			}
+			if err != nil {
+				rows.Close()
+				return nil, err
+			}
+			onionQuality[id] = state
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
 	requestedActive := candidateIdentityByID(request.Active)
 	requestedDraining := candidateIdentityByID(request.Draining)
 	forced := make(map[string]bool, len(request.ForceCandidateIDs))
@@ -296,8 +329,8 @@ func loadTorProfileSetSnapshotTx(
 		continuity := referenced &&
 			(candidate.Lifecycle == CandidateLifecycleDraining ||
 				!candidate.Enabled || !sourceEnabled)
-		if !forced[candidate.ID] &&
-			!((activeRequested || drainingRequested || persistedPool) &&
+		if !forced[candidate.ID] && !onionAssigned[candidate.ID] &&
+			!((activeRequested || drainingRequested || persistedPool || onionEnabled) &&
 				qualified) &&
 			!continuity {
 			continue
@@ -306,12 +339,32 @@ func loadTorProfileSetSnapshotTx(
 		if err != nil {
 			return nil, fmt.Errorf("decrypt Tor retirement candidate: %w", err)
 		}
+		// Onion quality ranks the same bounded Tor profiles, not ordinary route QoE.
+		// Include qualified bridges beyond the working subset for fair exploration.
+		if onionEnabled {
+			state := onionQuality[candidate.ID].State
+			rank, latency := qoe.OnionRank(state, time.Now())
+			score := 1000000.0 + conservativeScore
+			if rank == 0 {
+				score = 2000000 + 1000/max(latency.Seconds(), 0.05)
+			}
+			if rank == 2 {
+				score = conservativeScore
+			}
+			// Protect a healthy serving pair from process eviction; controller reserve
+			// selection can replace an inferior reserve before its process is retired.
+			if onionAssigned[candidate.ID] && rank != 2 {
+				score += 100000000
+			}
+
+			conservativeScore = score
+		}
 		result = append(result, TorProfileCandidate{
 			Candidate:         candidate,
 			Payload:           string(payload),
 			ConservativeScore: conservativeScore,
-			Assigned:          assigned,
-			Draining: drainingRequested || stateDraining ||
+			Assigned:          assigned || onionAssigned[candidate.ID],
+			Draining: drainingRequested || stateDraining || (onionAssigned[candidate.ID] && !qualified) ||
 				candidate.Lifecycle == CandidateLifecycleDraining ||
 				!candidate.Enabled || !sourceEnabled,
 			Referenced:    referenced,
@@ -385,4 +438,3 @@ func torProfileSemanticDigest(
 	sum := sha256.Sum256(encoded)
 	return hex.EncodeToString(sum[:]), nil
 }
-

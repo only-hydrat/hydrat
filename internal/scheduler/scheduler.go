@@ -31,8 +31,12 @@ type Candidate struct {
 	ReserveEligible bool
 	ActiveEligible  bool
 	ActiveFresh     bool
-	Warm            bool
-	Retiring        bool
+	// Observation metadata is diagnostic only; admission uses the flags above.
+	ActiveObservedAt time.Time
+	ActiveSuccess    bool
+	ActiveCurrent    bool
+	Warm             bool
+	Retiring         bool
 	// ServingOnly can retain an installed primary, but cannot receive new work.
 	ServingOnly   bool
 	FailureDomain string

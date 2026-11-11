@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"testing"
 	"time"
 
@@ -230,7 +231,7 @@ func TestDashboardIsServedWithoutExternalAssets(t *testing.T) {
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte("Hydrat")) || bytes.Contains(response.Body.Bytes(), []byte("https://")) ||
+	if response.Code != http.StatusOK || !bytes.Contains(response.Body.Bytes(), []byte("Hydrat")) || regexp.MustCompile(`(?i)(?:src|srcset)=["']https?://|<link[^>]+href=["']https?://`).Match(response.Body.Bytes()) ||
 		!bytes.Contains(response.Body.Bytes(), []byte(`id="source-input"`)) || !bytes.Contains(response.Body.Bytes(), []byte(`id="admin-clients"`)) {
 		t.Fatalf("dashboard status=%d body=%s", response.Code, response.Body.String())
 	}

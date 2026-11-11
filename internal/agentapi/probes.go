@@ -31,21 +31,24 @@ const (
 )
 
 type ProbeRequest struct {
-	CandidateID string       `json:"candidate_id"`
-	Kind        sources.Kind `json:"kind"`
-	Payload     string       `json:"payload"`
+	Onion           bool         `json:"onion,omitempty"`
+	ProfileInstance string       `json:"profile_instance,omitempty"`
+	CandidateID     string       `json:"candidate_id"`
+	Kind            sources.Kind `json:"kind"`
+	Payload         string       `json:"payload"`
 }
 
 type ProbeResponse struct {
-	Diagnostics  *ProbeDiagnostics  `json:"diagnostics,omitempty"`
-	CandidateID  string             `json:"candidate_id"`
-	Success      bool               `json:"success"`
-	FailureClass FailureClass       `json:"failure_class,omitempty"`
-	ErrorCode    string             `json:"error_code,omitempty"`
-	Metrics      health.Metrics     `json:"metrics"`
-	Evaluation   health.Evaluation  `json:"evaluation"`
-	Observation  health.Observation `json:"observation"`
-	QoE          *qoe.Observation   `json:"qoe,omitempty"`
+	ProfileInstance string             `json:"profile_instance,omitempty"`
+	Diagnostics     *ProbeDiagnostics  `json:"diagnostics,omitempty"`
+	CandidateID     string             `json:"candidate_id"`
+	Success         bool               `json:"success"`
+	FailureClass    FailureClass       `json:"failure_class,omitempty"`
+	ErrorCode       string             `json:"error_code,omitempty"`
+	Metrics         health.Metrics     `json:"metrics"`
+	Evaluation      health.Evaluation  `json:"evaluation"`
+	Observation     health.Observation `json:"observation"`
+	QoE             *qoe.Observation   `json:"qoe,omitempty"`
 }
 
 type ProbeRunner interface {
@@ -149,6 +152,10 @@ func (server *Server) probe(response http.ResponseWriter, request *http.Request,
 	}
 	if err := validateProbeRequest(body); err != nil {
 		writeJSON(response, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if body.Onion && (mode != ProbeModeQoE || body.Kind != sources.KindTorBridge || len(body.ProfileInstance) != 32) {
+		writeJSON(response, http.StatusBadRequest, map[string]string{"error": "invalid onion probe scope"})
 		return
 	}
 	started := time.Now()

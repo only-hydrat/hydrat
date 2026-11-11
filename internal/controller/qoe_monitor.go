@@ -51,19 +51,21 @@ type QoEMonitor struct {
 	runMu sync.Mutex
 	mu    sync.Mutex
 
-	inFlight          map[string]bool
-	lastAttempt       map[string]time.Time
-	lastPrune         time.Time
-	udpSignals        map[string]udpSignalState
-	standbyRotation   int
-	standbySamples    map[string]int
-	standbyExploring  string
-	dispatchCursor    int
-	backgroundCursor  int
-	infraLast         map[string]qoeDiagnosticWindow
-	comparisons       map[string]qoeComparison
-	controlRequests   map[string]time.Time
-	comparisonVersion uint64
+	inFlight           map[string]bool
+	lastAttempt        map[string]time.Time
+	lastPrune          time.Time
+	udpSignals         map[string]udpSignalState
+	standbyRotation    int
+	standbySamples     map[string]int
+	standbyExploring   string
+	dispatchCursor     int
+	backgroundCursor   int
+	infraLast          map[string]qoeDiagnosticWindow
+	comparisons        map[string]qoeComparison
+	controlRequests    map[string]time.Time
+	comparisonVersion  uint64
+	lastOnionReconcile time.Time
+	singleWorkerOnion  bool
 }
 
 type qoeDiagnosticWindow struct {
@@ -78,8 +80,16 @@ type udpSignalState struct {
 }
 
 type qoeProbeJob struct {
-	candidate store.Candidate
-	control   bool
+	candidate     store.Candidate
+	control       bool
+	onionInstance string
+}
+
+func (job qoeProbeJob) key() string {
+	if job.onionInstance != "" {
+		return job.candidate.ID + "\x00onion"
+	}
+	return job.candidate.ID
 }
 
 func (monitor *QoEMonitor) Run(ctx context.Context, now time.Time) error {
@@ -234,6 +244,9 @@ func (monitor *QoEMonitor) Run(ctx context.Context, now time.Time) error {
 		interval := monitor.idleInterval()
 		if active[candidateID] {
 			interval = monitor.activeInterval()
+			if needsFastAvailabilityRecheck(now, qoeByID[candidateID]) {
+				interval = shortestPositiveDuration(interval, 5*time.Second)
+			}
 		}
 		if qoeByID[candidateID].Status == qoe.StatusDegraded {
 			interval = shortestPositiveDuration(interval, monitor.degradedInterval())
@@ -335,6 +348,19 @@ func (monitor *QoEMonitor) Run(ctx context.Context, now time.Time) error {
 		}
 	}
 
+	var onionJob *qoeProbeJob
+	if monitor.workerCount() != 1 || !monitor.singleWorkerOnion {
+		onionJob, err = monitor.selectOnionJob(ctx, now, clients, candidateByID, probeByID, healthByID)
+		if err != nil {
+			return err
+		}
+	}
+	monitor.singleWorkerOnion = onionJob != nil
+	// Onion shares the same bounded worker batch. At most one slot per sweep.
+	limit := monitor.workerCount()
+	if onionJob != nil {
+		limit--
+	}
 	// Bound each sweep so a large recovery pool cannot monopolize the loop.
 	controls := monitor.requestedQoEControls(now, candidateByID, func(id string) bool {
 		candidate, health, state := candidateByID[id], healthByID[id], probeByID[id]
@@ -387,7 +413,7 @@ func (monitor *QoEMonitor) Run(ctx context.Context, now time.Time) error {
 	}
 	selected = nil
 	clear(seen)
-	for len(selected) < monitor.workerCount() {
+	for len(selected) < limit {
 		var candidate store.Candidate
 		var ok bool
 		if monitor.dispatchCursor%4 == 3 || len(groups[0]) == 0 {
@@ -424,7 +450,20 @@ func (monitor *QoEMonitor) Run(ctx context.Context, now time.Time) error {
 		monitor.standbySamples = nil
 		monitor.standbyExploring = ""
 	}
-	return monitor.runSelected(ctx, now, selected, controls)
+	jobs := make([]qoeProbeJob, 0, len(selected)+1)
+	for _, candidate := range selected {
+		jobs = append(jobs, qoeProbeJob{candidate: candidate, control: controls[candidate.ID]})
+	}
+	if onionJob != nil {
+		jobs = append(jobs, *onionJob)
+	}
+	if err := monitor.runSelected(ctx, now, jobs); err != nil {
+		return err
+	}
+	if onionJob != nil {
+		return monitor.advanceOnionExploration(ctx, now, *onionJob)
+	}
+	return nil
 }
 
 func latestQoEAttempt(lastValid, attempt, now time.Time) time.Time {
@@ -480,7 +519,7 @@ func (monitor *QoEMonitor) release(candidateID string) {
 	monitor.mu.Unlock()
 }
 
-func (monitor *QoEMonitor) runSelected(ctx context.Context, now time.Time, selected []store.Candidate, controls map[string]bool) error {
+func (monitor *QoEMonitor) runSelected(ctx context.Context, now time.Time, selected []qoeProbeJob) error {
 	if len(selected) == 0 {
 		return ctx.Err()
 	}
@@ -494,20 +533,20 @@ func (monitor *QoEMonitor) runSelected(ctx context.Context, now time.Time, selec
 		go func() {
 			defer group.Done()
 			for job := range jobs {
-				if err := monitor.probe(ctx, now, clockStartedAt, job.candidate, job.control); err != nil {
+				if err := monitor.probe(ctx, now, clockStartedAt, job); err != nil {
 					errorsFound <- err
 				}
-				monitor.release(job.candidate.ID)
+				monitor.release(job.key())
 			}
 		}()
 	}
 
-	for index, candidate := range selected {
+	for index, job := range selected {
 		select {
-		case jobs <- qoeProbeJob{candidate: candidate, control: controls[candidate.ID]}:
+		case jobs <- job:
 		case <-ctx.Done():
 			for _, skipped := range selected[index:] {
-				monitor.release(skipped.ID)
+				monitor.release(skipped.key())
 			}
 			close(jobs)
 			group.Wait()
@@ -527,9 +566,14 @@ func (monitor *QoEMonitor) runSelected(ctx context.Context, now time.Time, selec
 func (monitor *QoEMonitor) probe(
 	ctx context.Context,
 	sweepAt, clockStartedAt time.Time,
-	candidate store.Candidate,
-	controlJob ...bool,
+	job qoeProbeJob,
 ) error {
+	candidate := job.candidate
+	key := job.key()
+	policy := ""
+	if job.onionInstance != "" {
+		policy = qoe.OnionComparisonPolicy
+	}
 	payload, err := monitor.Store.CandidatePayload(ctx, candidate.ID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
@@ -541,23 +585,26 @@ func (monitor *QoEMonitor) probe(
 	if err != nil {
 		return err
 	}
-	monitor.markAttempt(candidate.ID, monitor.probeTime(sweepAt, clockStartedAt))
+	monitor.markAttempt(key, monitor.probeTime(sweepAt, clockStartedAt))
 	response, err := monitor.Agent.ProbeQoE(ctx, agentapi.ProbeRequest{
-		CandidateID: candidate.ID, Kind: candidate.Kind, Payload: payload,
+		CandidateID: candidate.ID, Kind: candidate.Kind, Payload: payload, Onion: job.onionInstance != "", ProfileInstance: job.onionInstance,
 	})
 	// Persist the completed measurement time and start the next cadence from
 	// completion, so a slow probe is fresh without being immediately retried.
 	completedAt := monitor.probeTime(sweepAt, clockStartedAt)
-	monitor.markAttempt(candidate.ID, completedAt)
+	monitor.markAttempt(key, completedAt)
 	unconfirmed := response.QoE != nil && response.QoE.UnconfirmedHTTP && !response.QoE.Success && response.QoE.ComparisonPolicy != ""
 	if err != nil || response.FailureClass == agentapi.FailureInfrastructure && !unconfirmed {
-		monitor.forgetComparison(candidate.ID)
+		monitor.forgetComparison(candidate.ID, policy)
 		if ctx.Err() != nil {
 			return nil
 		}
 		return monitor.recordInfrastructure(ctx, candidate.ID, response, err, completedAt)
 	}
 	if response.CandidateID != "" && response.CandidateID != candidate.ID {
+		return nil
+	}
+	if job.onionInstance != "" && (response.ProfileInstance != job.onionInstance || !monitor.onionInstanceCurrent(candidate.ID, job.onionInstance)) {
 		return nil
 	}
 	var observation qoe.Observation
@@ -576,41 +623,51 @@ func (monitor *QoEMonitor) probe(
 		}
 		if confirmed {
 			observation.Infrastructure = false
-			monitor.mu.Lock()
-			delete(monitor.controlRequests, candidate.ID)
-			monitor.mu.Unlock()
+			if job.onionInstance == "" {
+				monitor.mu.Lock()
+				delete(monitor.controlRequests, candidate.ID)
+				monitor.mu.Unlock()
+			}
 		} else {
 			observation.Infrastructure = true
-			if len(controlJob) == 0 || !controlJob[0] {
+			if !job.control && job.onionInstance == "" {
 				monitor.requestQoEControl(candidate, completedAt)
 			}
 		}
 		observation.ApplicationChecks = append(observation.ApplicationChecks, controlChecks...)
 	}
 	if observation.Infrastructure && !observation.UnconfirmedHTTP {
-		monitor.forgetComparison(candidate.ID)
+		monitor.forgetComparison(candidate.ID, policy)
 		response.ErrorCode = observation.ErrorCode
 		return monitor.recordInfrastructure(ctx, candidate.ID, response, nil, completedAt)
 	}
 	observation.At = completedAt
-	_, transition, err := monitor.Store.RecordCandidateQoEObserved(ctx, candidate, observation, monitor.policy(), generation)
+	var transition qoe.Transition
+	if job.onionInstance != "" {
+		if observation.ComparisonPolicy != qoe.OnionComparisonPolicy {
+			return nil
+		}
+		_, transition, err = monitor.Store.RecordOnionQoE(ctx, candidate, job.onionInstance, observation, generation)
+	} else {
+		_, transition, err = monitor.Store.RecordCandidateQoEObserved(ctx, candidate, observation, monitor.policy(), generation)
+	}
 	if errors.Is(err, store.ErrCandidateNoLongerCurrent) || errors.Is(err, store.ErrQoEObservationSuperseded) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
-	monitor.rememberComparison(candidate, generation, observation, completedAt)
+	monitor.rememberComparison(candidate, generation, observation, completedAt, job.onionInstance)
 	if observation.Infrastructure {
 		response.ErrorCode = "qoe_comparison_unknown"
 		return monitor.recordDiagnostic(ctx, candidate.ID, "qoe_comparison_unknown", response.ErrorCode, qoe.HTTPFailureSummary(observation.ApplicationChecks), observation.ApplicationChecks, completedAt)
 	}
-	if observation.UDPReachable != nil {
+	if job.onionInstance == "" && observation.UDPReachable != nil {
 		if _, err := monitor.applyUDPObservation(ctx, candidate.ID, *observation.UDPReachable, generation); err != nil {
 			return err
 		}
 	}
-	if transition.Changed() && transition.To == qoe.StatusDegraded {
+	if transition.Changed() && (transition.To == qoe.StatusDegraded || job.onionInstance != "") {
 		monitor.signalPlanning()
 	}
 	if observation.UnconfirmedHTTP {
@@ -814,4 +871,11 @@ func (monitor *QoEMonitor) standbyCandidates() int {
 		return monitor.StandbyCandidates
 	}
 	return defaultQoEStandby
+}
+
+// Only accepted route failures accelerate confirmation. Infrastructure failures
+// do not refresh LastValidAt, so the extra work expires after one minute.
+func needsFastAvailabilityRecheck(now time.Time, state qoe.State) bool {
+	return state.Status != qoe.StatusDegraded && qoe.AvailabilityFailure(state.LastReason) &&
+		!state.LastValidAt.IsZero() && !state.LastValidAt.After(now) && now.Sub(state.LastValidAt) <= time.Minute
 }

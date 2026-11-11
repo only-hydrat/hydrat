@@ -20,6 +20,7 @@ type Applier interface {
 }
 
 type Server struct {
+	i2p                       http.Handler
 	applier                   Applier
 	activity                  ActivityProvider
 	peers                     PeerManager
@@ -182,6 +183,9 @@ func NewServer(applier Applier, maxPlanSize int64, options ...Option) http.Handl
 	}
 	for _, option := range options {
 		option(server)
+	}
+	if server.i2p != nil {
+		server.mux.Handle("/v1/i2p/", http.StripPrefix("/v1/i2p", server.i2p))
 	}
 	server.mux.HandleFunc("GET /v1/health", server.health)
 	server.mux.HandleFunc("GET /v1/activity", server.activitySnapshot)

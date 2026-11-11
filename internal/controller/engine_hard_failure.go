@@ -49,7 +49,7 @@ func (engine *Engine) recoverHardFailure(ctx context.Context, now time.Time, pro
 		if errors.Is(err, errRecoverySkeletonChanged) {
 			return err
 		}
-		if !errors.Is(err, store.ErrCandidateInventoryChanged) && !errors.Is(err, store.ErrCandidateEvidenceChanged) {
+		if !errors.Is(err, store.ErrCandidateInventoryChanged) && !errors.Is(err, store.ErrCandidateEvidenceChanged) && !errors.Is(err, store.ErrClientInventoryChanged) {
 			return err
 		}
 	}
@@ -121,7 +121,7 @@ func (engine *Engine) hardFailureCycle(
 	}
 	for _, client := range clients {
 		route, routed := appliedClients[client.ID]
-		if (!routed && !client.Paused) || (routed && (route.SourceCIDR != client.Address || client.Paused && (!route.BlockTCP || !route.BlockUDP))) {
+		if (!routed && !client.Paused) || (routed && route.SourceCIDR != client.Address) {
 			return errRecoverySkeletonChanged
 		}
 		currentClients[client.ID] = true
@@ -130,7 +130,7 @@ func (engine *Engine) hardFailureCycle(
 	removedClientRoutes := false
 	remainingRoutes := plan.Clients[:0]
 	for _, route := range plan.Clients {
-		if currentClients[route.ClientID] {
+		if currentClients[route.ClientID] && !pausedClients[route.ClientID] {
 			remainingRoutes = append(remainingRoutes, route)
 		} else {
 			removedClientRoutes = true
@@ -149,7 +149,6 @@ func (engine *Engine) hardFailureCycle(
 	for _, outbound := range plan.Outbounds {
 		planOutbounds[outbound.ID] = outbound
 	}
-	originalOutboundCount := len(planOutbounds)
 	routeByClient := make(map[string]int, len(plan.Clients))
 	for index, route := range plan.Clients {
 		routeByClient[route.ClientID] = index
@@ -326,12 +325,29 @@ func (engine *Engine) hardFailureCycle(
 			assignmentByClient[clientID] = assignment
 		}
 	}
+	clientRecords := make(map[string]store.ClientRecord, len(clients))
+	for _, c := range clients {
+		clientRecords[c.ID] = c
+	}
+	for i := range plan.Clients {
+		previous := plan.Clients[i]
+		engine.attachOnion(&plan.Clients[i], clientRecords[previous.ClientID], previous, candidateSnapshot.onionCandidates, candidateSnapshot.profilesByCandidate, planOutbounds, candidateSnapshot.onionQoE, now)
+		if plan.Clients[i] != previous {
+			changed = true
+			requiresTorFence = true
+		}
+		engine.attachI2P(&plan.Clients[i], clientRecords[previous.ClientID], planOutbounds)
+		if plan.Clients[i] != previous {
+			changed = true
+		}
+	}
 	if !changed && !mustSupersedePending {
 		return nil
 	}
-	if len(planOutbounds) != originalOutboundCount {
-		plan.Outbounds = appendNewPlanOutbounds(plan.Outbounds, planOutbounds)
-	}
+	// Do not retain obsolete onion handlers while an ordinary capacity gate is
+	// pending: otherwise they pin retired Tor candidates through plan references.
+	prunePrivateHandlers(&plan, appliedClients, planOutbounds)
+	plan.Outbounds = appendNewPlanOutbounds(plan.Outbounds, planOutbounds)
 	plan.Generation = max(
 		state.DesiredGeneration, state.InvalidatedGeneration,
 	) + 1
@@ -350,6 +366,9 @@ func (engine *Engine) hardFailureCycle(
 	assignmentUpdates := make([]store.AssignmentRecord, 0, len(clients))
 	for _, client := range clients {
 		assignment := assignmentByClient[client.ID]
+		if client.Paused {
+			assignment = store.AssignmentRecord{ClientID: client.ID, TCPSince: now, UDPSince: now, UpdatedAt: now}
+		}
 		if assignment.ClientID == "" {
 			assignment = store.AssignmentRecord{
 				ClientID: client.ID, TCPSince: now, UDPSince: now,
@@ -549,6 +568,15 @@ func (engine *Engine) settlePendingAppliedPlan(
 	}
 	if hasDesired && state.DesiredGeneration > state.AppliedGeneration &&
 		state.DesiredReason == string(PlacementHardFailure) {
+		currentPolicy, err := engine.clientPermissionsCurrent(ctx, desired)
+		if err != nil {
+			return store.PlanState{}, err
+		}
+		if !currentPolicy {
+			// Rebuild from the applied plan with current permissions. A grant
+			// queued before a revocation must never be replayed to the agent.
+			return state, nil
+		}
 		var applied dataplane.DesiredPlan
 		if state.AppliedGeneration > 0 {
 			var err error
@@ -563,6 +591,14 @@ func (engine *Engine) settlePendingAppliedPlan(
 			desired, activeCriticalPlanCandidateCount(applied),
 		); err != nil {
 			return store.PlanState{}, err
+		}
+		// Client lifecycle writes can invalidate a complete pending snapshot
+		// while the agent applies it. Rebase before replay, after validating
+		// the plan and its capacity, just as the ordinary cycle does.
+		if rebased, err := engine.store.RebaseUnsafeDesiredPlan(ctx); err != nil {
+			return store.PlanState{}, fmt.Errorf("rebase unsafe desired plan: %w", err)
+		} else if rebased {
+			return engine.store.LoadPlanState(ctx)
 		}
 		current, err := engine.pendingHardPlanPrimariesCurrent(
 			ctx, now, desired, profiles,
@@ -751,6 +787,7 @@ func (engine *Engine) hardFailureCandidateStates(
 	includeStale bool,
 ) (map[string]hardFailureCandidateState, routeCandidateSnapshot, error) {
 	references := uniqueCandidateReferences(plan.Outbounds)
+
 	snapshot, err := engine.routeCandidateSnapshot(
 		ctx, now, references, map[string]bool{}, profiles, true,
 	)

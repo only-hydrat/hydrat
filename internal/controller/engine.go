@@ -288,6 +288,20 @@ func (engine *Engine) CycleForReason(
 		reason = PlacementHardFailure
 	}
 	profiles, profileFence := engine.capturePlanProfiles()
+	// Onion permission changes and failed profile replacement must not wait for
+	// an unrelated ordinary reserve-capacity search. The hard-path preserves
+	// healthy ordinary assignments and uses the same publication fences.
+	if reason != PlacementHardFailure {
+		needs, err := engine.hasPrivateAccessPolicy(ctx)
+		if err != nil {
+			return err
+		}
+		if needs {
+			if err := engine.hardFailureCycle(ctx, now, profiles, profileFence); err != nil && !errors.Is(err, errRecoverySkeletonChanged) {
+				return err
+			}
+		}
+	}
 	reconcileRecovery := false
 	if reason == PlacementHardFailure {
 		err := engine.recoverHardFailure(ctx, now, profiles, profileFence, len(debt) > 0)
@@ -341,6 +355,7 @@ func (engine *Engine) CycleForReason(
 			preview.Discard()
 		}
 		if !errors.Is(err, store.ErrCandidateInventoryChanged) &&
+			!errors.Is(err, store.ErrClientInventoryChanged) &&
 			!errors.Is(err, store.ErrCandidateEvidenceChanged) &&
 			!errors.Is(err, scheduler.ErrPreviewChanged) {
 			if err == nil && reason == PlacementStartupNormalization {
@@ -619,12 +634,6 @@ func (engine *Engine) cycleOnce(
 			}
 		}
 	}
-	expectations := make(
-		[]store.CandidatePlanExpectation, 0, len(selectedExpectations),
-	)
-	for _, expectation := range selectedExpectations {
-		expectations = append(expectations, expectation)
-	}
 
 	suffixes := engine.directSuffixes
 	if len(suffixes) == 0 {
@@ -638,6 +647,7 @@ func (engine *Engine) cycleOnce(
 		FailClosed:     true,
 	}
 	outbounds := make(map[string]dataplane.Outbound)
+	previousOnion := decodeClientRoutes(state.AppliedPlan)
 	assignmentUpdates := make([]store.AssignmentRecord, 0, len(clients))
 	reserveMappings := make([]store.RouteReserveMapping, 0, len(clients))
 	for clientID, assignment := range placement.Assignments {
@@ -722,6 +732,15 @@ func (engine *Engine) cycleOnce(
 			}
 			reserveMappings = append(reserveMappings, mapping)
 		}
+		engine.attachOnion(&route, client, previousOnion[clientID], candidateSnapshot.onionCandidates, profileByCandidate, outbounds, candidateSnapshot.onionQoE, now)
+		engine.attachI2P(&route, client, outbounds)
+		for _, id := range []string{route.OnionOutbound, route.OnionReserveOutbound} {
+			candidateID := candidateIDFromHandler(id, "")
+			if candidateID == "" {
+				continue
+			}
+			selectedExpectations[candidateID] = store.CandidatePlanExpectation{Candidate: rowByID[candidateID], AllowDraining: referencedCandidateIDs[candidateID], EvidenceDigest: candidateSnapshot.evidenceByCandidate[candidateID]}
+		}
 		plan.Clients = append(plan.Clients, route)
 	}
 	for _, client := range clients {
@@ -735,6 +754,13 @@ func (engine *Engine) cycleOnce(
 	for _, outbound := range outbounds {
 		plan.Outbounds = append(plan.Outbounds, outbound)
 	}
+	expectations := make(
+		[]store.CandidatePlanExpectation, 0, len(selectedExpectations),
+	)
+	for _, expectation := range selectedExpectations {
+		expectations = append(expectations, expectation)
+	}
+
 	candidateDigest, err := plan.SemanticDigest()
 	if err != nil {
 		return err

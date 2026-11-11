@@ -31,6 +31,7 @@ type Adapter struct {
 	geoCheck       func() bool
 	runner         Runner
 	flowControl    *xrayflow.Client
+	i2pRange       bool
 }
 
 func NewAdapter(binary, server, dnsResolver string, runner Runner) *Adapter {
@@ -55,6 +56,8 @@ func NewAdapterWithResolvers(
 		runner:         runner,
 	}
 }
+
+func (adapter *Adapter) ConfigureI2P(available bool) { adapter.i2pRange = available }
 
 func (adapter *Adapter) ConfigureRouting(directSuffixes, directDomains []string, useGeoRules bool) {
 	if directSuffixes != nil {
@@ -161,9 +164,10 @@ func (adapter *Adapter) AddOutbound(ctx context.Context, outbound dataplane.Outb
 		return fmt.Errorf("outbound tag %q does not match ID %q", tag, outbound.ID)
 	}
 	config["tag"] = outbound.ID
-	if protocol, ok := config["protocol"].(string); !ok || protocol != string(outbound.Protocol) && !(outbound.Protocol == dataplane.ProtocolTor && protocol == "socks") {
+	if protocol, ok := config["protocol"].(string); !ok || protocol != string(outbound.Protocol) && !((outbound.Protocol == dataplane.ProtocolTor || outbound.Protocol == dataplane.ProtocolI2P) && protocol == "socks") {
 		return fmt.Errorf("outbound protocol does not match %q", outbound.Protocol)
 	}
+
 	body, err := json.Marshal(map[string]any{"outbounds": []any{config}})
 	if err != nil {
 		return err
@@ -348,6 +352,20 @@ func (adapter *Adapter) routeDocument(routes []dataplane.ClientRoute) (string, e
 	rules = append(rules, map[string]any{
 		"type": "field", "ruleTag": "hydrat-api", "inboundTag": []string{"api"}, "outboundTag": "api",
 	})
+	onionPool := "198.18.0.0/15"
+	if adapter.i2pRange {
+		onionPool = "198.18.0.0/16"
+	}
+	for _, route := range sortedRoutesByClientAndSource(routes) {
+		if adapter.i2pRange && route.I2PEnabled && route.I2POutbound != "" {
+			rules = append(rules, map[string]any{"type": "field", "ruleTag": "hydrat-client-" + route.ClientID + "-i2p", "source": []string{route.SourceCIDR}, "ip": []string{"198.19.0.0/16"}, "network": "tcp", "outboundTag": route.I2POutbound})
+		}
+		if route.OnionEnabled && route.OnionOutbound != "" {
+			rules = append(rules, map[string]any{"type": "field", "ruleTag": "hydrat-client-" + route.ClientID + "-onion", "source": []string{route.SourceCIDR}, "ip": []string{onionPool}, "network": "tcp", "outboundTag": route.OnionOutbound})
+		}
+	}
+	rules = append(rules, map[string]any{"type": "field", "ruleTag": "hydrat-onion-block", "ip": []string{"198.18.0.0/15"}, "outboundTag": "block"}, map[string]any{"type": "field", "ruleTag": "hydrat-onion-domain-block", "domain": []string{"domain:onion", "domain:i2p"}, "outboundTag": "block"})
+
 	rules = append(rules, clientRules.beforeDirect...)
 
 	if adapter.useGeoRules && adapter.geoAssetsPresent() {

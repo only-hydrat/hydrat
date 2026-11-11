@@ -14,6 +14,7 @@ import (
 // FlowRecovery is emitted only for a confirmed failure with an applied TCP
 // replacement. It is not a request to reset all connections of a client.
 type FlowRecovery struct {
+	Onion               bool   `json:"onion,omitempty"`
 	ClientID            string `json:"client_id"`
 	SourceCIDR          string `json:"source_cidr"`
 	FailedOutbound      string `json:"failed_outbound"`
@@ -40,6 +41,9 @@ func ValidateFlowRecoveries(plan DesiredPlan, recoveries []FlowRecovery) error {
 	}
 	seen := make(map[string]bool)
 	for _, q := range recoveries {
+		if q.Onion {
+			return errors.New("onion cleanup is derived only from applied policy")
+		}
 		p, err := netip.ParsePrefix(q.SourceCIDR)
 		if err != nil || !p.IsSingleIP() || !p.Addr().Is4() || p.String() != q.SourceCIDR {
 			return errors.New("invalid flow recovery source")
@@ -91,6 +95,14 @@ func currentFlowRecoveries(previous DesiredPlan, recoveries []FlowRecovery) ([]F
 }
 
 func recoveryStillApplicable(plan DesiredPlan, q FlowRecovery) bool {
+	if q.Onion {
+		for _, route := range plan.Clients {
+			if route.ClientID == q.ClientID {
+				return route.SourceCIDR == q.SourceCIDR && route.OnionOutbound != q.FailedOutbound
+			}
+		}
+		return true
+	}
 	for _, route := range plan.Clients {
 		if route.ClientID == q.ClientID {
 			return route.SourceCIDR == q.SourceCIDR && !route.BlockTCP && route.TCPOutbound != "" && route.TCPOutbound != q.FailedOutbound

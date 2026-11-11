@@ -5,15 +5,15 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>Hydrat Control</title>
-  <link rel="stylesheet" href="/assets/styles.css">
-  <script defer src="/assets/app.js"></script>
+  <link rel="stylesheet" href="/assets/styles.css?v=ui-20261111">
+  <script defer src="/assets/app.js?v=ui-20261111"></script>
 </head>
 <body>
   <div class="shell">
     <aside class="sidebar">
       <a class="brand" href="#overview" aria-label="Hydrat Control">
         <span class="brand-mark">H</span>
-        <span><strong>Hydrat</strong><small>Route control</small></span>
+        <span><strong>Hydrat</strong><small>Панель управления</small></span>
       </a>
       <nav aria-label="Разделы">
         <button class="nav-item active" data-nav="overview"><span>Обзор</span></button>
@@ -22,22 +22,18 @@
         <button class="nav-item" data-nav="candidates"><span>Кандидаты</span></button>
         <button class="nav-item" data-nav="system"><span>Система</span></button>
       </nav>
-      <div class="sidebar-foot">
-        <span class="health-dot"></span>
-        <span><strong>Fail closed</strong><small>.ru идёт напрямую</small></span>
-      </div>
     </aside>
 
     <main>
       <header class="topbar">
         <div>
-          <p class="eyebrow">CONTROL PLANE</p>
           <h1 id="page-title">Обзор</h1>
         </div>
         <form id="auth-form" class="auth-box">
           <label for="admin-password">Пароль администратора</label>
           <input id="admin-password" type="password" autocomplete="current-password" placeholder="Введите пароль">
           <button class="button primary" id="admin-load" type="submit">Подключиться</button>
+          <span class="session-label">Администратор</span>
           <button class="button ghost" id="admin-logout" type="button" hidden>Выйти</button>
         </form>
       </header>
@@ -45,34 +41,35 @@
       <div id="message" class="toast" role="status" aria-live="polite"></div>
 
       <section class="view active" data-view="overview">
-        <div class="hero">
-          <div>
-            <p class="eyebrow">ADAPTIVE ROUTING</p>
-            <h2>Лучший маршрут — без ручных переподключений</h2>
-            <p>Hydrat отдельно оценивает TCP и UDP, держит рабочий пул и переключает hard-failure через приоритетный dataplane.</p>
-          </div>
-          <div class="self-card">
-            <span class="badge neutral">Моё подключение</span>
-            <strong id="status">Определяем WireGuard-клиента…</strong>
+        <div class="panel connection-panel">
+          <div class="panel-head">
+            <h2>Моё подключение</h2>
             <button id="reassign" class="button ghost" type="button">Выбрать другой маршрут</button>
+          </div>
+          <div id="status" class="connection-summary" role="status">Определяем WireGuard-клиента…</div>
+          <div class="guide-links">
+            <button class="text-button" data-nav="system-onion" type="button">Как открыть .onion</button>
+            <button class="text-button" data-nav="system-i2p" type="button">Как открыть .i2p</button>
           </div>
         </div>
         <div class="stats" id="overview-stats">
-          <article><span>VLESS working</span><strong data-stat="vless-working">—</strong><small>проверенные кандидаты</small></article>
-          <article><span>VLESS domains</span><strong data-stat="vless-domains">—</strong><small>независимые доступные группы</small></article>
-          <article><span>Tor candidates</span><strong data-stat="tor-candidates">—</strong><small>в рабочем пуле</small></article>
-          <article><span>Warm Tor</span><strong data-stat="tor-warm">—</strong><small>готовые профили</small></article>
+          <article><span>Маршруты VLESS</span><strong data-stat="vless-working">—</strong><small>в рабочем пуле</small></article>
+          <article><span>Группы VLESS</span><strong data-stat="vless-domains">—</strong><small>независимые группы</small></article>
+          <article><span>Кандидаты Tor</span><strong data-stat="tor-candidates">—</strong><small>в рабочем пуле</small></article>
+          <article><span>Готовые Tor</span><strong data-stat="tor-warm">—</strong><small>прогретые профили</small></article>
         </div>
         <div class="panel">
-          <div class="panel-head"><div><p class="eyebrow">PIPELINE</p><h3>Состояние отбора</h3></div></div>
+          <div class="panel-head"><h2>Состояние отбора</h2></div>
           <div id="status-breakdown" class="status-grid empty">Подключитесь как администратор</div>
         </div>
       </section>
 
+
+
       <section class="view" data-view="clients">
         <div class="panel">
           <div class="panel-head">
-            <div><p class="eyebrow">WIREGUARD</p><h2>Клиенты</h2><p>Конфиг и QR доступны сразу после создания.</p></div>
+            <div><h2>Устройства WireGuard</h2><p>Конфиг и QR-код для подключения.</p></div>
             <form id="client-form" class="inline-form">
               <input id="client-name" aria-label="Имя клиента" placeholder="Например, Pixel 9" required>
               <button id="client-create" class="button primary" type="submit">Создать</button>
@@ -83,19 +80,19 @@
       </section>
 
       <section class="view" data-view="sources">
-        <div class="split">
+        <div class="split sources-layout">
           <div class="panel">
-            <div class="panel-head"><div><p class="eyebrow">IMPORT</p><h2>Добавить источники</h2></div></div>
+            <div class="panel-head"><h2>Добавить источник</h2></div>
             <label for="source-input">VLESS, URL подписки или Tor bridge</label>
             <textarea id="source-input" placeholder="VLESS URI&#10;proxy-source URL подписки&#10;Bridge obfs4 …"></textarea>
             <div class="button-row">
               <button id="source-preview" class="button ghost" type="button">Проверить</button>
               <button id="source-import" class="button primary" type="button">Импортировать</button>
             </div>
-            <pre id="source-result" class="preview-box">Результат preview появится здесь.</pre>
+            <pre id="source-result" class="preview-box">Здесь появится результат проверки.</pre>
           </div>
           <div class="panel">
-            <div class="panel-head"><div><p class="eyebrow">INVENTORY</p><h2>Источники</h2></div></div>
+            <div class="panel-head"><h2>Подключённые источники</h2></div>
             <div id="admin-sources" class="data-list empty">Нет данных</div>
           </div>
         </div>
@@ -104,7 +101,7 @@
       <section class="view" data-view="candidates">
         <div class="panel">
           <div class="panel-head">
-            <div><p class="eyebrow">TOURNAMENT</p><h2>Кандидаты</h2><p>Health, score, streak и ban window без раскрытия payload.</p></div>
+            <div><h2>Проверка маршрутов</h2><p>Доступность, скорость и результаты проверок.</p></div>
             <div class="filters">
               <select id="candidate-filter" aria-label="Статус">
                 <option value="">Все статусы</option>
@@ -128,38 +125,99 @@
       </section>
 
       <section class="view" data-view="system">
-        <div class="split">
+        <details class="panel onion-guide" id="i2p-settings">
+          <summary>Сайты .i2p и адресная книга</summary>
+          <p>Сайты I2P открываются через подключение WireGuard. Отдельное приложение и настройка прокси не нужны. Обычные сайты продолжают работать через свои маршруты.</p>
+          <h3>Первое подключение</h3>
+          <ol>
+            <li>В Hydrat откройте «Клиенты» и нажмите «Доступ к .i2p» у своего устройства. Если у вас нет прав администратора, попросите его включить доступ. В «Моём подключении» должен появиться статус «Разрешён».</li>
+            <li>Включите WireGuard. В его конфигурации оставьте DNS, выданный Hydrat. Подключение должно направлять трафик через VPN; не исключайте из него браузер.</li>
+            <li>Отключите в браузере собственный DNS через HTTPS по инструкции ниже: адреса I2P должен разрешать шлюз Hydrat.</li>
+            <li>Откройте полный адрес сайта, например <code>http://i2pforum.i2p/</code>. При первом запуске добавляется 71 имя из официальной адресной книги I2P; <code>forum.i2p</code> в ней нет. Для остальных коротких имён добавьте запись или подписку. Полный адрес <code>.b32.i2p</code>, полученный у владельца сайта, можно открыть без добавления записи.</li>
+          </ol>
+          <details><summary>Android: Firefox и Chrome</summary>
+            <p>Firefox: меню ⋮ → «Настройки» → «Конфиденциальность и безопасность» → «DNS через HTTPS» → «Выкл.». Для .i2p подходит обычный Firefox: менять about:config не требуется.</p>
+            <p>Chrome: меню ⋮ → «Настройки» → «Конфиденциальность и безопасность» → «Использовать безопасный DNS» → выключить. Названия пунктов могут немного отличаться между версиями.</p>
+            <p>Если в Android задан сторонний «Частный DNS», найдите его через поиск системных настроек и временно выключите. Убедитесь, что Firefox или Chrome не исключён из туннеля WireGuard.</p>
+          </details>
+          <details><summary>Компьютер: Firefox, Chrome и Edge</summary>
+            <p>Firefox: «Настройки» → «Приватность и защита» → «DNS через HTTPS» → «Выкл.».</p>
+            <p>Chrome: «Настройки» → «Конфиденциальность и безопасность» → «Безопасность» → выключить «Использовать безопасный DNS». В Edge найдите «Безопасный DNS» через поиск настроек и выключите его.</p>
+            <p>В WireGuard сохраните DNS из конфигурации Hydrat. Расширения с собственным прокси или DNS могут обходить VPN — отключите их для этой проверки.</p>
+          </details>
+          <details><summary>iPhone и iPad</summary>
+            <p>Включите профиль WireGuard с DNS Hydrat и откройте полный адрес в Safari. Если установлен отдельный профиль защищённого DNS или приложение, меняющее DNS, временно отключите его для проверки. Не удаляйте профиль управления устройством.</p>
+            <p>Работа на физических iPhone/iPad отдельно не проверена. Если имя не определяется, проверьте разрешение I2P и адресную книгу у администратора.</p>
+          </details>
+          <details><summary>Как добавить сайт и подписку</summary>
+            <p>Администратор добавляет сайт ниже, в «Адресной книге»: имя <code>имя.i2p</code> и публичный Destination либо <code>.b32.i2p</code>, полученный у владельца сайта. Придуманное имя без такой записи не откроется.</p>
+            <p>Готовый список можно вставить в «Импорт и экспорт hosts.txt»: нажмите «Проверить импорт», разберите ошибки и подтвердите импорт. Для регулярного обновления добавьте URL в «Подписки адресной книги» и нажмите «Обновить». Новые имена добавятся автоматически, замену известных адресов нужно подтвердить.</p>
+          </details>
+          <details><summary>Если сайт долго не открывается</summary>
+            <p>После сна I2P заново строит туннели. Дождитесь прогрева и обновите страницу; администратор может нажать «Прогреть сейчас». Статус «Прогрет» не гарантирует доступность каждого сайта.</p>
+            <p>Если другой I2P-сайт работает, возможно, недоступен именно этот адрес. Если не работает ни один, проверьте разрешение клиента, DNS и записи адресной книги. Если браузер пытается заменить HTTP на HTTPS, для сайта без HTTPS разрешите HTTP только для этого сайта; проверку сертификатов не отключайте.</p>
+            <p>Для завершения просто закройте страницы I2P: после периода ожидания процесс уснёт. Администратор может выключить доступ у клиента. Настройки DNS браузера можно вернуть к прежним значениям.</p>
+          </details>
+          <p>Чужой трафик не ретранслируется. Участники I2P, с которыми соединяется шлюз, видят его IP. Обычный браузер сохраняет свои cookies и отпечаток.</p>
+          <p><a href="https://support.mozilla.org/en-US/kb/configure-dns-over-https-protection-levels-firefox-android" target="_blank" rel="noreferrer">DNS в Firefox Android</a> · <a href="https://support.google.com/chrome/answer/10468685" target="_blank" rel="noreferrer">Безопасный DNS в Chrome</a></p>
+          <p id="i2p-status" role="status">Для управления подключитесь как администратор.</p>
+          <div class="button-row"><button id="i2p-refresh" class="button ghost" type="button">Обновить статус</button><button id="i2p-wake" class="button ghost" type="button">Прогреть сейчас</button></div>
+          <form id="i2p-warm-form" class="inline-form"><label for="i2p-warm">Оставлять прогретым после использования, минут</label><input id="i2p-warm" type="number" min="15" max="1440" value="120" required><button class="button ghost" type="submit">Сохранить</button></form>
+          <p>По умолчанию — 2 часа. Открытые I2P-соединения удерживают процесс. Проверки и обновления адресной книги время не продлевают.</p>
+          <h3>Адресная книга</h3>
+          <label for="i2p-search">Найти адрес</label><input id="i2p-search" type="search" placeholder="имя.i2p">
+          <div id="i2p-entries" class="data-list empty">Нет данных</div>
+          <form id="i2p-entry-form" class="i2p-form"><label for="i2p-name">Имя .i2p</label><input id="i2p-name" required autocomplete="off"><label for="i2p-destination">Публичный Destination или адрес .b32.i2p</label><textarea id="i2p-destination" required rows="3" spellcheck="false"></textarea><button class="button primary" type="submit">Добавить / изменить адрес</button></form>
+          <details><summary>Импорт и экспорт hosts.txt</summary><label for="i2p-import-text">Содержимое hosts.txt</label><textarea id="i2p-import-text" rows="5" spellcheck="false"></textarea><p id="i2p-preview" role="status"></p><div class="button-row"><button id="i2p-preview-button" class="button ghost" type="button">Проверить импорт</button><button id="i2p-import-button" class="button ghost" type="button">Импортировать</button><button id="i2p-export" class="button ghost" type="button">Скачать hosts.txt</button></div></details>
+          <h3>Подписки адресной книги</h3><p>Новые имена добавляются автоматически. Изменение известного адреса требует подтверждения. Обновление — не чаще раза в 6 часов, пока I2P работает.</p>
+          <div id="i2p-subscriptions" class="data-list empty">Нет данных</div>
+          <form id="i2p-subscription-form" class="i2p-form"><label for="i2p-subscription-url">HTTPS-адрес hosts.txt или HTTP(S)-адрес внутри .i2p</label><input id="i2p-subscription-url" type="url" required><button class="button ghost" type="submit">Добавить подписку</button></form>
+        </details>
+        <details class="panel onion-guide" id="onion-guide">
+          <summary>Доступ к .onion через Tor</summary>
+          <p>Администратор разрешает доступ отдельно для каждого клиента. Обычные сайты продолжают использовать свои маршруты. Для .onion нужен готовый Tor-профиль; поддерживаются публичные v3-адреса и TCP.</p>
+          <p>Браузер сохраняет свои cookies и отпечаток. Владелец шлюза может видеть запрошенные onion-адреса в таблице DNS.</p>
+          <div class="inline-form">
+            <label for="onion-platform">Устройство</label>
+            <select id="onion-platform"><option value="desktop">Windows / macOS / Linux</option><option value="android">Android</option><option value="ios">iPhone / iPad</option></select>
+            <label for="onion-browser">Браузер</label>
+            <select id="onion-browser"><option value="firefox">Firefox</option><option value="chrome">Chrome</option><option value="edge">Edge</option><option value="brave">Brave</option><option value="safari">Safari</option><option value="other">Другой браузер</option></select>
+          </div>
+          <ol id="onion-guide-steps"></ol>
+          <p>Если не открывается: проверьте VPN, DNS и статус .onion, затем другой известный onion-сайт. Таймаут одного сайта не означает отказ всего Tor. При смене Tor-профиля открытой странице может потребоваться перезагрузка.</p>
+          <p>Инструкция основана на документации браузеров. Работа каждого сочетания браузера и ОС на реальном устройстве отдельно не подтверждена.</p>
+          <p><a href="https://support.mozilla.org/en-US/kb/configure-dns-over-https-protection-levels-firefox-android" target="_blank" rel="noreferrer">DNS в Firefox на Android</a> · <a href="https://proton.me/support/firefox-onion-sites" target="_blank" rel="noreferrer">Настройка .onion в Firefox</a></p>
+        </details>
+
+        <div class="system-panels">
           <div class="panel">
-            <div class="panel-head"><div><p class="eyebrow">RUNTIME</p><h2>Система</h2></div></div>
+            <div class="panel-head"><h2>Состояние системы</h2></div>
             <dl id="system-details" class="details"><dt>Статус</dt><dd>Нет данных</dd></dl>
           </div>
           <div class="panel">
-            <div class="panel-head"><div><p class="eyebrow">TOR</p><h2>Warm / explorer</h2></div><button id="profile-explore" class="button ghost" type="button">Следующий explorer</button></div>
+            <div class="panel-head"><h2>Профили Tor</h2><button id="profile-explore" class="button ghost" type="button">Следующий explorer</button></div>
             <div id="admin-profiles" class="data-list empty">Нет данных</div>
           </div>
-        </div>
-        <div class="panel" style="margin-top: 24px;">
-          <div class="panel-head">
-            <div>
-              <p class="eyebrow">ROUTING &amp; GEO-DATA</p>
+          <div class="panel">
+            <div class="panel-head">
               <h2>Маршрутизация и GeoIP</h2>
+              <div class="button-row">
+                <button id="routing-update-geo" class="button ghost" type="button">Обновить GeoIP сейчас</button>
+                <button id="routing-open-dialog" class="button primary" type="button">Настроить правила</button>
+              </div>
             </div>
-            <div class="button-row">
-              <button id="routing-update-geo" class="button ghost" type="button">Обновить GeoIP сейчас</button>
-              <button id="routing-open-dialog" class="button primary" type="button">Настроить правила</button>
-            </div>
+            <dl id="routing-details" class="details">
+              <dt>Прямые суффиксы</dt><dd id="routing-suffixes">—</dd>
+              <dt>Прямые домены</dt><dd id="routing-domains">—</dd>
+              <dt>Статус GeoIP</dt><dd id="routing-geoip-status">—</dd>
+              <dt>Статус GeoSite</dt><dd id="routing-geosite-status">—</dd>
+              <dt>Автообновление</dt><dd id="routing-autoupdate">—</dd>
+              <dt>Выход через РФ</dt><dd id="routing-ru-egress">—</dd>
+              <dt>GeoIP URL</dt><dd id="routing-geoip-url" class="probe-runtime">—</dd>
+              <dt>GeoSite URL</dt><dd id="routing-geosite-url" class="probe-runtime">—</dd>
+              <dt>Интервал</dt><dd id="routing-interval">—</dd>
+            </dl>
           </div>
-          <dl id="routing-details" class="details">
-            <dt>Прямые суффиксы</dt><dd id="routing-suffixes">—</dd>
-            <dt>Прямые домены</dt><dd id="routing-domains">—</dd>
-            <dt>Статус GeoIP</dt><dd id="routing-geoip-status">—</dd>
-            <dt>Статус GeoSite</dt><dd id="routing-geosite-status">—</dd>
-            <dt>Автообновление</dt><dd id="routing-autoupdate">—</dd>
-            <dt>Выход через РФ</dt><dd id="routing-ru-egress">—</dd>
-            <dt>GeoIP URL</dt><dd id="routing-geoip-url" class="probe-runtime">—</dd>
-            <dt>GeoSite URL</dt><dd id="routing-geosite-url" class="probe-runtime">—</dd>
-            <dt>Интервал</dt><dd id="routing-interval">—</dd>
-          </dl>
         </div>
       </section>
     </main>
@@ -177,7 +235,7 @@
       <h2>Настройка маршрутизации и GeoIP</h2>
       <button id="routing-close" class="icon-button" aria-label="Закрыть">×</button>
     </div>
-    <form id="routing-form" style="display:flex; flex-direction:column; gap:16px; margin-top:16px;">
+    <form id="routing-form">
       <div>
         <label for="input-routing-suffixes">Прямые доменные суффиксы (через запятую или пробел)</label>
         <input id="input-routing-suffixes" type="text" class="input" placeholder=".ru, .su, .xn--p1ai" required>
@@ -186,16 +244,16 @@
         <label for="input-routing-domains">Прямые домены (через запятую или пробел)</label>
         <input id="input-routing-domains" type="text" class="input" placeholder="thecode.media, habr.com">
       </div>
-      <div style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
-        <label style="display:flex; align-items:center; gap:8px; margin:0; cursor:pointer;">
+      <div class="checkboxes">
+        <label>
           <input id="input-routing-geo-enabled" type="checkbox">
           <span>Включить правила GeoIP / GeoSite</span>
         </label>
-        <label style="display:flex; align-items:center; gap:8px; margin:0; cursor:pointer;">
+        <label>
           <input id="input-routing-geo-autoupdate" type="checkbox">
           <span>Автоматическое обновление</span>
         </label>
-        <label style="display:flex; align-items:center; gap:8px; margin:0; cursor:pointer;">
+        <label>
           <input id="input-routing-disallow-ru" type="checkbox">
           <span>Запретить выход через серверы в РФ (Egress Protection)</span>
         </label>
@@ -212,7 +270,7 @@
         <label for="input-routing-interval">Интервал обновления (например, 24h, 12h)</label>
         <input id="input-routing-interval" type="text" class="input" placeholder="24h" value="24h" required>
       </div>
-      <div class="button-row" style="justify-content:flex-end; margin-top:8px;">
+      <div class="button-row dialog-actions">
         <button id="routing-cancel" class="button ghost" type="button">Отмена</button>
         <button id="routing-submit" class="button primary" type="submit">Сохранить правила</button>
       </div>

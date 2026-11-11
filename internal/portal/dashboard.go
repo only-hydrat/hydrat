@@ -1,6 +1,7 @@
 package portal
 
 import (
+	"context"
 	"embed"
 	"errors"
 	"io/fs"
@@ -247,7 +248,11 @@ func (server *Server) systemSummary(response http.ResponseWriter, request *http.
 		writeError(response, http.StatusInternalServerError, "plan state failed")
 		return
 	}
+	ctx, cancel := context.WithTimeout(request.Context(), 2*time.Second)
+	defer cancel()
+	health, readiness := server.healthAndReadiness(ctx)
 	writeJSON(response, http.StatusOK, map[string]any{
+		"health_status": health, "readiness_status": readiness,
 		"status": "ok", "client_count": len(clients), "source_count": len(sources),
 		"candidate_count": len(candidates), "working_pool_count": working,
 		"probe_coverage":    probeCoverage(time.Now(), candidates, states, excluded),

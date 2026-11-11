@@ -190,3 +190,98 @@ test("deleteSource deletes source with Bearer token and updates UI without loggi
   assert.equal(target.children.length, 0);
   assert.equal(target.textContent, "Источников пока нет");
 });
+
+test("onion guide configures direct Hydrat access without a separate Tor browser", () => {
+  const page = dashboard();
+  for (const platform of ["desktop", "android", "ios"]) {
+    for (const browser of ["firefox", "chrome", "edge", "brave", "safari", "other"]) {
+      const guide = runInContext(`onionGuide("${platform}", "${browser}").join(" ")`, page.context);
+      assert.ok(guide.length > 80);
+      assert.doesNotMatch(guide, /Tor Browser|Onion Browser|собственн.*Tor|окно с Tor/);
+      if (platform === "ios") assert.match(guide, /не поддерживается|нет подтверждённой/);
+      if (platform === "android") {
+        for (const instruction of [/Firefox Nightly/, /about:config/, /network.dns.blockDotOnion/, /false/, /DNS через HTTPS/, /Частный DNS/, /WireGuard/, /Маршрут готов/]) assert.match(guide, instruction);
+      }
+      assert.doesNotMatch(guide, /отключите проверку сертификатов/i);
+    }
+  }
+  assert.match(runInContext('onionGuide("desktop", "firefox").join(" ")', page.context), /network.dns.blockDotOnion/);
+});
+
+test("onion permission button uses Bearer session and displays applied status", async () => {
+  let enabled = false;
+  const requests = [];
+  const page = dashboard(async (url, options = {}) => {
+    if (options.method === "PATCH") {
+      requests.push({url, auth: options.headers.get("Authorization"), body: JSON.parse(options.body)});
+      enabled = JSON.parse(options.body).onion_enabled;
+      return new Response(null, {status: 204});
+    }
+    return Response.json({clients:[{id:"alice", name:"Alice", address:"10.44.0.2/32", onion_enabled:enabled, onion_status:enabled ? "pending" : "disabling"}]});
+  });
+  await runInContext('adminToken="session"; toggleOnion({id:"alice",onion_enabled:false})', page.context);
+  const texts = (element) => [element.textContent,...(element.children||[]).flatMap(texts)];
+  assert.ok(texts(page.elements.get("admin-clients")).includes(".onion: Ожидает применения"));
+  const disable = page.elements.get("admin-clients").children[0].children.at(-1).children.find(button => button.textContent === "Выключить .onion");
+  await disable.listeners.click();
+  assert.ok(texts(page.elements.get("admin-clients")).includes(".onion: Отключается"));
+  assert.deepEqual(requests, [true, false].map(onion_enabled => ({url:"/api/admin/clients/alice", auth:"Bearer session", body:{onion_enabled}})));
+});
+
+test("onion shortcut opens its guide inside System and preserves old links", () => {
+  const page = dashboard();
+  for (const target of ["onion", "system-onion"]) {
+    runInContext(`setView("${target}")`, page.context);
+    assert.equal(page.elements.get("page-title").textContent, "Система");
+    assert.equal(runInContext("location.hash", page.context), "#system-onion");
+    assert.equal(page.elements.get("onion-guide").open, true);
+  }
+});
+
+test("I2P stays in System and does not claim websites are ready while sleeping", async () => {
+  assert.ok(html.includes('id="i2p-settings"'));
+  assert.ok(!html.includes('data-nav="i2p"'));
+  const page = dashboard(async () => new Response(JSON.stringify({runtime:{state:"sleeping",streams:0},available:true,no_transit:true,warm_seconds:7200,entries:[],subscriptions:[]}),{status:200}));
+  await runInContext('adminToken="token"; loadI2P()',page.context);
+  assert.match(page.elements.get("i2p-status").textContent,/Спит/);
+  assert.doesNotMatch(page.elements.get("i2p-status").textContent,/Сайты готовы/);
+});
+
+test("I2P pages addresses and conflicts without losing search or authorization", async () => {
+  const calls=[];
+  const page=dashboard(async(url,options)=>{
+    calls.push({url,auth:options.headers.get("Authorization")});
+    if(url.includes("/conflicts"))return new Response(JSON.stringify({entries:[{name:"later.i2p",destination:"later.b32.i2p"}],total:11,next_offset:null}));
+    const later=url.includes("offset=50");
+    return new Response(JSON.stringify({runtime:{state:"warm"},available:true,warm_seconds:7200,entries:[{name:later?"second.i2p":"first.i2p",destination:"test.b32.i2p"}],total:51,next_offset:later?null:50,subscriptions:[{id:"feed",url:"https://example.org/hosts",enabled:true,conflicts:[{name:"first.i2p",destination:"new.b32.i2p"}],conflict_total:11,next_conflict_offset:10}]}));
+  });
+  const all=e=>[e,...(e.children||[]).flatMap(all)];
+  const click=async(root,text)=>{const b=all(root).find(e=>e.tagName==="button"&&e.textContent===text);assert.ok(b,`missing ${text}`);await b.listeners.click();};
+  await runInContext('adminToken="token"; loadI2P()',page.context);
+  await click(page.elements.get("i2p-entries"),"Следующие адреса");
+  assert.ok(all(page.elements.get("i2p-entries")).some(e=>e.textContent==="second.i2p"));
+  await click(page.elements.get("i2p-subscriptions"),"Следующие конфликты");
+  assert.ok(all(page.elements.get("i2p-subscriptions")).some(e=>e.textContent.includes("later.i2p")));
+  page.elements.get("i2p-search").value="second";
+  await page.elements.get("i2p-search").listeners.input();
+  assert.ok(calls.some(c=>c.url.includes("offset=0&q=second")));
+  assert.ok(calls.every(c=>c.auth==="Bearer token"));
+});
+
+test("I2P shortcut opens instructions without administrator authentication", () => {
+  const page = dashboard(() => { throw new Error("guide must not fetch protected data"); });
+  runInContext('setView("system-i2p")', page.context);
+  assert.equal(page.elements.get("page-title").textContent, "Система");
+  assert.equal(runInContext("location.hash", page.context), "#system-i2p");
+  assert.equal(page.elements.get("i2p-settings").open, true);
+  assert.ok(html.includes('data-nav="system-i2p"'));
+});
+
+test("system shows healthy API separately from unready routing", async () => {
+  const page = dashboard(async (url) => new Response(JSON.stringify(String(url).includes('/system') ? {health_status:"ok",readiness_status:"controller unavailable: reserve_not_ready"} : {}),{status:200}));
+  await runInContext('adminToken="token"; loadSystem()', page.context);
+  const texts=page.elements.get("system-details").children.map(item=>item.textContent);
+  assert.ok(texts.includes("Шлюз/API"));
+  assert.ok(texts.includes("Готовность маршрутизации"));
+  assert.ok(texts.includes("controller unavailable: reserve_not_ready"));
+});

@@ -29,6 +29,7 @@ const (
 )
 
 type ServerConfig struct {
+	I2P                 http.Handler
 	Store               *store.Store
 	Health              HealthChecker
 	ControllerReadiness HealthChecker
@@ -161,6 +162,12 @@ func New(config ServerConfig) http.Handler {
 	server.mux.HandleFunc("POST /api/me/reassign", server.reassign)
 	server.mux.HandleFunc("POST /api/admin/session", server.createAdminSession)
 	server.mux.HandleFunc("DELETE /api/admin/session", server.deleteAdminSession)
+	i2pHandler := config.I2P
+	if i2pHandler == nil {
+		i2pHandler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "I2P unavailable", 503) })
+	}
+	server.mux.HandleFunc("/api/admin/i2p", server.admin(i2pHandler.ServeHTTP))
+	server.mux.HandleFunc("/api/admin/i2p/", server.admin(i2pHandler.ServeHTTP))
 	server.mux.HandleFunc("GET /api/admin/clients", server.admin(server.listClients))
 	server.mux.HandleFunc("POST /api/admin/clients", server.admin(server.createClient))
 	server.mux.HandleFunc("GET /api/admin/clients/{id}", server.admin(server.getClient))
@@ -202,6 +209,11 @@ func (server *Server) me(response http.ResponseWriter, request *http.Request) {
 	}
 	result["connection_state"], result["route_reserved"] = connectionStatus(client, assignment, time.Now())
 	result["latest_handshake"] = client.LatestHandshake
+	routes := server.appliedClientRoutes(request.Context())
+	result["i2p_enabled"] = client.I2PEnabled
+	result["i2p_status"] = i2pStatus(client, routes)
+	result["onion_enabled"] = client.OnionEnabled
+	result["onion_status"] = onionStatus(client, routes)
 	var referenced []string
 	if assignment.TCPOutbound != "" {
 		referenced = append(referenced, assignment.TCPOutbound)
@@ -293,16 +305,19 @@ func (server *Server) listClients(response http.ResponseWriter, request *http.Re
 		byID[assignment.ClientID] = assignment
 	}
 	views := make([]clientPresenceView, 0, len(clients))
+	onionRoutes := server.appliedClientRoutes(request.Context())
 	now := time.Now()
 	for _, client := range clients {
 		assignment := byID[client.ID]
 		state, reserved := connectionStatus(client, assignment, now)
-		views = append(views, clientPresenceView{ClientRecord: client, ConnectionState: state, Reserved: reserved, LastRoute: assignment})
+		views = append(views, clientPresenceView{I2PStatus: i2pStatus(client, onionRoutes), OnionStatus: onionStatus(client, onionRoutes), ClientRecord: client, ConnectionState: state, Reserved: reserved, LastRoute: assignment})
 	}
 	writeJSON(response, http.StatusOK, map[string]any{"clients": views, "assignments": assignments})
 }
 
 type clientPresenceView struct {
+	I2PStatus   string `json:"i2p_status"`
+	OnionStatus string `json:"onion_status"`
 	store.ClientRecord
 	ConnectionState string                 `json:"connection_state"`
 	Reserved        bool                   `json:"route_reserved"`
@@ -366,8 +381,10 @@ func (server *Server) updateClient(response http.ResponseWriter, request *http.R
 		return
 	}
 	var body struct {
-		Name   string `json:"name"`
-		Paused *bool  `json:"paused"`
+		Name         string `json:"name"`
+		Paused       *bool  `json:"paused"`
+		OnionEnabled *bool  `json:"onion_enabled"`
+		I2PEnabled   *bool  `json:"i2p_enabled"`
 	}
 	if !server.decodeJSON(response, request, &body) {
 		return
@@ -385,11 +402,11 @@ func (server *Server) updateClient(response http.ResponseWriter, request *http.R
 		}
 		client.Paused = *body.Paused
 	}
-	if err := server.store.UpdateClient(request.Context(), client.ID, client.Name, client.Paused); err != nil {
+	if err := server.store.UpdateClientNetworkOptions(request.Context(), client.ID, client.Name, client.Paused, body.OnionEnabled, body.I2PEnabled); err != nil {
 		writeError(response, http.StatusInternalServerError, "client update failed")
 		return
 	}
-	if pausedChanged {
+	if (body.I2PEnabled != nil && *body.I2PEnabled != client.I2PEnabled) || pausedChanged || (body.OnionEnabled != nil && *body.OnionEnabled != client.OnionEnabled) {
 		server.notifyClientChange()
 	}
 	response.WriteHeader(http.StatusNoContent)
@@ -669,19 +686,24 @@ func (server *Server) health(response http.ResponseWriter, request *http.Request
 func (server *Server) ready(response http.ResponseWriter, request *http.Request) {
 	ctx, cancel := context.WithTimeout(request.Context(), 2*time.Second)
 	defer cancel()
-	if status := server.livenessStatus(ctx); status != "" {
-		writeJSON(response, http.StatusServiceUnavailable, map[string]string{"status": status})
+	_, readiness := server.healthAndReadiness(ctx)
+	if readiness != "ok" {
+		writeJSON(response, http.StatusServiceUnavailable, map[string]string{"status": readiness})
 		return
+	}
+	writeJSON(response, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func (server *Server) healthAndReadiness(ctx context.Context) (string, string) {
+	if status := server.livenessStatus(ctx); status != "" {
+		return status, status
 	}
 	if server.controllerReadiness != nil {
 		if err := server.controllerReadiness.Health(ctx); err != nil {
-			writeJSON(response, http.StatusServiceUnavailable, map[string]string{
-				"status": "controller unavailable: " + err.Error(),
-			})
-			return
+			return "ok", "controller unavailable: " + err.Error()
 		}
 	}
-	writeJSON(response, http.StatusOK, map[string]string{"status": "ok"})
+	return "ok", "ok"
 }
 
 func (server *Server) livenessStatus(ctx context.Context) string {

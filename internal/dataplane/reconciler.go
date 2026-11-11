@@ -28,6 +28,7 @@ const (
 	ProtocolVLESS Protocol = "vless"
 	ProtocolTor   Protocol = "tor"
 	ProtocolDNS   Protocol = "dns"
+	ProtocolI2P   Protocol = "i2p"
 )
 
 var ErrRuntimeRecovering = errors.New("dataplane runtime is recovering")
@@ -39,16 +40,22 @@ type Outbound struct {
 }
 
 type ClientRoute struct {
-	Dormant            bool   `json:"dormant,omitempty"`
-	ClientID           string `json:"client_id"`
-	SourceCIDR         string `json:"source_cidr,omitempty"`
-	TCPOutbound        string `json:"tcp_outbound"`
-	UDPOutbound        string `json:"udp_outbound"`
-	DNSOutbound        string `json:"dns_outbound,omitempty"`
-	TCPReserveOutbound string `json:"tcp_reserve_outbound,omitempty"`
-	UDPReserveOutbound string `json:"udp_reserve_outbound,omitempty"`
-	BlockTCP           bool   `json:"block_tcp,omitempty"`
-	BlockUDP           bool   `json:"block_udp,omitempty"`
+	I2PEnabled           bool   `json:"i2p_enabled,omitempty"`
+	I2POutbound          string `json:"i2p_outbound,omitempty"`
+	I2PToken             string `json:"i2p_token,omitempty"`
+	OnionEnabled         bool   `json:"onion_enabled,omitempty"`
+	OnionOutbound        string `json:"onion_outbound,omitempty"`
+	OnionReserveOutbound string `json:"onion_reserve_outbound,omitempty"`
+	Dormant              bool   `json:"dormant,omitempty"`
+	ClientID             string `json:"client_id"`
+	SourceCIDR           string `json:"source_cidr,omitempty"`
+	TCPOutbound          string `json:"tcp_outbound"`
+	UDPOutbound          string `json:"udp_outbound"`
+	DNSOutbound          string `json:"dns_outbound,omitempty"`
+	TCPReserveOutbound   string `json:"tcp_reserve_outbound,omitempty"`
+	UDPReserveOutbound   string `json:"udp_reserve_outbound,omitempty"`
+	BlockTCP             bool   `json:"block_tcp,omitempty"`
+	BlockUDP             bool   `json:"block_udp,omitempty"`
 }
 
 type DesiredPlan struct {
@@ -195,6 +202,9 @@ func (reconciler *Reconciler) applyLocked(
 		if err != nil {
 			return err
 		}
+	}
+	if !recovering && desired.Generation > reconciler.applied.Generation {
+		recoveries = append(recoveries, onionRecoveries(reconciler.applied.DesiredPlan, desired)...)
 	}
 	pendingRecoveries := reconciler.prepareFlowRecoveriesLocked(ctx, desired, recoveries, recovering)
 
@@ -460,7 +470,7 @@ func (plan DesiredPlan) Validate() error {
 	dnsProxies := make(map[string]string)
 	for _, outbound := range plan.Outbounds {
 		if outbound.ID == "" || (outbound.Protocol != ProtocolVLESS &&
-			outbound.Protocol != ProtocolTor && outbound.Protocol != ProtocolDNS) {
+			outbound.Protocol != ProtocolTor && outbound.Protocol != ProtocolDNS && outbound.Protocol != ProtocolI2P) {
 			return fmt.Errorf("invalid outbound %q", outbound.ID)
 		}
 		if _, exists := outbounds[outbound.ID]; exists {
@@ -497,6 +507,55 @@ func (plan DesiredPlan) Validate() error {
 			return fmt.Errorf("duplicate client %q", route.ClientID)
 		}
 		clients[route.ClientID] = struct{}{}
+		if route.OnionEnabled || route.I2PEnabled {
+			source, err := netip.ParsePrefix(route.SourceCIDR)
+			if err != nil || !source.IsSingleIP() || !source.Addr().Is4() {
+				return errors.New("onion client requires an IPv4 host source")
+			}
+			for _, other := range plan.Clients {
+				if other.ClientID == route.ClientID {
+					continue
+				}
+				p, err := netip.ParsePrefix(other.SourceCIDR)
+				if err == nil && p.Contains(source.Addr()) {
+					return errors.New("overlapping onion client source")
+				}
+			}
+		}
+		for _, id := range []string{route.OnionOutbound, route.OnionReserveOutbound} {
+			if id == "" {
+				continue
+			}
+			for _, other := range plan.Clients {
+				if id == other.TCPOutbound || id == other.UDPOutbound || id == other.TCPReserveOutbound || id == other.UDPReserveOutbound || id == other.DNSOutbound || (other.ClientID != route.ClientID && (id == other.OnionOutbound || id == other.OnionReserveOutbound)) {
+					return errors.New("onion outbound must be isolated per client")
+				}
+			}
+			outbound, exists := outbounds[id]
+			if !route.OnionEnabled || !exists || outbound.Protocol != ProtocolTor || id == route.TCPOutbound || id == route.TCPReserveOutbound {
+				return fmt.Errorf("client %s has invalid onion outbound", route.ClientID)
+			}
+		}
+		if route.OnionReserveOutbound != "" && (route.OnionOutbound == "" || route.OnionReserveOutbound == route.OnionOutbound) {
+			return errors.New("invalid onion reserve")
+		}
+		if !route.I2PEnabled && (route.I2POutbound != "" || route.I2PToken != "") {
+			return errors.New("disabled I2P has credentials")
+		}
+		if route.I2PEnabled {
+			o, ok := outbounds[route.I2POutbound]
+			if !ok || o.Protocol != ProtocolI2P || len(route.I2PToken) < 24 {
+				return errors.New("invalid I2P handler")
+			}
+			if err := validateI2PHandler(route, o); err != nil {
+				return err
+			}
+			for _, other := range plan.Clients {
+				if other.ClientID != route.ClientID && other.I2POutbound == route.I2POutbound {
+					return errors.New("shared I2P handler")
+				}
+			}
+		}
 		if (route.TCPOutbound == "") == !route.BlockTCP {
 			return fmt.Errorf("client %s must select or explicitly block TCP", route.ClientID)
 		}
@@ -1035,6 +1094,8 @@ func routeUsesChangedOutbound(route ClientRoute, changed map[string]struct{}) bo
 		route.DNSOutbound,
 		route.TCPReserveOutbound,
 		route.UDPReserveOutbound,
+		route.OnionOutbound,
+		route.OnionReserveOutbound,
 	} {
 		if _, exists := changed[id]; exists {
 			return true

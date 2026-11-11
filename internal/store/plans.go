@@ -26,6 +26,7 @@ type PlanState struct {
 }
 
 var ErrCandidateInventoryChanged = errors.New("candidate inventory changed")
+var ErrClientInventoryChanged = errors.New("client inventory changed")
 var ErrCandidateNotFound = errors.New("candidate not found")
 
 type CandidatePlanExpectation struct {
@@ -281,6 +282,11 @@ func expectedRouteReserveMappings(
 ) (map[string]RouteReserveMapping, error) {
 	expected := make(map[string]RouteReserveMapping)
 	for _, route := range plan.Clients {
+		for _, id := range []string{route.OnionOutbound, route.OnionReserveOutbound} {
+			if _, err := routeCandidateBinding("onion-"+route.ClientID, id, handlers); err != nil {
+				return nil, err
+			}
+		}
 		mapping := RouteReserveMapping{ClientID: route.ClientID}
 		var err error
 		mapping.TCPReserveCandidateID, err = routeCandidateBinding(
@@ -401,40 +407,55 @@ func validateAndEncodeDesiredAssignmentSnapshotTx(
 		targets[route.ClientID] = assignmentTarget{tcp: tcp, udp: udp}
 	}
 
-	rows, err := tx.QueryContext(ctx, `SELECT id, paused FROM clients ORDER BY id`)
+	rows, err := tx.QueryContext(ctx, `SELECT id, paused, onion_enabled, i2p_enabled FROM clients ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	clients := make(map[string]bool)
+	onionPermissions := make(map[string]bool)
+	i2pPermissions := make(map[string]bool)
 	for rows.Next() {
 		var clientID string
-		var paused bool
-		if err := rows.Scan(&clientID, &paused); err != nil {
+		var paused, onionEnabled, i2pEnabled bool
+		if err := rows.Scan(&clientID, &paused, &onionEnabled, &i2pEnabled); err != nil {
 			return nil, err
 		}
 		clients[clientID] = paused
+		onionPermissions[clientID] = onionEnabled && !paused
+		i2pPermissions[clientID] = i2pEnabled && !paused
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	for _, r := range plan.Clients {
+		if r.OnionEnabled != onionPermissions[r.ClientID] || r.I2PEnabled != i2pPermissions[r.ClientID] {
+			return nil, ErrCandidateInventoryChanged
+		}
+	}
 	if len(assignments) != len(clients) {
-		return nil, errors.New("desired assignment snapshot is incomplete")
+		return nil, fmt.Errorf("desired assignment snapshot is incomplete: %w", ErrClientInventoryChanged)
 	}
 	normalized := make([]AssignmentRecord, len(assignments))
 	copy(normalized, assignments)
 	seen := make(map[string]bool, len(normalized))
 	for _, assignment := range normalized {
 		paused, exists := clients[assignment.ClientID]
-		if !exists || seen[assignment.ClientID] {
+		if seen[assignment.ClientID] {
 			return nil, errors.New("desired assignment snapshot has an invalid client")
+		}
+		if !exists {
+			return nil, ErrClientInventoryChanged
 		}
 		seen[assignment.ClientID] = true
 		target, routed := targets[assignment.ClientID]
 		if paused {
 			if routed || assignment.TCPOutbound != "" || assignment.UDPOutbound != "" {
-				return nil, errors.New("paused client assignment snapshot must be cleared")
+				return nil, fmt.Errorf("paused client assignment snapshot must be cleared: %w", ErrClientInventoryChanged)
 			}
+		} else if !routed && assignment.TCPOutbound == "" && assignment.UDPOutbound == "" {
+			// A client resumed after this snapshot was assembled.
+			return nil, ErrClientInventoryChanged
 		} else if !routed || assignment.TCPOutbound != target.tcp ||
 			assignment.UDPOutbound != target.udp {
 			return nil, errors.New("desired assignment snapshot does not match the plan")
@@ -512,20 +533,25 @@ func validatePersistedAssignmentSnapshot(
 		return err
 	}
 	if len(assignments) != len(clients) {
-		return errors.New("desired assignment snapshot is incomplete")
+		return fmt.Errorf("desired assignment snapshot is incomplete: %w", ErrClientInventoryChanged)
 	}
 	seen := make(map[string]bool, len(assignments))
 	for _, assignment := range assignments {
 		paused, exists := clients[assignment.ClientID]
-		if !exists || seen[assignment.ClientID] {
+		if seen[assignment.ClientID] {
 			return errors.New("desired assignment snapshot has an invalid client")
+		}
+		if !exists {
+			return ErrClientInventoryChanged
 		}
 		seen[assignment.ClientID] = true
 		target, routed := targets[assignment.ClientID]
 		if paused {
 			if routed || assignment.TCPOutbound != "" || assignment.UDPOutbound != "" {
-				return errors.New("paused client assignment snapshot must be cleared")
+				return fmt.Errorf("paused client assignment snapshot must be cleared: %w", ErrClientInventoryChanged)
 			}
+		} else if !routed && assignment.TCPOutbound == "" && assignment.UDPOutbound == "" {
+			return ErrClientInventoryChanged
 		} else if !routed || assignment.TCPOutbound != target.tcp ||
 			assignment.UDPOutbound != target.udp {
 			return errors.New("desired assignment snapshot does not match the plan")
@@ -595,7 +621,7 @@ func validateRouteReserveMappingsTx(
 			return err
 		}
 		if clientExists != 1 {
-			return errors.New("route reserve client does not exist")
+			return fmt.Errorf("route reserve client does not exist: %w", ErrClientInventoryChanged)
 		}
 		pairs := []struct {
 			name    string

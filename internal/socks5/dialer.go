@@ -16,10 +16,13 @@ import (
 type DialContextFunc func(context.Context, string, string) (net.Conn, error)
 
 type Dialer struct {
-	ProxyAddress string
-	Username     string
-	Password     string
-	Dial         DialContextFunc
+	// HandshakeTimeout overrides the default five-second SOCKS negotiation budget.
+	// The caller context always takes precedence.
+	HandshakeTimeout time.Duration
+	ProxyAddress     string
+	Username         string
+	Password         string
+	Dial             DialContextFunc
 }
 
 func (dialer Dialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
@@ -93,7 +96,11 @@ func (dialer Dialer) open(ctx context.Context) (net.Conn, error) {
 			_ = connection.Close()
 		}
 	}()
-	deadline := time.Now().Add(5 * time.Second)
+	timeout := dialer.HandshakeTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
 	if value, ok := ctx.Deadline(); ok && value.Before(deadline) {
 		deadline = value
 	}

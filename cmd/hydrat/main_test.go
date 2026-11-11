@@ -725,7 +725,7 @@ func TestDNSMasqArgsBindOnlyWireGuardGatewayAndRaceIndependentResolvers(t *testi
 	}
 	want := []string{
 		"--keep-in-foreground", "--no-resolv", "--no-hosts",
-		"--listen-address=10.44.0.1", "--port=53", "--bind-interfaces",
+		"--listen-address=127.0.0.1", "--port=1053", "--bind-interfaces",
 		"--server=1.1.1.1", "--server=9.9.9.9", "--server=8.8.8.8",
 		"--all-servers", "--cache-size=10000", "--min-cache-ttl=30",
 		"--use-stale-cache=86400", "--fast-dns-retry=1000,10000",

@@ -28,7 +28,7 @@ func SafeHTTPChecks(checks []HTTPCheck) []HTTPCheck {
 	for _, check := range checks[:min(len(checks), 32)] {
 		c := &check
 		switch c.Service {
-		case "youtube", "chatgpt", "openai", "telegram", "telegram_obfuscated", "telegram_padded", "instagram", "qoe_endpoint":
+		case "youtube", "chatgpt", "openai", "telegram", "telegram_obfuscated", "telegram_padded", "instagram", "qoe_endpoint", "onion_search", "onion_project":
 		default:
 			c.Service = "custom"
 		}
@@ -93,3 +93,7 @@ func HTTPFailureSummary(checks []HTTPCheck) string {
 	}
 	return fmt.Sprintf(" route_failed=%d/%d control_failed=%d/%d checks=%s", routeFailed, routeCount, controlFailed, controlCount, strings.Join(fields, ","))
 }
+
+// Version identifies exactly the fixed onion targets and acceptance policy.
+// SHA-256 of the fixed v1 policy, in the existing agent comparison format.
+const OnionComparisonPolicy = "bbcf640ab56cab93ad7f965b6cd2250b5965ea3c4025a70244aaf67c8395068b"

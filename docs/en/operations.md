@@ -432,7 +432,7 @@ Existing active-monitor events are not duplicated.
 Readiness reasons distinguish `reserve_not_ready`, `primary_unusable`,
 `generation_pending`, `critical_limit` and genuine search exhaustion,
 `search_budget`. Reserve-validation errors include up to eight details:
-`missing`, `proof_not_fresh` or `not_admitted`. Waiting for proof is not
+`missing`, `proof_missing`, `proof_failed`, `proof_superseded`, `proof_expired`, `proof_future` or `not_admitted`. Waiting for proof is not
 reported as exhausted search; without an admissible, proved reserve,
 readiness remains 503.
 
@@ -756,3 +756,7 @@ non-empty TCP assignments, and a real request through a disposable WireGuard
 peer. Rollback intentionally does not call `scripts/deploy.sh`: the previous
 image may predate `/api/ready`, which is required only when accepting a new
 release.
+
+Onion access: [setup, troubleshooting and address-book backups](onion.md). Gateway mappings are not included in SQLite backups.
+
+After an accepted availability failure on an actively used assigned route, the next QoE check runs 5 seconds after the previous check completes (or sooner if the normal interval is shorter). Three confirmations are still required. Acceleration stops after success, degradation, or one minute without another valid failure; infrastructure errors do not extend it. Idle clients and throughput-only degradation keep their existing cadence. System shows gateway/API health separately from strict routing readiness; a healthy process does not prove that all reserves are available.

@@ -67,6 +67,8 @@ type ProbeRuntime interface {
 }
 
 type Prober struct {
+	onionTor         TorProbeManager
+	onionAllowed     func() bool
 	control          *probexray.Control
 	runtime          ProbeRuntime
 	cleanupTimeout   time.Duration
@@ -159,6 +161,12 @@ func NewCriticalActiveProber(
 func (prober *Prober) Probe(ctx context.Context, mode agentapi.ProbeMode, request agentapi.ProbeRequest) (agentapi.ProbeResponse, error) {
 	if prober.activeOnly && mode != agentapi.ProbeModeActiveCritical {
 		return agentapi.ProbeResponse{}, errors.New("critical active prober rejects background mode")
+	}
+	if request.Onion {
+		if mode != agentapi.ProbeModeQoE || request.Kind != sources.KindTorBridge {
+			return agentapi.ProbeResponse{}, errors.New("invalid onion probe scope")
+		}
+		return prober.probeOnion(ctx, request)
 	}
 	if request.Kind == sources.KindTorBridge {
 		return prober.probeTor(ctx, mode, request)

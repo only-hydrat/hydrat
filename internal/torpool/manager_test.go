@@ -713,3 +713,44 @@ func valueAfter(values []string, key string) string {
 	}
 	return ""
 }
+
+func TestReconcileDoesNotRewindExplorer(t *testing.T) {
+	m, err := NewManager(Config{DataDir: t.TempDir(), WarmProfiles: 1, ExplorerProfiles: 1}, &torRunner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	var candidates []Candidate
+	for i := 0; i < 6; i++ {
+		candidates = append(candidates, Candidate{ID: fmt.Sprint(i), Bridge: fmt.Sprintf("192.0.2.%d:443", i+1), Qualified: true, Score: float64(10 - i)})
+	}
+	if _, err = m.Reconcile(t.Context(), candidates); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for i := 0; i < 5; i++ {
+		ps, err := m.ExploreNext(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		var wanted string
+		for _, p := range ps {
+			if p.Role == "explorer" {
+				wanted = p.CandidateID
+				seen[wanted] = true
+			}
+		}
+		ps, err = m.Reconcile(t.Context(), candidates)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range ps {
+			if p.Role == "explorer" && p.CandidateID != wanted {
+				t.Fatalf("reconcile rewound explorer %s -> %s", wanted, p.CandidateID)
+			}
+		}
+	}
+	if len(seen) != 5 {
+		t.Fatalf("starved exploration: %v", seen)
+	}
+}

@@ -2,10 +2,12 @@ package torpool
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -14,6 +16,7 @@ import (
 )
 
 type Config struct {
+	PrepareOnion     func(context.Context, Profile) error
 	Binary           string
 	LyrebirdBinary   string
 	DataDir          string
@@ -32,12 +35,15 @@ type Candidate struct {
 }
 
 type Profile struct {
-	Slot        int    `json:"slot"`
-	Role        string `json:"role"`
-	CandidateID string `json:"candidate_id"`
-	SocksAddr   string `json:"socks_addr"`
-	DataDir     string `json:"data_dir"`
-	Retiring    bool   `json:"retiring,omitempty"`
+	Instance    string    `json:"instance,omitempty"`
+	StartedAt   time.Time `json:"started_at,omitempty"`
+	OnionReady  bool      `json:"onion_ready,omitempty"`
+	Slot        int       `json:"slot"`
+	Role        string    `json:"role"`
+	CandidateID string    `json:"candidate_id"`
+	SocksAddr   string    `json:"socks_addr"`
+	DataDir     string    `json:"data_dir"`
+	Retiring    bool      `json:"retiring,omitempty"`
 }
 
 type ProfileStatus struct {
@@ -55,8 +61,9 @@ type Runner interface {
 }
 
 type managedProfile struct {
-	profile Profile
-	process Process
+	profile    Profile
+	process    Process
+	onionEpoch uint64
 }
 
 type desiredProfile struct {
@@ -183,8 +190,23 @@ func (manager *Manager) Reconcile(ctx context.Context, candidates []Candidate) (
 			manager.candidates = append(manager.candidates, candidate)
 		}
 	}
+	// Reapplying the same pool must retain the explorer and its position.
 	manager.explorerNext = 0
-	for explorers := 0; explorers < manager.config.ExplorerProfiles &&
+	retainedExplorers := 0
+	for _, profile := range manager.profileList() {
+		if profile.Role != "explorer" {
+			continue
+		}
+		for index, candidate := range manager.candidates {
+			if candidate.ID == profile.CandidateID && len(desired) < capacity && retainedExplorers < manager.config.ExplorerProfiles {
+				desired = append(desired, desiredProfile{candidate: candidate, role: "explorer"})
+				desiredIDs[candidate.ID] = true
+				manager.explorerNext = index + 1
+				retainedExplorers++
+			}
+		}
+	}
+	for explorers := retainedExplorers; explorers < manager.config.ExplorerProfiles &&
 		manager.explorerNext < len(manager.candidates) &&
 		len(desired) < capacity; explorers++ {
 		desired = append(desired, desiredProfile{
@@ -301,9 +323,7 @@ func (manager *Manager) reconcileProfiles(ctx context.Context, desired []desired
 			delete(manager.profiles, slot)
 			continue
 		}
-		current.profile.Role = target.role
-		current.profile.Retiring = target.retiring
-		manager.profiles[slot] = current
+		manager.updateProfileRole(slot, current, target.role, target.retiring)
 	}
 
 	existing := make(map[string]bool, len(manager.profiles))
@@ -337,9 +357,7 @@ func (manager *Manager) replaceProfile(
 ) error {
 	if current, exists := manager.profiles[slot]; exists {
 		if current.profile.CandidateID == candidate.ID && !current.process.Exited() {
-			current.profile.Role = role
-			current.profile.Retiring = retiring
-			manager.profiles[slot] = current
+			manager.updateProfileRole(slot, current, role, retiring)
 			return nil
 		}
 	}
@@ -362,6 +380,9 @@ func (manager *Manager) replaceProfile(
 		"--SocksPort", socksAddr + " IsolateSOCKSAuth", "--Bridge", bridge,
 		"--Log", "notice stdout", "--AvoidDiskWrites", "1",
 	}
+	if manager.config.PrepareOnion != nil {
+		args = append(args, "--ControlSocket", filepath.Join(dataDir, "control.sock"), "--CookieAuthentication", "1", "--CookieAuthFile", filepath.Join(dataDir, "control_auth_cookie"), "--VirtualAddrNetworkIPv4", "198.18.0.0/15")
+	}
 	transport := strings.Fields(bridge)[0]
 	if !strings.Contains(transport, ":") {
 		if manager.config.LyrebirdBinary == "" {
@@ -369,19 +390,71 @@ func (manager *Manager) replaceProfile(
 		}
 		args = append(args, "--ClientTransportPlugin", transport+" exec "+manager.config.LyrebirdBinary)
 	}
+	var randomInstance [16]byte
+	if _, err := rand.Read(randomInstance[:]); err != nil {
+		return err
+	}
 	process, err := manager.runner.Start(manager.processCtx, manager.config.Binary, args...)
 	if err != nil {
 		return fmt.Errorf("start Tor profile %d: %w", slot, err)
 	}
 	manager.profiles[slot] = managedProfile{
 		profile: Profile{
+			Instance: fmt.Sprintf("%x", randomInstance[:]), StartedAt: time.Now().UTC(),
 			Slot: slot, Role: role, CandidateID: candidate.ID,
 			SocksAddr: socksAddr, DataDir: dataDir,
 			Retiring: retiring,
 		},
-		process: process,
+		process:    process,
+		onionEpoch: 1,
+	}
+	if manager.config.PrepareOnion != nil {
+		profile := manager.profiles[slot].profile
+		go manager.prepareOnion(profile, process, 1)
 	}
 	return nil
+}
+
+// Call with mu held. Explorers do not receive newly allocated mappings, so a
+// promotion must replay the book before advertising onion readiness again.
+func (manager *Manager) updateProfileRole(slot int, current managedProfile, role string, retiring bool) {
+	changed := current.profile.Role != role
+	current.profile.Role = role
+	current.profile.Retiring = retiring
+	if changed {
+		current.profile.OnionReady = false
+		current.onionEpoch++
+	}
+	manager.profiles[slot] = current
+	if changed && role == "warm" && manager.config.PrepareOnion != nil {
+		go manager.prepareOnion(current.profile, current.process, current.onionEpoch)
+	}
+}
+
+func (manager *Manager) prepareOnion(profile Profile, process Process, epoch uint64) {
+	for {
+		ctx, cancel := context.WithTimeout(manager.processCtx, 4*time.Second)
+		err := manager.config.PrepareOnion(ctx, profile)
+		cancel()
+		manager.mu.Lock()
+		current, exists := manager.profiles[profile.Slot]
+		if !exists || current.process != process || current.onionEpoch != epoch || process.Exited() {
+			manager.mu.Unlock()
+			return
+		}
+		if err == nil {
+			current.profile.OnionReady = true
+			manager.profiles[profile.Slot] = current
+			manager.mu.Unlock()
+			return
+		}
+		manager.mu.Unlock()
+		select {
+		case <-manager.processCtx.Done():
+			return
+		case <-time.After(time.Second):
+		}
+	}
 }
 
 func (manager *Manager) explorerSlot() (int, error) {

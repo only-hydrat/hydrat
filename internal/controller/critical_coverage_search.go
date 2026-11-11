@@ -604,7 +604,28 @@ func validateScheduledCriticalCapacityWithProofMode(
 				if rejected.id == "" {
 					detail = "missing"
 				} else if requireActiveProof && rejected.id == rejected.prospective {
-					detail = "proof_not_fresh"
+					detail = "proof_missing"
+					age := int64(-1)
+					for _, candidate := range candidates {
+						if candidate.ID != rejected.id {
+							continue
+						}
+						if !candidate.ActiveObservedAt.IsZero() {
+							age = now.Sub(candidate.ActiveObservedAt).Milliseconds()
+							switch {
+							case candidate.ActiveObservedAt.After(now):
+								detail = "proof_future"
+							case !candidate.ActiveCurrent:
+								detail = "proof_superseded"
+							case !candidate.ActiveSuccess:
+								detail = "proof_failed"
+							default:
+								detail = "proof_expired"
+							}
+						}
+						break
+					}
+					detail += fmt.Sprintf(":candidate=%s:age_ms=%d", rejected.id, age)
 				}
 				issues = append(issues, client.ID+":"+rejected.network+":"+detail)
 			}

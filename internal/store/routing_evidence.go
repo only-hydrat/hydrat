@@ -32,6 +32,7 @@ func (CandidateEvidenceChangedError) Unwrap() error   { return ErrCandidateEvide
 func (CandidateEvidenceChangedError) Temporary() bool { return true }
 
 type CandidateRoutingEvidence struct {
+	OnionQoE                *OnionQoEState
 	Candidate               Candidate
 	Payload                 string
 	SourceEnabled           bool
@@ -56,6 +57,7 @@ type RoutingEvidenceSnapshot struct {
 }
 
 type candidateEvidenceDigest struct {
+	OnionQoE                *OnionQoEState `json:",omitempty"`
 	Inventory               candidateInventoryEvidence
 	SourceEnabled           bool
 	PayloadSHA256           string
@@ -97,6 +99,7 @@ type candidateInventoryEvidence struct {
 func (evidence CandidateRoutingEvidence) semanticDigest() (string, error) {
 	payloadDigest := sha256.Sum256([]byte(evidence.Payload))
 	encoded, err := json.Marshal(candidateEvidenceDigest{
+		OnionQoE: evidence.OnionQoE,
 		Inventory: candidateInventoryEvidence{
 			ID:            evidence.Candidate.ID,
 			SourceID:      evidence.Candidate.SourceID,
@@ -329,6 +332,21 @@ func loadCandidateRoutingEvidenceStateTx(
 	tx *sql.Tx,
 	evidence *CandidateRoutingEvidence,
 ) error {
+	if evidence.Candidate.Kind == sources.KindTorBridge {
+		var encoded []byte
+		err := tx.QueryRowContext(ctx, `SELECT evidence FROM candidate_onion_qoe WHERE candidate_id=?`, evidence.Candidate.ID).Scan(&encoded)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if err == nil {
+			var state OnionQoEState
+			if err = json.Unmarshal(encoded, &state); err != nil {
+				return err
+			}
+			state.Samples = nil
+			evidence.OnionQoE = &state
+		}
+	}
 	var updated int64
 	var activeObserved sql.NullInt64
 	err := tx.QueryRowContext(ctx, `

@@ -85,7 +85,20 @@
 
 ---
 
+## 1.2.0 新功能
+
+- **通过 WireGuard 访问 .onion 网站。** 可为每个客户端单独启用，面板内提供浏览器设置指南。[配置 .onion 访问](onion.md)。
+- **面向 .onion 的 Tor 质量检查。** Hydrat 通过正在运行的配置测试网站，并与独立配置的结果比较，选择主路由和备用路由。系统会继续寻找更好的候选节点，同时保留健康的主路由。
+- **可选 I2P 访问。** 通过独立客户端容器打开 `.i2p` 网站，不转发第三方中继流量。支持空闲休眠、手动预热、内置 71 个名称的地址簿，以及 `hosts.txt` 导入和订阅。[安装 I2P](i2p.md)。
+- **更新的管理面板。** 更紧凑的概览、更清晰的客户端列表、统一的表单和移动端导航。Tor/I2P 指南位于“系统”中。
+
+两种访问功能默认均关闭，且需要使用 Hydrat 网关 DNS；浏览器自己的 DNS 可能绕过它。预热或切换配置后，首次打开网站可能需要等待。禁用中继并不隐藏 Tor/I2P 的使用情况，普通浏览器仍会保留 Cookie 和指纹。
+
+---
+
 ## 管理界面
+
+所有截图均使用演示数据。客户端名称、订阅和路由均不来自生产环境。
 
 管理面板可在 VPN 内通过 `http://10.44.0.1/` 访问。Compose 默认只在主机的 `127.0.0.1:8088` 上发布该端口。如需外部访问，请使用 WireGuard 或带身份验证的 HTTPS 反向代理。不要将面板直接发布为 `0.0.0.0:8088`。
 
@@ -115,6 +128,17 @@
 
 <p align="center">
   <img src="../../assets/candidates.png" alt="候选节点与锦标赛表" width="900" />
+</p>
+
+### 5. 系统与移动端面板
+
+可在“系统”中管理 Tor/I2P 和路由。手机端通过底部导航访问主要页面。
+
+<p align="center">
+  <img src="../../assets/system.png" alt="Hydrat 系统设置" width="900" />
+</p>
+<p align="center">
+  <img src="../../assets/mobile.png" alt="Hydrat 移动端面板" width="320" />
 </p>
 
 ---
@@ -166,13 +190,13 @@ HYDRAT_ADMIN_PASSWORD=请设置高强度密码
 
 ### 第 3 步：启动 Hydrat
 
-默认情况下，Hydrat 拉取并运行官方预构建公开镜像 `ghcr.io/only-hydrat/hydrat:1.1.0`：
+默认情况下，Hydrat 拉取并运行官方预构建公开镜像 `ghcr.io/only-hydrat/hydrat:1.2.0`：
 
 ```bash
 docker compose up -d
 ```
 
-> **注意：**可按需在 `.env` 中通过 `HYDRAT_IMAGE` 覆盖镜像和版本（例如 `HYDRAT_IMAGE=ghcr.io/only-hydrat/hydrat:1.1.0`）。
+> **注意：**可按需在 `.env` 中通过 `HYDRAT_IMAGE` 覆盖镜像和版本（例如 `HYDRAT_IMAGE=ghcr.io/only-hydrat/hydrat:1.2.0`）。
 
 ### 从源码构建（开发模式）
 
