@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/only-hydrat/hydrat/internal/agentapi"
+	"github.com/only-hydrat/hydrat/internal/freesubs"
 	"github.com/only-hydrat/hydrat/internal/proberuntime"
 	"github.com/only-hydrat/hydrat/internal/sources"
 	"github.com/only-hydrat/hydrat/internal/store"
@@ -43,6 +44,7 @@ type ServerConfig struct {
 	Profiles            ProfileManager
 	ProbeRuntime        ProbeRuntimeHealthProvider
 	SourceChanges       chan<- struct{}
+	FreeSources         FreeSourceDiscoverer
 	ClientChanges       chan<- struct{}
 	Routing             RoutingProvider
 	WireGuardEndpoint   string
@@ -101,6 +103,12 @@ type SourceRefresher interface {
 	Source(context.Context, string) error
 }
 
+// FreeSourceDiscoverer finds public free-subscription feeds on the network,
+// checks them and imports the usable ones as sources.
+type FreeSourceDiscoverer interface {
+	Sync(context.Context) (freesubs.Result, error)
+}
+
 type ProfileManager interface {
 	Profiles() []torpool.Profile
 	ExploreNext(context.Context) ([]torpool.Profile, error)
@@ -128,6 +136,7 @@ type Server struct {
 	profiles            ProfileManager
 	probeRuntime        ProbeRuntimeHealthProvider
 	sourceChanges       chan<- struct{}
+	freeSources         FreeSourceDiscoverer
 	clientChanges       chan<- struct{}
 	routing             RoutingProvider
 	wireguardEndpoint   string
@@ -149,6 +158,7 @@ func New(config ServerConfig) http.Handler {
 		maxBodyBytes: maxBodyBytes, reassigner: config.Reassigner, provisioner: config.Provisioner,
 		retirementGrace: retirementGrace,
 		refresher:       config.Refresher, profiles: config.Profiles, probeRuntime: config.ProbeRuntime,
+		freeSources:   config.FreeSources,
 		sourceChanges: config.SourceChanges, clientChanges: config.ClientChanges,
 		routing:           config.Routing,
 		wireguardEndpoint: strings.TrimSpace(config.WireGuardEndpoint),
@@ -183,6 +193,7 @@ func New(config ServerConfig) http.Handler {
 	server.mux.HandleFunc("POST /api/admin/clients/{id}/reassign", server.admin(server.adminReassignClient))
 	server.mux.HandleFunc("POST /api/admin/sources/preview", server.admin(server.previewSources))
 	server.mux.HandleFunc("POST /api/admin/sources/import", server.admin(server.importSources))
+	server.mux.HandleFunc("POST /api/admin/sources/discover", server.admin(server.discoverFreeSources))
 	server.mux.HandleFunc("GET /api/admin/sources", server.admin(server.listSources))
 	server.mux.HandleFunc("PATCH /api/admin/sources/{id}", server.admin(server.updateSource))
 	server.mux.HandleFunc("DELETE /api/admin/sources/{id}", server.admin(server.deleteSource))
@@ -749,6 +760,21 @@ func (server *Server) importSources(response http.ResponseWriter, request *http.
 		"result": result, "valid_count": preview.ValidCount,
 		"duplicate_count": preview.DuplicateCount, "error_count": preview.ErrorCount,
 	})
+}
+
+func (server *Server) discoverFreeSources(response http.ResponseWriter, request *http.Request) {
+	if server.freeSources == nil {
+		writeError(response, http.StatusConflict, "free source discovery is disabled")
+		return
+	}
+	ctx, cancel := context.WithTimeout(request.Context(), 3*time.Minute)
+	defer cancel()
+	result, err := server.freeSources.Sync(ctx)
+	if err != nil {
+		writeError(response, http.StatusBadGateway, "free source discovery failed: "+err.Error())
+		return
+	}
+	writeJSON(response, http.StatusOK, result)
 }
 
 func (server *Server) listSources(response http.ResponseWriter, request *http.Request) {

@@ -117,6 +117,21 @@ routing:
     geoip_url: "https://raw.githubusercontent.com/runetfreedom/russia-blocked-geoip/release/geoip.dat"
     geosite_url: "https://raw.githubusercontent.com/runetfreedom/russia-blocked-geosite/release/geosite.dat"
     update_interval: 24h
+
+free_sources:
+  # Поиск публичных бесплатных подписок в сети (VLESS, включая REALITY).
+  # Каталог лент и репозитории-коллекторы встроены, свои можно добавить ниже.
+  enabled: false
+  auto_import: true
+  interval: 6h
+  max_body_bytes: 8388608
+  max_feeds: 40
+  # В одной бесплатной ленте тысячи ссылок: держим инвентарь в разумных рамках.
+  max_candidates_per_feed: 800
+  github_token: ""
+  feeds: []
+  repositories: []
+
 controller:
   cycle_seconds: 30
   source_refresh_seconds: 3600

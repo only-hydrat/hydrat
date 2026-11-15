@@ -26,7 +26,7 @@ func TestImportSourcesEncryptsPayloadAndDeduplicates(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 
-	secret := "vless://11111111-1111-1111-1111-111111111111@example.com:443?security=reality#fast"
+	secret := "vless://11111111-1111-1111-1111-111111111111@example.com:443?security=reality&pbk=abcdefghijklmnopqrstuvwxyz0123456789ABCDEF&sni=www.microsoft.com#fast"
 	preview := sources.PreviewInput(secret + "\n" + strings.Replace(secret, "#fast", "#other", 1))
 	result, err := db.ImportSources(ctx, preview.Items)
 	if err != nil {
