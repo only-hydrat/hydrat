@@ -1,3 +1,5 @@
+//go:build unix
+
 package i2p
 
 import (

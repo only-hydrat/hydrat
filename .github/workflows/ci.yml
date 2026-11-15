@@ -48,3 +48,17 @@ jobs:
             -e HYDRAT_I2PD_BINARY=/usr/local/bin/i2pd \
             --entrypoint /i2p-test hydrat-i2p:ci \
             -test.run '^TestRealI2PProcessIsClientOnlyAndStops$' -test.v -test.timeout 40s
+
+  windows:
+    name: Windows build and portable unit tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - name: Build every package
+        run: go build ./...
+      - name: Run unit tests
+        run: go test ./...

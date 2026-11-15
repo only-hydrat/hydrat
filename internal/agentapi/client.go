@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/only-hydrat/hydrat/internal/dataplane"
+	"github.com/only-hydrat/hydrat/internal/platform"
 	"github.com/only-hydrat/hydrat/internal/proberuntime"
 	"github.com/only-hydrat/hydrat/internal/probetimeout"
 	"github.com/only-hydrat/hydrat/internal/torpool"
@@ -79,7 +80,7 @@ func NewClient(socketPath string, options ...ClientOption) *Client {
 	dialer := &net.Dialer{Timeout: 2 * time.Second, KeepAlive: 30 * time.Second}
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return dialer.DialContext(ctx, "unix", socketPath)
+			return platform.DialUnix(ctx, dialer, socketPath)
 		},
 		DisableCompression: true,
 		MaxIdleConns:       4,

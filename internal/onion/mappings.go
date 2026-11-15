@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/only-hydrat/hydrat/internal/platform"
 )
 
 // Normalize accepts public v3 service names, including application subdomains.
@@ -189,7 +191,7 @@ func (m *Mappings) save() error {
 		return err
 	}
 	defer parent.Close()
-	return parent.Sync()
+	return platform.SyncDirectory(parent)
 }
 
 func (m *Mappings) lookup(host string) (netip.Addr, bool) {
