@@ -11,8 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
+
+	"github.com/only-hydrat/hydrat/internal/platform"
 )
 
 const MaxEntries = 1024
@@ -97,7 +98,7 @@ func OpenBook(path string) (result *Book, err error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, err
 	}
-	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR|syscall.O_NOFOLLOW, 0600)
+	lock, err := openBookLock(path + ".lock")
 	if err != nil {
 		return nil, err
 	}
@@ -106,8 +107,8 @@ func OpenBook(path string) (result *Book, err error) {
 			lock.Close()
 		}
 	}()
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		return nil, errors.New("I2P book already owned")
+	if err := lockBook(lock); err != nil {
+		return nil, err
 	}
 
 	b := &Book{lock: lock, path: path, state: bookState{Version: 1, Entries: map[string]Entry{}, Mappings: map[string]Mapping{}, Next: 1}}
@@ -206,7 +207,7 @@ func atomicFile(path string, data []byte) error {
 		return err
 	}
 	defer d.Close()
-	return d.Sync()
+	return platform.SyncDirectory(d)
 }
 func (b *Book) save() error {
 	data, err := json.Marshal(b.state)

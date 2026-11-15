@@ -1,12 +1,15 @@
+//go:build unix
+
 package i2p
 
 import (
 	"context"
 	"encoding/base32"
-	"golang.org/x/net/dns/dnsmessage"
 	"net/netip"
 	"strings"
 	"testing"
+
+	"golang.org/x/net/dns/dnsmessage"
 )
 
 func TestDNSPermissionAndNonAQueriesNeverWakeOrAllocate(t *testing.T) {

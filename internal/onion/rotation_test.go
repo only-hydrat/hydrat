@@ -1,9 +1,10 @@
+//go:build unix
+
 package onion
 
 import (
 	"bufio"
 	"context"
-	"github.com/only-hydrat/hydrat/internal/torpool"
 	"net"
 	"net/netip"
 	"os"
@@ -13,6 +14,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/only-hydrat/hydrat/internal/torpool"
 )
 
 type mappingProcess struct{ stopped atomic.Bool }

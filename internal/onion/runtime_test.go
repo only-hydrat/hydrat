@@ -1,12 +1,15 @@
+//go:build unix
+
 package onion
 
 import (
 	"context"
-	"github.com/only-hydrat/hydrat/internal/dataplane"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/only-hydrat/hydrat/internal/dataplane"
 )
 
 func TestRuntimeOwnershipAndLostState(t *testing.T) {

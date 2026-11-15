@@ -565,6 +565,7 @@ func TestValidateBackupRejectsPlanHandlerWithoutCandidateBinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = database.Close() })
 	if err := database.PutClient(ctx, ClientRecord{
 		ID: "alice", Name: "Alice", Address: "10.44.0.2/32", PublicKey: "alice-key",
 	}, "secret"); err != nil {
