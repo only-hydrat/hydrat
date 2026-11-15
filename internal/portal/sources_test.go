@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/only-hydrat/hydrat/internal/freesubs"
 	"github.com/only-hydrat/hydrat/internal/secretbox"
 	"github.com/only-hydrat/hydrat/internal/sources"
 	"github.com/only-hydrat/hydrat/internal/store"
@@ -400,4 +401,47 @@ func (*profileRecorder) Profiles() []torpool.Profile { return nil }
 func (recorder *profileRecorder) ExploreNext(context.Context) ([]torpool.Profile, error) {
 	recorder.rotations++
 	return nil, nil
+}
+
+type fakeFreeSources struct {
+	calls  int
+	result freesubs.Result
+	err    error
+}
+
+func (fake *fakeFreeSources) Sync(context.Context) (freesubs.Result, error) {
+	fake.calls++
+	return fake.result, fake.err
+}
+
+func TestAdminSourceDiscoverRunsFreeSourceSync(t *testing.T) {
+	database := testStore(t)
+	fake := &fakeFreeSources{result: freesubs.Result{
+		Report:   freesubs.Report{Checked: 9, Usable: 3, Candidates: 1200, Reality: 640},
+		Imported: 3,
+	}}
+	server := New(ServerConfig{Store: database, AdminPassword: "correct horse", FreeSources: fake})
+
+	response := adminRequest(t, server, http.MethodPost, "/api/admin/sources/discover", "correct horse", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("discover status=%d body=%s", response.Code, response.Body.String())
+	}
+	if fake.calls != 1 {
+		t.Fatalf("sync calls=%d", fake.calls)
+	}
+	var payload freesubs.Result
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Imported != 3 || payload.Report.Reality != 640 || payload.Report.Checked != 9 {
+		t.Fatalf("payload=%+v", payload)
+	}
+}
+
+func TestAdminSourceDiscoverReportsDisabled(t *testing.T) {
+	server := New(ServerConfig{Store: testStore(t), AdminPassword: "correct horse"})
+	response := adminRequest(t, server, http.MethodPost, "/api/admin/sources/discover", "correct horse", nil)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
 }

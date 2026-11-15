@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -28,6 +29,7 @@ type Refresher struct {
 	client          *http.Client
 	maxBody         int64
 	inventoryLimit  int
+	candidateLimit  int
 	retirementGrace time.Duration
 	hwid            string
 	userAgent       string
@@ -69,6 +71,16 @@ func New(database *store.Store, client *http.Client, maxBody int64, inventoryLim
 		store: database, client: client, maxBody: maxBody,
 		inventoryLimit: maxCandidates, retirementGrace: 15 * time.Minute,
 	}
+}
+
+// WithCandidateLimit bounds how many candidates a single source may publish.
+// Large free-subscription feeds carry thousands of links and would otherwise
+// fill the whole inventory before anything is qualified.
+func (refresher *Refresher) WithCandidateLimit(limit int) *Refresher {
+	if limit > 0 {
+		refresher.candidateLimit = limit
+	}
+	return refresher
 }
 
 func (refresher *Refresher) WithRetirementGrace(grace time.Duration) *Refresher {
@@ -115,7 +127,9 @@ func (refresher *Refresher) Source(ctx context.Context, sourceID string) error {
 			if item.Kind == sources.KindVLESS {
 				identity, identityErr := xrayconfig.VLESSIdentity(item.Payload)
 				if identityErr != nil {
-					if kind == sources.KindRemoteAuto {
+					// Free feeds and auto-detected URLs always contain junk: drop the
+					// link instead of failing the whole source.
+					if kind == sources.KindRemoteAuto || kind == sources.KindFreeVLESSSubscription {
 						continue
 					}
 					err = identityErr
@@ -127,6 +141,9 @@ func (refresher *Refresher) Source(ctx context.Context, sourceID string) error {
 			candidates = append(candidates, candidate)
 		}
 		if err == nil {
+			if kind == sources.KindFreeVLESSSubscription {
+				candidates = limitCandidates(candidates, refresher.candidateLimit)
+			}
 			if len(candidates) == 0 {
 				err = errors.New("subscription contains no valid VLESS or Tor candidates")
 			} else {
@@ -221,7 +238,7 @@ func (refresher *Refresher) resolve(ctx context.Context, kind sources.Kind, payl
 	switch kind {
 	case sources.KindVLESS, sources.KindTorBridge:
 		return payload, nil
-	case sources.KindVLESSSubscription, sources.KindTorSubscription, sources.KindRemoteAuto:
+	case sources.KindVLESSSubscription, sources.KindFreeVLESSSubscription, sources.KindTorSubscription, sources.KindRemoteAuto:
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, payload, nil)
 		if err != nil {
 			return "", err
@@ -581,4 +598,21 @@ func normalizeSubscriptionPayload(input string) string {
 		return strings.TrimSpace(normalized[len("base64:"):])
 	}
 	return normalized
+}
+
+// limitCandidates keeps the newest source from flooding the inventory: REALITY
+// routes go first because they survive blocking better, then the rest in
+// subscription order.
+func limitCandidates(candidates []store.CandidateInput, limit int) []store.CandidateInput {
+	if limit <= 0 || len(candidates) <= limit {
+		return candidates
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return isRealityCandidate(candidates[i]) && !isRealityCandidate(candidates[j])
+	})
+	return candidates[:limit]
+}
+
+func isRealityCandidate(candidate store.CandidateInput) bool {
+	return strings.Contains(strings.ToLower(candidate.Payload), "security=reality")
 }

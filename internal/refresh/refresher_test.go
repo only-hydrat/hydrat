@@ -598,3 +598,52 @@ func refreshStore(t *testing.T) *store.Store {
 	t.Cleanup(func() { _ = database.Close() })
 	return database
 }
+
+func TestFreeSubscriptionCandidatesAreCappedRealityFirst(t *testing.T) {
+	ctx := context.Background()
+	payload := strings.Join([]string{
+		"vless://aaaa@plain1.example:443?security=tls#plain1",
+		"vless://bbbb@plain2.example:443?security=tls#plain2",
+		"vless://cccc@plain3.example:443?security=tls#plain3",
+		"vless://dddd@reality1.example:443?security=reality&pbk=abcdefghijklmnopqrstuvwxyz0123456789ABCDEF&sni=www.microsoft.com#reality1",
+		"vless://eeee@reality2.example:443?security=reality&pbk=abcdefghijklmnopqrstuvwxyz0123456789ABCDEF&sni=www.microsoft.com#reality2",
+	}, "\n")
+	client := &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(payload))}, nil
+	})}
+	database := refreshStore(t)
+	if _, err := database.ImportSources(ctx, sources.PreviewInput(
+		"free-source https://free.example/list\nproxy-source https://paid.example/list",
+	).Items); err != nil {
+		t.Fatal(err)
+	}
+	listed, err := database.ListSources(ctx)
+	if err != nil || len(listed) != 2 {
+		t.Fatalf("sources=%+v err=%v", listed, err)
+	}
+	refresher := New(database, client, 1024*1024, 10_000).WithCandidateLimit(2)
+	for _, source := range listed {
+		if err := refresher.Source(ctx, source.ID); err != nil {
+			t.Fatalf("refresh %s: %v", source.Kind, err)
+		}
+		candidates, err := database.ListCandidates(ctx, source.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch source.Kind {
+		case sources.KindFreeVLESSSubscription:
+			if len(candidates) != 2 {
+				t.Fatalf("free source kept %d candidates, want 2", len(candidates))
+			}
+			for _, candidate := range candidates {
+				if !strings.HasPrefix(candidate.Label, "reality") {
+					t.Fatalf("free source dropped a REALITY link: %+v", candidate)
+				}
+			}
+		default:
+			if len(candidates) != 5 {
+				t.Fatalf("manual subscription kept %d candidates, want 5", len(candidates))
+			}
+		}
+	}
+}
