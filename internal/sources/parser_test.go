@@ -6,7 +6,7 @@ import (
 )
 
 func TestPreviewMixedInputClassifiesAndDeduplicates(t *testing.T) {
-	vless := "vless://11111111-1111-1111-1111-111111111111@example.com:443?security=reality&type=tcp#fast"
+	vless := "vless://11111111-1111-1111-1111-111111111111@example.com:443?security=reality&pbk=abcdefghijklmnopqrstuvwxyz0123456789ABCDEF&sni=www.microsoft.com&type=tcp#fast"
 	input := strings.Join([]string{
 		vless,
 		strings.Replace(vless, "#fast", "#renamed", 1),
@@ -94,7 +94,7 @@ func TestPreviewRejectsUnsupportedOrMalformedTransportBridges(t *testing.T) {
 }
 
 func TestPreviewNeverIncludesSecretsInSafeItem(t *testing.T) {
-	secret := "vless://11111111-1111-1111-1111-111111111111@example.com:443?security=reality"
+	secret := "vless://11111111-1111-1111-1111-111111111111@example.com:443?security=reality&pbk=abcdefghijklmnopqrstuvwxyz0123456789ABCDEF&sid=ab12&sni=www.microsoft.com"
 	item := PreviewInput(secret).Items[0]
 
 	safe := item.Safe()
@@ -103,5 +103,49 @@ func TestPreviewNeverIncludesSecretsInSafeItem(t *testing.T) {
 	}
 	if safe.Fingerprint == "" || safe.Kind != KindVLESS {
 		t.Fatalf("safe item lost identity: %+v", safe)
+	}
+}
+
+func TestPreviewValidatesRealityParameters(t *testing.T) {
+	valid := "vless://11111111-1111-1111-1111-111111111111@reality.example:443?security=reality&pbk=abcdefghijklmnopqrstuvwxyz0123456789ABCDEF&sid=ab12&sni=www.microsoft.com&flow=xtls-rprx-vision#ok"
+	cases := []struct {
+		name  string
+		line  string
+		valid bool
+	}{
+		{"reality with pbk and sid", valid, true},
+		{"reality without sid", strings.Replace(valid, "&sid=ab12", "", 1), true},
+		{"reality without pbk", "vless://11111111-1111-1111-1111-111111111111@reality.example:443?security=reality&sni=www.microsoft.com#bad", false},
+		{"reality with odd sid", strings.Replace(valid, "sid=ab12", "sid=abc", 1), false},
+		{"reality with non-hex sid", strings.Replace(valid, "sid=ab12", "sid=zzzz", 1), false},
+		{"reality with long sid", strings.Replace(valid, "sid=ab12", "sid=0123456789abcdef00", 1), false},
+		{"plain tls link", "vless://11111111-1111-1111-1111-111111111111@plain.example:443?security=tls#tls", true},
+	}
+	for _, testCase := range cases {
+		preview := PreviewInput(testCase.line)
+		got := preview.ValidCount == 1
+		if got != testCase.valid {
+			t.Fatalf("%s: valid=%v preview=%+v", testCase.name, got, preview)
+		}
+	}
+}
+
+func TestPreviewNormalizesHTMLEscapedLinks(t *testing.T) {
+	escaped := "vless://11111111-1111-1111-1111-111111111111@reality.example:443?security=reality&amp;pbk=abcdefghijklmnopqrstuvwxyz0123456789ABCDEF&amp;sni=www.microsoft.com&amp;flow=xtls-rprx-vision#escaped"
+	preview := PreviewInput(escaped)
+	if preview.ValidCount != 1 || preview.Items[0].Kind != KindVLESS {
+		t.Fatalf("escaped link was rejected: %+v", preview)
+	}
+	if !strings.Contains(preview.Items[0].Payload, "security=reality&pbk=") {
+		t.Fatalf("entities were not decoded: %q", preview.Items[0].Payload)
+	}
+	if strings.Contains(preview.Items[0].Payload, "amp;") {
+		t.Fatalf("payload still contains HTML entities: %q", preview.Items[0].Payload)
+	}
+
+	jsonEscaped := `vless://11111111-1111-1111-1111-111111111111@plain.example:443?security=tls&type=ws&path=\/ws&host=cdn.example#json`
+	jsonPreview := PreviewInput(jsonEscaped)
+	if jsonPreview.ValidCount != 1 || !strings.Contains(jsonPreview.Items[0].Payload, "path=/ws") {
+		t.Fatalf("json escaped link = %+v", jsonPreview)
 	}
 }

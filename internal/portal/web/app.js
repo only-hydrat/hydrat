@@ -282,7 +282,8 @@ async function loadSources() {
   sources.forEach((source) => {
     const row = node("article", "data-row");
     const identity = node("div");
-    identity.append(node("strong", "", source.label), node("small", "", source.kind));
+    const kindLabel = source.kind === "free_vless_subscription" ? "бесплатная лента" : source.kind;
+    identity.append(node("strong", "", source.label), node("small", "", kindLabel));
     if (source.url) identity.append(node("small", "", source.url));
     row.append(identity, metric("Кандидаты", String(source.candidate_count || 0)), metric("Ошибка", source.last_refresh_error || "нет"), badge(source.enabled ? "Включён" : "Выключен", source.enabled ? "good" : "warn"));
     const actions = node("div", "actions");
@@ -305,6 +306,20 @@ $("source-import").addEventListener("click", async () => {
     await Promise.all([loadSources(), loadOverview()]);
   } catch (error) { notify(error.message, true); }
 });
+$("source-discover").addEventListener("click", async () => {
+  const target = $("source-result");
+  target.textContent = "Ищу бесплатные подписки в сети — проверяю источники…";
+  try {
+    const result = await request("/api/admin/sources/discover", {method:"POST"}, true);
+    const report = result.report || {};
+    target.textContent = `Проверено источников: ${report.checked ?? 0}, живых: ${report.usable ?? 0}\n`
+      + `Найдено ссылок: ${report.candidates ?? 0}, из них REALITY: ${report.reality ?? 0}\n`
+      + `Добавлено: ${result.imported ?? 0}, восстановлено: ${result.restored ?? 0}, пропущено: ${result.skipped ?? 0}`;
+    await Promise.all([loadSources(), loadOverview()]);
+    notify("Бесплатные источники обновлены");
+  } catch (error) { target.textContent = error.message; notify(error.message, true); }
+});
+
 async function refreshSource(source) {
   try { notify("Источник обновляется…"); await request(`/api/admin/sources/${source.id}/refresh`, {method:"POST"}, true); await loadSources(); notify("Источник обновлён"); }
   catch (error) { notify(error.message, true); }

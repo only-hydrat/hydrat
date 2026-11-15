@@ -3,7 +3,9 @@ package sources
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"html"
 	"net"
 	"net/url"
 	"sort"
@@ -18,9 +20,12 @@ const (
 	KindInvalid           Kind = "invalid"
 	KindVLESS             Kind = "vless"
 	KindVLESSSubscription Kind = "vless_subscription"
-	KindTorBridge         Kind = "tor_bridge"
-	KindTorSubscription   Kind = "tor_subscription"
-	KindRemoteAuto        Kind = "remote_auto"
+	// KindFreeVLESSSubscription marks a public free feed: importable like a
+	// subscription, but kept bounded to protect the inventory.
+	KindFreeVLESSSubscription Kind = "free_vless_subscription"
+	KindTorBridge             Kind = "tor_bridge"
+	KindTorSubscription       Kind = "tor_subscription"
+	KindRemoteAuto            Kind = "remote_auto"
 )
 
 var supportedTorTransports = map[string]bool{
@@ -54,7 +59,7 @@ func PreviewInput(input string) Preview {
 	preview := Preview{}
 	seen := make(map[string]struct{})
 	for index, raw := range strings.Split(input, "\n") {
-		line := strings.TrimSpace(raw)
+		line := normalizeSourceLine(strings.TrimSpace(raw))
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -76,6 +81,9 @@ func PreviewInput(input string) Preview {
 func parseLine(lineNumber int, line string) PreviewItem {
 	if strings.HasPrefix(line, "proxy-source ") {
 		return parseRemote(lineNumber, KindVLESSSubscription, strings.TrimSpace(strings.TrimPrefix(line, "proxy-source ")))
+	}
+	if strings.HasPrefix(line, "free-source ") {
+		return parseRemote(lineNumber, KindFreeVLESSSubscription, strings.TrimSpace(strings.TrimPrefix(line, "free-source ")))
 	}
 	if strings.HasPrefix(line, "tor-source ") {
 		return parseRemote(lineNumber, KindTorSubscription, strings.TrimSpace(strings.TrimPrefix(line, "tor-source ")))
@@ -103,6 +111,9 @@ func parseVLESS(lineNumber int, raw string) PreviewItem {
 		return PreviewItem{Line: lineNumber, Kind: KindInvalid, Error: "invalid VLESS URI"}
 	}
 	query := parsed.Query()
+	if err := validateReality(query); err != nil {
+		return PreviewItem{Line: lineNumber, Kind: KindInvalid, Error: err.Error()}
+	}
 	keys := make([]string, 0, len(query))
 	for key := range query {
 		keys = append(keys, key)
@@ -237,3 +248,41 @@ func fingerprint(value string) string {
 }
 
 func kindString(kind Kind) string { return string(kind) }
+
+// validateReality rejects REALITY URIs that Xray cannot build an outbound for.
+// Free-subscription feeds publish thousands of them, so they are filtered at
+// parse time instead of failing later during qualification.
+func validateReality(query url.Values) error {
+	if !strings.EqualFold(strings.TrimSpace(query.Get("security")), "reality") {
+		return nil
+	}
+	if strings.TrimSpace(query.Get("pbk")) == "" {
+		return errors.New("VLESS REALITY URI is missing pbk (public key)")
+	}
+	sid := strings.TrimSpace(query.Get("sid"))
+	if sid == "" {
+		return nil
+	}
+	if len(sid) > 16 || len(sid)%2 != 0 {
+		return errors.New("VLESS REALITY URI has invalid sid (short id)")
+	}
+	for _, char := range sid {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", char) {
+			return errors.New("VLESS REALITY URI has invalid sid (short id)")
+		}
+	}
+	return nil
+}
+
+// normalizeSourceLine repairs links copied from web pages and JSON payloads:
+// public collectors publish "&amp;" instead of "&" and escaped slashes, which
+// would otherwise turn every query parameter into an unparsable key.
+func normalizeSourceLine(line string) string {
+	if strings.Contains(line, "&amp;") || strings.Contains(line, "&#") {
+		line = html.UnescapeString(line)
+	}
+	if strings.Contains(line, `\/`) {
+		line = strings.ReplaceAll(line, `\/`, "/")
+	}
+	return line
+}

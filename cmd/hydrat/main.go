@@ -24,6 +24,7 @@ import (
 	"github.com/only-hydrat/hydrat/internal/controller"
 	"github.com/only-hydrat/hydrat/internal/dataplane"
 	"github.com/only-hydrat/hydrat/internal/failoverbudget"
+	"github.com/only-hydrat/hydrat/internal/freesubs"
 	"github.com/only-hydrat/hydrat/internal/gateway"
 	"github.com/only-hydrat/hydrat/internal/i2p"
 	"github.com/only-hydrat/hydrat/internal/onion"
@@ -910,7 +911,8 @@ func runController(ctx context.Context, cfg config.Config) error {
 		&http.Client{Timeout: 20 * time.Second},
 		4*1024*1024,
 		cfg.Inventory.MaxCandidates,
-	).WithRetirementGrace(cfg.Inventory.RetirementGrace).WithHWID(cfg.Inventory.HWID)
+	).WithRetirementGrace(cfg.Inventory.RetirementGrace).WithHWID(cfg.Inventory.HWID).
+		WithCandidateLimit(cfg.FreeSources.MaxCandidatesPerFeed)
 	promotionTrigger := make(chan struct{}, 1)
 	qualification := controller.QualificationService{
 		Store:            database,
@@ -949,6 +951,12 @@ func runController(ctx context.Context, cfg config.Config) error {
 		agent:         agent,
 		qualification: &qualification,
 	}
+	var freeSourceService *freesubs.Service
+	var freeSourceDiscoverer portal.FreeSourceDiscoverer
+	if cfg.FreeSources.Enabled {
+		freeSourceService = newFreeSourceService(cfg, database, sourceTrigger)
+		freeSourceDiscoverer = freeSourceService
+	}
 	handler := portal.New(portal.ServerConfig{
 		I2P:   agent.I2PHandler(),
 		Store: database, Health: agent, AdminPassword: adminPassword, Refresher: refresher, Profiles: torProfiles,
@@ -959,6 +967,7 @@ func runController(ctx context.Context, cfg config.Config) error {
 		ClientChanges:     clientLifecycleTrigger,
 		InternalToken:     portalToken,
 		Routing:           routingManager,
+		FreeSources:       freeSourceDiscoverer,
 		WireGuardEndpoint: endpoint,
 		UpdateSocket:      os.Getenv("HYDRAT_UPDATE_SOCKET"),
 	})
@@ -1055,6 +1064,9 @@ func runController(ctx context.Context, cfg config.Config) error {
 			cfg.QoE.DegradedInterval,
 		)
 		controllerRuntime.QoEDegradations = qoeTrigger
+	}
+	if freeSourceService != nil && cfg.FreeSources.AutoImport {
+		go runFreeSourceLoop(ctx, cfg.FreeSources, freeSourceService)
 	}
 	log.Printf("hydrat controller portal listening on %s", cfg.Portal.Bind)
 	runtimeDone := make(chan error, 1)
@@ -1297,4 +1309,60 @@ func listenI2PBridge(cfg config.Config) (net.Listener, error) {
 		return nil, err
 	}
 	return net.Listen("tcp4", "127.0.0.1:19447")
+}
+
+// newFreeSourceService builds the free-subscription discovery pass from config.
+func newFreeSourceService(cfg config.Config, database *store.Store, changed chan<- struct{}) *freesubs.Service {
+	feeds := make([]freesubs.Feed, 0, len(cfg.FreeSources.Feeds))
+	for _, feed := range cfg.FreeSources.Feeds {
+		feeds = append(feeds, freesubs.Feed{Label: feed.Label, URL: feed.URL})
+	}
+	repositories := make([]freesubs.Repository, 0, len(cfg.FreeSources.Repositories))
+	for _, repository := range cfg.FreeSources.Repositories {
+		repositories = append(repositories, freesubs.Repository{
+			Label: repository.Label, Owner: repository.Owner, Name: repository.Name, Path: repository.Path,
+		})
+	}
+	discovery := freesubs.New(freesubs.Options{
+		Client:       &http.Client{Timeout: 60 * time.Second},
+		MaxBody:      cfg.FreeSources.MaxBodyBytes,
+		MaxFeeds:     cfg.FreeSources.MaxFeeds,
+		GitHubToken:  cfg.FreeSources.GitHubToken,
+		Feeds:        feeds,
+		Repositories: repositories,
+	})
+	return &freesubs.Service{Discovery: discovery, Store: database, Changed: changed}
+}
+
+// runFreeSourceLoop refreshes the free-source catalog on a timer and imports
+// newly discovered feeds; the panel can trigger the same pass on demand.
+func runFreeSourceLoop(ctx context.Context, cfg config.FreeSourcesConfig, service *freesubs.Service) {
+	syncOnce := func() {
+		if ctx.Err() != nil {
+			return
+		}
+		runCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		result, err := service.Sync(runCtx)
+		cancel()
+		if err != nil {
+			log.Printf("free sources: sync failed: %v", err)
+			return
+		}
+		log.Printf(
+			"free sources: checked=%d usable=%d candidates=%d reality=%d imported=%d restored=%d skipped=%d",
+			result.Report.Checked, result.Report.Usable, result.Report.Candidates, result.Report.Reality,
+			result.Imported, result.Restored, result.Skipped,
+		)
+	}
+	syncOnce()
+	ticker := time.NewTicker(cfg.Interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			syncOnce()
+		}
+	}
 }
