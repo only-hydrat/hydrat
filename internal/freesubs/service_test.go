@@ -106,3 +106,38 @@ func TestServiceSyncReportsImportFailure(t *testing.T) {
 		t.Fatal("import failure was swallowed")
 	}
 }
+
+func TestServiceSyncRejectsMissingDiscovery(t *testing.T) {
+	service := &Service{Store: &fakeStore{}}
+	if _, err := service.Sync(context.Background()); err == nil {
+		t.Fatal("missing discovery was accepted")
+	}
+}
+
+func TestServiceSyncRejectsMissingStoreWhenFeedsAreUsable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write([]byte(realityLink + "\n"))
+	}))
+	defer server.Close()
+
+	service := &Service{Discovery: New(Options{
+		Client:       &http.Client{Timeout: 5 * time.Second},
+		Catalog:      []Feed{},
+		Repositories: []Repository{},
+		Feeds:        []Feed{{Label: "free", URL: server.URL}},
+	})}
+	result, err := service.Sync(context.Background())
+	if err == nil {
+		t.Fatal("missing store was accepted")
+	}
+	if result.Imported != 0 || result.Restored != 0 || result.Total() != 0 {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
+func TestResultTotalCountsImportedAndRestored(t *testing.T) {
+	result := Result{Imported: 2, Restored: 3, Skipped: 7}
+	if total := result.Total(); total != 5 {
+		t.Fatalf("total=%d", total)
+	}
+}
