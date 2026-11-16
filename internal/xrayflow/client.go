@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/only-hydrat/hydrat/internal/platform"
 )
 
 type Client struct{ http *http.Client }
@@ -16,7 +18,7 @@ type Client struct{ http *http.Client }
 func NewClient(path string) *Client {
 	transport := &http.Transport{MaxIdleConns: 2, MaxIdleConnsPerHost: 2, IdleConnTimeout: 15 * time.Second,
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{Timeout: 250 * time.Millisecond}).DialContext(ctx, "unix", path)
+			return platform.DialUnix(ctx, &net.Dialer{Timeout: 250 * time.Millisecond}, path)
 		}}
 	return &Client{http: &http.Client{Transport: transport, Timeout: 750 * time.Millisecond}}
 }

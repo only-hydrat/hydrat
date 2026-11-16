@@ -118,7 +118,7 @@ func Open(path string, box *secretbox.Box) (*Store, error) {
 }
 
 func sqliteConnectionDSN(path string) string {
-	uri := &url.URL{Scheme: "file", Path: path}
+	uri := &url.URL{Scheme: "file", Path: databaseURIPath(path)}
 	query := uri.Query()
 	query.Add("_pragma", "foreign_keys=on")
 	query.Add("_pragma", "busy_timeout=5000")

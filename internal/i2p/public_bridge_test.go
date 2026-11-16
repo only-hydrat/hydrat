@@ -1,10 +1,10 @@
+//go:build unix
+
 package i2p
 
 import (
 	"context"
 	"encoding/json"
-	"github.com/only-hydrat/hydrat/internal/dataplane"
-	"github.com/only-hydrat/hydrat/internal/socks5"
 	"io"
 	"net"
 	"net/http"
@@ -14,6 +14,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/only-hydrat/hydrat/internal/dataplane"
+	"github.com/only-hydrat/hydrat/internal/socks5"
 )
 
 func TestPublicI2PBridge(t *testing.T) {

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/netip"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -142,11 +141,3 @@ func normalizedOptional(value string) string {
 }
 
 type ExecRunner struct{}
-
-func (ExecRunner) Output(ctx context.Context, name string, args ...string) ([]byte, error) {
-	output, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w: %s", name, err, strings.TrimSpace(string(output)))
-	}
-	return output, nil
-}

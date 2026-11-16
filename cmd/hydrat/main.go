@@ -114,10 +114,6 @@ func runWithServiceLogOpener(openLog serviceLogOpener) (runErr error) {
 	}
 }
 
-func openServiceLog(command string) (*retainedlog.Writer, error) {
-	return openServiceLogWithDirectoryPreparer(command, retainedlog.PrepareDirectory)
-}
-
 func openServiceLogWithDirectoryPreparer(
 	command string,
 	prepareDirectory serviceLogDirectoryPreparer,
@@ -261,6 +257,9 @@ func runAgent(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 	cfg.WireGuard.Endpoint = endpoint
+	if err := requireGateway(); err != nil {
+		return err
+	}
 	if err := prepareAgentStorage(ctx, cfg); err != nil {
 		return err
 	}
@@ -807,6 +806,9 @@ func prepareAgentStorage(ctx context.Context, cfg config.Config) error {
 }
 
 func runController(ctx context.Context, cfg config.Config) error {
+	if err := requireGateway(); err != nil {
+		return err
+	}
 	endpoint, err := resolveWireGuardEndpoint(cfg.WireGuard)
 	if err != nil {
 		return err
@@ -1122,42 +1124,6 @@ func controllerQoEMonitor(
 		Retention: cfg.QoE.Retention, Workers: cfg.QoE.Workers,
 		StandbyCandidates: cfg.QoE.StandbyCandidates, Trigger: trigger,
 	}, trigger
-}
-
-func listenUnix(path string) (net.Listener, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, err
-	}
-	if info, err := os.Lstat(path); err == nil {
-		if info.Mode()&os.ModeSocket == 0 {
-			return nil, fmt.Errorf("refusing to replace non-socket %s", path)
-		}
-		if err := os.Remove(path); err != nil {
-			return nil, err
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
-	listener, err := net.Listen("unix", path)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.Chmod(path, 0o660); err != nil {
-		_ = listener.Close()
-		return nil, err
-	}
-	if gidText := os.Getenv("HYDRAT_SOCKET_GID"); gidText != "" {
-		gid, err := strconv.Atoi(gidText)
-		if err != nil {
-			_ = listener.Close()
-			return nil, fmt.Errorf("invalid HYDRAT_SOCKET_GID: %w", err)
-		}
-		if err := os.Chown(path, -1, gid); err != nil {
-			_ = listener.Close()
-			return nil, err
-		}
-	}
-	return listener, nil
 }
 
 type controllerRoutingManager struct {

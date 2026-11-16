@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"io"
-	"os"
-	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,20 +10,6 @@ import (
 	"github.com/only-hydrat/hydrat/internal/supervisor"
 	"github.com/only-hydrat/hydrat/internal/xrayflow"
 )
-
-func TestFlowControlPreservesNewAgentSocketParentAccess(t *testing.T) {
-	parent := filepath.Join(t.TempDir(), "new-agent")
-	path, err := flowControlSocket(filepath.Join(parent, "agent.sock"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info, err := os.Stat(parent); err != nil || info.Mode().Perm() != 0755 {
-		t.Fatalf("agent socket parent must remain traversable: info=%v err=%v", info, err)
-	}
-	if path != filepath.Join(parent, "flow-control", "xray.sock") {
-		t.Fatalf("path=%s", path)
-	}
-}
 
 func TestFlowControlEnvironmentOnlyOnMainChild(t *testing.T) {
 	plain := newXraySupervisor(io.Discard).Runner.(supervisor.ExecRunner)

@@ -619,6 +619,7 @@ func TestValidateBackupConditionallyRequiresV11RouteReserveSchema(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = database.Close() })
 	v11Backup := filepath.Join(t.TempDir(), "v11.db")
 	if err := database.Backup(ctx, v11Backup); err != nil {
 		t.Fatal(err)
