@@ -98,8 +98,10 @@ func (discovery *Discovery) Run(ctx context.Context) Report {
 		catalog = Catalog()
 	}
 	feeds := make([]Feed, 0, len(catalog)+len(discovery.opts.Feeds)+8)
-	feeds = append(feeds, catalog...)
+	// Configured feeds go first: a large catalog must never push an explicitly
+	// requested feed past the MaxFeeds limit.
 	feeds = append(feeds, discovery.opts.Feeds...)
+	feeds = append(feeds, catalog...)
 	repositories := discovery.opts.Repositories
 	if repositories == nil {
 		repositories = Repositories()

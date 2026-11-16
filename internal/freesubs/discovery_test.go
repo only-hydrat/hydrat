@@ -120,3 +120,32 @@ func TestDiscoveryRejectsOversizedAndFailedBodies(t *testing.T) {
 		t.Fatal("failed report produced source items")
 	}
 }
+
+func TestDiscoveryKeepsConfiguredFeedsWithinMaxFeeds(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/mine.txt" {
+			writer.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		_, _ = writer.Write([]byte(realityLink + "\n"))
+	}))
+	defer server.Close()
+
+	discovery := New(Options{
+		Client:   &http.Client{Timeout: 5 * time.Second},
+		MaxFeeds: 1,
+		Catalog: []Feed{
+			{Label: "catalog-one", URL: server.URL + "/catalog-one.txt"},
+			{Label: "catalog-two", URL: server.URL + "/catalog-two.txt"},
+		},
+		Feeds:        []Feed{{Label: "mine", URL: server.URL + "/mine.txt"}},
+		Repositories: []Repository{},
+	})
+	report := discovery.Run(context.Background())
+	if report.Checked != 1 {
+		t.Fatalf("checked=%d report=%+v", report.Checked, report)
+	}
+	if report.Feeds[0].URL != server.URL+"/mine.txt" || report.Usable != 1 {
+		t.Fatalf("configured feed was truncated away: %+v", report.Feeds)
+	}
+}
