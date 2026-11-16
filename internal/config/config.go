@@ -39,6 +39,34 @@ type Config struct {
 	WireGuard    WireGuardConfig    `yaml:"wireguard"`
 	Xray         XrayConfig         `yaml:"xray"`
 	Controller   ControllerConfig   `yaml:"controller"`
+	FreeSources  FreeSourcesConfig  `yaml:"free_sources"`
+}
+
+// FreeSourcesConfig controls discovery of public free-subscription feeds.
+type FreeSourcesConfig struct {
+	Enabled              bool                   `yaml:"enabled"`
+	AutoImport           bool                   `yaml:"auto_import"`
+	Interval             time.Duration          `yaml:"interval"`
+	MaxBodyBytes         int64                  `yaml:"max_body_bytes"`
+	MaxFeeds             int                    `yaml:"max_feeds"`
+	MaxCandidatesPerFeed int                    `yaml:"max_candidates_per_feed"`
+	GitHubToken          string                 `yaml:"github_token,omitempty"`
+	Feeds                []FreeSourceFeedConfig `yaml:"feeds,omitempty"`
+	Repositories         []FreeSourceRepoConfig `yaml:"repositories,omitempty"`
+}
+
+// FreeSourceFeedConfig adds an extra subscription feed to the built-in catalog.
+type FreeSourceFeedConfig struct {
+	Label string `yaml:"label"`
+	URL   string `yaml:"url"`
+}
+
+// FreeSourceRepoConfig adds an extra collector repository to discovery.
+type FreeSourceRepoConfig struct {
+	Label string `yaml:"label"`
+	Owner string `yaml:"owner"`
+	Name  string `yaml:"name"`
+	Path  string `yaml:"path,omitempty"`
 }
 
 type PortalConfig struct {
@@ -369,6 +397,10 @@ func Defaults() Config {
 			CycleSeconds: 300, SourceRefreshSeconds: 3600, ProbeSeconds: 300,
 			HardFailoverBudget:      800 * time.Millisecond,
 			PlacementPreemptTimeout: 100 * time.Millisecond,
+		},
+		FreeSources: FreeSourcesConfig{
+			Enabled: false, AutoImport: true, Interval: 6 * time.Hour,
+			MaxBodyBytes: 8 << 20, MaxFeeds: 40, MaxCandidatesPerFeed: 800,
 		},
 	}
 }
@@ -703,6 +735,9 @@ func (c Config) Validate() error {
 	if c.Controller.CycleSeconds <= 0 || c.Controller.SourceRefreshSeconds <= 0 || c.Controller.ProbeSeconds <= 0 {
 		return errors.New("controller intervals must be positive")
 	}
+	if err := validateFreeSources(c.FreeSources); err != nil {
+		return err
+	}
 	if c.Routing.FailPolicy != FailClosed {
 		return fmt.Errorf("routing.fail_policy must be %q", FailClosed)
 	}
@@ -905,6 +940,42 @@ func (c Config) I2PBridgeConflict() error {
 	} {
 		if portRangesOverlap(r.base, r.count, port, 1) {
 			return fmt.Errorf("I2P bridge port %d overlaps a configured SOCKS range", port)
+		}
+	}
+	return nil
+}
+
+// validateFreeSources keeps a misconfigured discovery pass from flooding the
+// inventory or the network.
+func validateFreeSources(c FreeSourcesConfig) error {
+	if !c.Enabled {
+		return nil
+	}
+	if c.Interval <= 0 {
+		return errors.New("free_sources.interval must be positive")
+	}
+	if c.Interval < 15*time.Minute {
+		return errors.New("free_sources.interval must be at least 15m")
+	}
+	if c.MaxFeeds <= 0 {
+		return errors.New("free_sources.max_feeds must be positive")
+	}
+	if c.MaxBodyBytes < 64<<10 {
+		return errors.New("free_sources.max_body_bytes must be at least 65536")
+	}
+	if c.MaxCandidatesPerFeed <= 0 {
+		return errors.New("free_sources.max_candidates_per_feed must be positive")
+	}
+	for _, feed := range c.Feeds {
+		trimmed := strings.TrimSpace(feed.URL)
+		u, err := url.Parse(trimmed)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("free_sources.feeds entry %q must be a valid http or https URL", feed.URL)
+		}
+	}
+	for _, repository := range c.Repositories {
+		if strings.TrimSpace(repository.Owner) == "" || strings.TrimSpace(repository.Name) == "" {
+			return errors.New("free_sources.repositories entries must have owner and name")
 		}
 	}
 	return nil

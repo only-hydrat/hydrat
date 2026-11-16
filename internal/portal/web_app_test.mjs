@@ -285,3 +285,32 @@ test("system shows healthy API separately from unready routing", async () => {
   assert.ok(texts.includes("Готовность маршрутизации"));
   assert.ok(texts.includes("controller unavailable: reserve_not_ready"));
 });
+
+test("free source discovery button reports the import result", async () => {
+  const requests = [];
+  const page = dashboard(async (url, options = {}) => {
+    requests.push({url, method: options.method || "GET", auth: options.headers?.get("Authorization")});
+    if (url === "/api/admin/sources/discover") {
+      return Response.json({report: {checked: 9, usable: 3, candidates: 1200, reality: 640}, imported: 2, restored: 1, skipped: 4});
+    }
+    if (url === "/api/admin/sources") return Response.json({sources: []});
+    return Response.json({});
+  });
+  runInContext('adminToken = "live-token"', page.context);
+  await page.elements.get("source-discover").listeners.click();
+  const text = page.elements.get("source-result").textContent;
+  assert.match(text, /Проверено источников: 9, живых: 3/);
+  assert.match(text, /Найдено ссылок: 1200, из них REALITY: 640/);
+  assert.match(text, /Добавлено: 2, восстановлено: 1, пропущено: 4/);
+  assert.ok(requests.some((request) => request.url === "/api/admin/sources/discover" && request.method === "POST" && request.auth === "Bearer live-token"));
+});
+
+test("free source discovery reports a disabled section without clearing history", async () => {
+  const page = dashboard(async (url) => {
+    if (url === "/api/admin/sources/discover") return new Response(JSON.stringify({error: "free source discovery is disabled"}), {status: 409});
+    return Response.json({});
+  });
+  runInContext('adminToken = "live-token"', page.context);
+  await page.elements.get("source-discover").listeners.click();
+  assert.match(page.elements.get("source-result").textContent, /disabled/);
+});

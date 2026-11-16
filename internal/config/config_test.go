@@ -974,3 +974,70 @@ func TestOnionReservedResourcesCannotOverlapRuntime(t *testing.T) {
 		}
 	}
 }
+
+func TestLoadFreeSourcesConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yml")
+	body := "free_sources:\n" +
+		"  enabled: true\n" +
+		"  interval: 1h\n" +
+		"  max_candidates_per_feed: 400\n" +
+		"  feeds:\n" +
+		"    - label: my-feed\n" +
+		"      url: https://example.com/list.txt\n" +
+		"  repositories:\n" +
+		"    - label: my-repo\n" +
+		"      owner: octocat\n" +
+		"      name: feeds\n" +
+		"      path: sub\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.FreeSources.Enabled || cfg.FreeSources.Interval != time.Hour ||
+		cfg.FreeSources.MaxCandidatesPerFeed != 400 || !cfg.FreeSources.AutoImport {
+		t.Fatalf("free sources=%+v", cfg.FreeSources)
+	}
+	if len(cfg.FreeSources.Feeds) != 1 || cfg.FreeSources.Feeds[0].Label != "my-feed" {
+		t.Fatalf("feeds=%+v", cfg.FreeSources.Feeds)
+	}
+	if len(cfg.FreeSources.Repositories) != 1 || cfg.FreeSources.Repositories[0].Owner != "octocat" {
+		t.Fatalf("repositories=%+v", cfg.FreeSources.Repositories)
+	}
+}
+
+func TestValidateFreeSourcesRejectsBadEntries(t *testing.T) {
+	cases := []struct {
+		name   string
+		config FreeSourcesConfig
+	}{
+		{"short interval", FreeSourcesConfig{Enabled: true, Interval: time.Minute, MaxBodyBytes: 1 << 20, MaxFeeds: 4, MaxCandidatesPerFeed: 10}},
+		{"zero feeds", FreeSourcesConfig{Enabled: true, Interval: time.Hour, MaxBodyBytes: 1 << 20, MaxCandidatesPerFeed: 10}},
+		{"tiny body", FreeSourcesConfig{Enabled: true, Interval: time.Hour, MaxBodyBytes: 1024, MaxFeeds: 4, MaxCandidatesPerFeed: 10}},
+		{"zero candidates", FreeSourcesConfig{Enabled: true, Interval: time.Hour, MaxBodyBytes: 1 << 20, MaxFeeds: 4}},
+		{"bad feed url", FreeSourcesConfig{
+			Enabled: true, Interval: time.Hour, MaxBodyBytes: 1 << 20, MaxFeeds: 4, MaxCandidatesPerFeed: 10,
+			Feeds: []FreeSourceFeedConfig{{Label: "x", URL: "ftp://example.com/list"}},
+		}},
+		{"repository without owner", FreeSourcesConfig{
+			Enabled: true, Interval: time.Hour, MaxBodyBytes: 1 << 20, MaxFeeds: 4, MaxCandidatesPerFeed: 10,
+			Repositories: []FreeSourceRepoConfig{{Label: "x", Name: "feeds"}},
+		}},
+	}
+	for _, testCase := range cases {
+		if err := validateFreeSources(testCase.config); err == nil {
+			t.Fatalf("%s: expected an error", testCase.name)
+		}
+	}
+	if err := validateFreeSources(FreeSourcesConfig{Enabled: false, Interval: time.Second}); err != nil {
+		t.Fatalf("disabled section must not be validated: %v", err)
+	}
+	valid := FreeSourcesConfig{
+		Enabled: true, Interval: time.Hour, MaxBodyBytes: 1 << 20, MaxFeeds: 4, MaxCandidatesPerFeed: 10,
+	}
+	if err := validateFreeSources(valid); err != nil {
+		t.Fatalf("valid config rejected: %v", err)
+	}
+}
