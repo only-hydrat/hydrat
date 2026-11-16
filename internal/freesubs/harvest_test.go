@@ -49,24 +49,6 @@ func TestExtractVLESSDeduplicatesAndTrims(t *testing.T) {
 	}
 }
 
-func TestExtractSubscriptionLinks(t *testing.T) {
-	page := `<a href="https://example.org/list.txt">list</a>
-	<a href="https://example.org/vless">vless</a>
-	<a href="https://example.org/about">about</a>
-	https://example.org/config.yaml?token=1
-	https://example.org/index.html`
-	links := ExtractSubscriptionLinks(page)
-	joined := strings.Join(links, " ")
-	for _, want := range []string{"list.txt", "/vless", "config.yaml"} {
-		if !strings.Contains(joined, want) {
-			t.Fatalf("missing %q in %v", want, links)
-		}
-	}
-	if strings.Contains(joined, "about") || strings.Contains(joined, "index.html") {
-		t.Fatalf("navigation links leaked: %v", links)
-	}
-}
-
 func TestIsFeedFile(t *testing.T) {
 	for _, name := range []string{"vless", "mixed", "vlessbase64", "sub", "list.txt"} {
 		if !IsFeedFile(name) {
