@@ -3,15 +3,11 @@ package freesubs
 import (
 	"encoding/base64"
 	"html"
-	"net/url"
 	"regexp"
 	"strings"
 )
 
-var (
-	vlessPattern = regexp.MustCompile(`vless://[^\s"'<>\x60\\]+`)
-	urlPattern   = regexp.MustCompile(`https?://[^\s"'<>\x60\\]+`)
-)
+var vlessPattern = regexp.MustCompile(`vless://[^\s"'<>\x60\\]+`)
 
 // maxLinksPerFeed bounds how many links a single feed may contribute.
 const maxLinksPerFeed = 20000
@@ -97,48 +93,6 @@ func CountVLESS(text string) (vless, reality int) {
 		}
 	}
 	return len(links), reality
-}
-
-// ExtractSubscriptionLinks returns candidate subscription URLs published on an
-// index page or inside another feed.
-func ExtractSubscriptionLinks(text string) []string {
-	text = html.UnescapeString(strings.ReplaceAll(text, "\\/", "/"))
-	seen := make(map[string]struct{})
-	links := make([]string, 0, 16)
-	for _, match := range urlPattern.FindAllString(text, 5000) {
-		link := cleanLink(match)
-		parsed, err := url.Parse(link)
-		if err != nil || parsed.Host == "" || !looksLikeSubscriptionURL(parsed) {
-			continue
-		}
-		parsed.Fragment = ""
-		normalized := parsed.String()
-		if _, exists := seen[normalized]; exists {
-			continue
-		}
-		seen[normalized] = struct{}{}
-		links = append(links, normalized)
-	}
-	return links
-}
-
-func looksLikeSubscriptionURL(parsed *url.URL) bool {
-	path := strings.ToLower(parsed.Path)
-	switch {
-	case strings.HasSuffix(path, ".txt"), strings.HasSuffix(path, ".yaml"),
-		strings.HasSuffix(path, ".yml"), strings.HasSuffix(path, ".json"),
-		strings.HasSuffix(path, ".conf"):
-		return true
-	}
-	last := path
-	if index := strings.LastIndex(path, "/"); index >= 0 {
-		last = path[index+1:]
-	}
-	switch last {
-	case "sub", "subs", "vless", "mix", "mixed", "all", "nodes", "list", "raw":
-		return true
-	}
-	return false
 }
 
 func cleanLink(link string) string {
