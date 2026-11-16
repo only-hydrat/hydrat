@@ -1296,7 +1296,7 @@ func listenI2PBridge(cfg config.Config) (net.Listener, error) {
 }
 
 // newFreeSourceService builds the free-subscription discovery pass from config.
-func newFreeSourceService(cfg config.Config, database *store.Store, changed chan<- struct{}) *freesubs.Service {
+func newFreeSourceService(cfg config.Config, database freesubs.Store, changed chan<- struct{}) *freesubs.Service {
 	feeds := make([]freesubs.Feed, 0, len(cfg.FreeSources.Feeds))
 	for _, feed := range cfg.FreeSources.Feeds {
 		feeds = append(feeds, freesubs.Feed{Label: feed.Label, URL: feed.URL})
