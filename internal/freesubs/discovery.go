@@ -39,7 +39,8 @@ type Options struct {
 	Catalog []Feed
 	// Repositories overrides the built-in collector list; an empty non-nil slice disables it.
 	Repositories []Repository
-	Feeds        []Feed
+	// Feeds are extra subscription feeds discovered on top of the catalog.
+	Feeds []Feed
 }
 
 // FeedResult reports what a single feed answered.
