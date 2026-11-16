@@ -169,9 +169,6 @@ func (discovery *Discovery) check(ctx context.Context, feed Feed) FeedResult {
 		result.Format = "plain"
 	}
 	result.Candidates, result.Reality = CountVLESS(text)
-	if result.Candidates == 0 && looksLikeSubscriptionText(text) {
-		result.Candidates, result.Reality = CountVLESS(text)
-	}
 	if result.Candidates == 0 {
 		result.Error = "no VLESS links in feed"
 		return result
