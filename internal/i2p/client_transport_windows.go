@@ -2,8 +2,9 @@ package i2p
 
 import (
 	"context"
-	"github.com/only-hydrat/hydrat/internal/platform"
 	"io"
+
+	"github.com/only-hydrat/hydrat/internal/platform"
 )
 
 func (ControlClient) Do(context.Context, string, string, io.Reader) ([]byte, error) {
