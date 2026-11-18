@@ -64,7 +64,7 @@ If you change the external UDP port, set it in both `WIREGUARD_PORT` and `WIREGU
 docker compose up -d
 ```
 
-Compose downloads `ghcr.io/only-hydrat/hydrat:1.2.0`. To choose another version, set `HYDRAT_IMAGE` in `.env`.
+Compose downloads `ghcr.io/only-hydrat/hydrat:1.2.1`. To choose another version, set `HYDRAT_IMAGE` in `.env`.
 
 ### 4. Open the panel
 

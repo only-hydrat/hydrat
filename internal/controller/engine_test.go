@@ -3895,7 +3895,7 @@ func TestEngineHardFailureSupersedesLowerPendingPlanThenRecomputesIt(t *testing.
 	}
 }
 
-func TestEngineHardFailureRetryReassertsItsOwnPendingGeneration(t *testing.T) {
+func TestEngineHardFailureRetryReassertsSlowPendingGeneration(t *testing.T) {
 	ctx := context.Background()
 	now := time.Unix(1_900_000_000, 0)
 	database, candidates := newEngineQoEFixture(t, now, []engineQoECandidateSpec{
@@ -3941,6 +3941,9 @@ func TestEngineHardFailureRetryReassertsItsOwnPendingGeneration(t *testing.T) {
 		t.Fatalf("pending hard state=%+v", pending)
 	}
 	agent.applyErr = nil
+	// Production's route installation can outlive the previous five-second
+	// retry window. The same persisted plan must be allowed to finish.
+	agent.applyDelay = 5200 * time.Millisecond
 	if err := engine.CycleForReason(
 		ctx, now.Add(3*time.Second), PlacementHardFailure,
 	); err != nil {
@@ -3956,6 +3959,10 @@ func TestEngineHardFailureRetryReassertsItsOwnPendingGeneration(t *testing.T) {
 	if settled.DesiredGeneration != 2 || settled.AppliedGeneration != 2 ||
 		settled.DesiredReason != string(PlacementHardFailure) {
 		t.Fatalf("settled hard state=%+v", settled)
+	}
+	assignment := engineQoEAssignment(t, database, "alice")
+	if assignment.TCPOutbound != candidates["reserve"].ID {
+		t.Fatalf("acknowledged plan did not commit the replacement: %+v", assignment)
 	}
 }
 
@@ -7682,6 +7689,7 @@ type engineAgent struct {
 	applyStarted chan struct{}
 	releaseApply chan struct{}
 	applyErr     error
+	applyDelay   time.Duration
 }
 
 type recordingEngineAdapter struct {
@@ -7744,13 +7752,22 @@ func (*reconcilerEngineAgent) Activity(context.Context) ([]wireguard.PeerActivit
 	return nil, nil
 }
 
-func (agent *engineAgent) Apply(_ context.Context, plan dataplane.DesiredPlan) error {
+func (agent *engineAgent) Apply(ctx context.Context, plan dataplane.DesiredPlan) error {
 	agent.plans = append(agent.plans, plan)
 	if agent.applyStarted != nil {
 		close(agent.applyStarted)
 	}
 	if agent.releaseApply != nil {
 		<-agent.releaseApply
+	}
+	if agent.applyDelay > 0 {
+		timer := time.NewTimer(agent.applyDelay)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+		}
 	}
 	return agent.applyErr
 }

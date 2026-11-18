@@ -64,7 +64,7 @@ PORTAL_PORT=8088
 docker compose up -d
 ```
 
-Compose загрузит `ghcr.io/only-hydrat/hydrat:1.2.0`. Другую версию можно выбрать через `HYDRAT_IMAGE` в `.env`.
+Compose загрузит `ghcr.io/only-hydrat/hydrat:1.2.1`. Другую версию можно выбрать через `HYDRAT_IMAGE` в `.env`.
 
 ### 4. Откройте панель
 

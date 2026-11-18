@@ -24,6 +24,11 @@ type hardFailureCandidateState struct {
 	candidate  scheduler.Candidate
 }
 
+// A durable recovery includes the normal agent apply (HTTP timeout 25s)
+// plus planning and persistence. The parent context still enforces the
+// shorter deadline of a fresh hard-failure event.
+const routeRecoveryAttemptTimeout = 30 * time.Second
+
 type routeRecoveryRetryError struct{}
 
 var errRecoverySkeletonChanged = fmt.Errorf("applied recovery skeleton changed: %w", store.ErrCandidateInventoryChanged)
@@ -37,7 +42,7 @@ func (engine *Engine) recoverHardFailure(ctx context.Context, now time.Time, pro
 	attempt := ctx
 	if bounded {
 		var cancel context.CancelFunc
-		attempt, cancel = context.WithTimeout(ctx, 5*time.Second)
+		attempt, cancel = context.WithTimeout(ctx, routeRecoveryAttemptTimeout)
 		defer cancel()
 	}
 	const maxInventoryAttempts = 3

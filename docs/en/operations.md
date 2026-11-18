@@ -410,8 +410,9 @@ individually. Diagnostic timing and text do not affect scoring; service outcomes
 provide evidence for comparing HTTP failures across configurations.
 
 An expired urgent deadline cannot discard recovery debt for a confirmed failed
-primary. Attempts are bounded to five seconds and retried after 1, 2, then at
-most 5 seconds, ahead of ordinary rebalancing. Without a usable replacement,
+primary. Durable recovery gets up to 30 seconds per attempt, including plan
+preparation and acknowledgement. Retries wait 1, 2, then at most 5 seconds.
+Recovery takes priority over ordinary rebalancing. Without a usable replacement,
 the applied route is retained but readiness must remain negative. Distinguish
 completed `hard_failure` placement from restored primary/reserve coverage.
 SQLite migration is additive; a future deployment still requires backup/restore

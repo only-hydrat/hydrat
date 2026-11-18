@@ -314,7 +314,7 @@ func (engine *Engine) CycleForReason(
 		reconcileRecovery = true
 		parent := ctx
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, 5*time.Second)
+		ctx, cancel = context.WithTimeout(ctx, routeRecoveryAttemptTimeout)
 		defer cancel()
 		defer func() {
 			if cycleErr != nil && parent.Err() == nil && ctx.Err() == context.DeadlineExceeded {
