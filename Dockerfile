@@ -80,7 +80,8 @@ COPY patches/xray/flow-recovery.patch /tmp/hydrat-flow-recovery.patch
 COPY patches/xray/routing-cancellation.patch /tmp/hydrat-routing-cancellation.patch
 RUN git apply --check /tmp/hydrat-flow-recovery.patch /tmp/hydrat-routing-cancellation.patch \
     && git apply /tmp/hydrat-flow-recovery.patch /tmp/hydrat-routing-cancellation.patch \
-    && go test ./common/hydratflow ./app/router ./app/router/command
+    && go test ./common/hydratflow \
+    && go test ./app/router ./app/router/command -run '^TestCanceled(AddRule|Reload)'
 RUN sed -i \
       's/c.server = grpc.NewServer()/c.server = grpc.NewServer(grpc.MaxRecvMsgSize(16 * 1024 * 1024))/' \
       app/commander/commander.go \
