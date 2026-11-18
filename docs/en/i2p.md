@@ -6,7 +6,7 @@ I2P is an optional, separate service for `.i2p` websites. It does not compete wi
 
 ## Installation
 
-Version 1.2.1 provides prebuilt amd64 and arm64 images. The optional service uses `ghcr.io/only-hydrat/hydrat:1.2.1-i2p`. From the project root with `.env` configured:
+Version 1.2.0 provides prebuilt amd64 and arm64 images. The optional service uses `ghcr.io/only-hydrat/hydrat:1.2.0-i2p`. From the project root with `.env` configured:
 
 ```sh
 docker compose -f docker-compose.yml -f docker-compose.i2p.yml pull

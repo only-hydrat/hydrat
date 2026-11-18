@@ -6,7 +6,7 @@ I2P 是用于访问 `.i2p` 网站的独立可选服务，不参与普通互联�
 
 ## 安装
 
-1.2.1 版本提供 amd64 和 arm64 预构建镜像。可选服务使用 `ghcr.io/only-hydrat/hydrat:1.2.1-i2p`。配置好 `.env` 后，在项目根目录执行：
+1.2.0 版本提供 amd64 和 arm64 预构建镜像。可选服务使用 `ghcr.io/only-hydrat/hydrat:1.2.0-i2p`。配置好 `.env` 后，在项目根目录执行：
 
 ```sh
 docker compose -f docker-compose.yml -f docker-compose.i2p.yml pull

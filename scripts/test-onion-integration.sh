@@ -26,11 +26,11 @@ git -C "$LAB_DIR/chutney" fetch -q --depth 1 origin "$CHUTNEY_REV"
 git -C "$LAB_DIR/chutney" checkout -q --detach FETCH_HEAD
 test "$(git -C "$LAB_DIR/chutney" rev-parse HEAD)" = "$CHUTNEY_REV"
 cat > "$LAB_DIR/Dockerfile" <<'DOCKERFILE'
-ARG BASE=ghcr.io/only-hydrat/hydrat:1.2.1
+ARG BASE=ghcr.io/only-hydrat/hydrat:1.2.0
 FROM ${BASE}
 RUN apt-get update && apt-get install -y --no-install-recommends python3 && rm -rf /var/lib/apt/lists/*
 DOCKERFILE
-docker build -q --build-arg "BASE=${HYDRAT_ONION_TEST_IMAGE:-ghcr.io/only-hydrat/hydrat:1.2.1}" -t "$LAB_IMAGE" "$LAB_DIR"
+docker build -q --build-arg "BASE=${HYDRAT_ONION_TEST_IMAGE:-ghcr.io/only-hydrat/hydrat:1.2.0}" -t "$LAB_IMAGE" "$LAB_DIR"
 cd "$REPO"
 CGO_ENABLED=0 GOOS=linux GOARCH=$(docker version --format '{{.Server.Arch}}') go test -c -o "$LAB_DIR/onion-test" ./internal/xrayapi
 docker run -d --privileged --network none -e PYTHONDONTWRITEBYTECODE=1 --name "$LAB_NAME" -v "$LAB_DIR/chutney:/chutney" --entrypoint sleep "$LAB_IMAGE" infinity >/dev/null

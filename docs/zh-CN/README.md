@@ -64,7 +64,7 @@ PORTAL_PORT=8088
 docker compose up -d
 ```
 
-Compose 会下载 `ghcr.io/only-hydrat/hydrat:1.2.1`。如需其他版本，可在 `.env` 中设置 `HYDRAT_IMAGE`。
+Compose 会下载 `ghcr.io/only-hydrat/hydrat:1.2.0`。如需其他版本，可在 `.env` 中设置 `HYDRAT_IMAGE`。
 
 ### 4. 打开面板
 
