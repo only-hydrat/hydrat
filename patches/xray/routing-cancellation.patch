@@ -1,0 +1,171 @@
+diff --git a/app/router/command/command.go b/app/router/command/command.go
+index 8274d3b..aaf8bf0 100644
+--- a/app/router/command/command.go
++++ b/app/router/command/command.go
+@@ -4,6 +4,7 @@ import (
+ 	"context"
+ 	"time"
+ 
++	"github.com/xtls/xray-core/app/router"
+ 	"github.com/xtls/xray-core/common"
+ 	"github.com/xtls/xray-core/common/errors"
+ 	"github.com/xtls/xray-core/core"
+@@ -54,6 +55,9 @@ func (s *routingServer) OverrideBalancerTarget(ctx context.Context, request *Ove
+ }
+ 
+ func (s *routingServer) AddRule(ctx context.Context, request *AddRuleRequest) (*AddRuleResponse, error) {
++	if r, ok := s.router.(*router.Router); ok {
++		return &AddRuleResponse{}, r.AddRuleContext(ctx, request.Config, request.ShouldAppend)
++	}
+ 	if bo, ok := s.router.(routing.Router); ok {
+ 		return &AddRuleResponse{}, bo.AddRule(request.Config, request.ShouldAppend)
+ 	}
+diff --git a/app/router/command/hydrat_cancellation_test.go b/app/router/command/hydrat_cancellation_test.go
+new file mode 100644
+index 0000000..4d46087
+--- /dev/null
++++ b/app/router/command/hydrat_cancellation_test.go
+@@ -0,0 +1,39 @@
++package command
++
++import (
++	"context"
++	"errors"
++	"testing"
++
++	"github.com/xtls/xray-core/app/router"
++	"github.com/xtls/xray-core/common/net"
++	"github.com/xtls/xray-core/common/serial"
++)
++
++func TestCanceledAddRuleKeepsInstalledRules(t *testing.T) {
++	rule := func(tag string) *router.Config {
++		return &router.Config{Rule: []*router.RoutingRule{{
++			RuleTag: tag, TargetTag: &router.RoutingRule_Tag{Tag: tag},
++			Networks: []net.Network{net.Network_TCP},
++		}}}
++	}
++	r := new(router.Router)
++	if err := r.Init(t.Context(), rule("installed"), nil, nil, nil); err != nil {
++		t.Fatal(err)
++	}
++	s := &routingServer{router: r}
++	ctx, cancel := context.WithCancel(t.Context())
++	cancel()
++	_, err := s.AddRule(ctx, &AddRuleRequest{Config: serial.ToTypedMessage(rule("expired"))})
++	got := r.ListRule()
++	if !errors.Is(err, context.Canceled) || len(got) != 1 || got[0].GetRuleTag() != "installed" {
++		t.Fatalf("canceled update changed routing: err=%v, rules=%+v", err, got)
++	}
++	if _, err := s.AddRule(t.Context(), &AddRuleRequest{Config: serial.ToTypedMessage(rule("current"))}); err != nil {
++		t.Fatal(err)
++	}
++	got = r.ListRule()
++	if len(got) != 1 || got[0].GetRuleTag() != "current" {
++		t.Fatalf("current update was not applied: %+v", got)
++	}
++}
+diff --git a/app/router/hydrat_cancellation_test.go b/app/router/hydrat_cancellation_test.go
+new file mode 100644
+index 0000000..9fa40aa
+--- /dev/null
++++ b/app/router/hydrat_cancellation_test.go
+@@ -0,0 +1,37 @@
++package router
++
++import (
++	"context"
++	"errors"
++	"testing"
++
++	"github.com/xtls/xray-core/common/net"
++)
++
++func TestCanceledReloadAfterLockKeepsInstalledRules(t *testing.T) {
++	rule := func(tag string) *Config {
++		return &Config{Rule: []*RoutingRule{{
++			RuleTag: tag, TargetTag: &RoutingRule_Tag{Tag: tag},
++			Networks: []net.Network{net.Network_TCP},
++		}}}
++	}
++	r := new(Router)
++	if err := r.Init(t.Context(), rule("installed"), nil, nil, nil); err != nil {
++		t.Fatal(err)
++	}
++
++	r.mu.Lock()
++	ctx, cancel := context.WithCancel(t.Context())
++	defer cancel()
++	done := make(chan error, 1)
++	go func() { done <- r.reloadRules(ctx, rule("expired"), false) }()
++	cancel()
++	r.mu.Unlock()
++	if err := <-done; !errors.Is(err, context.Canceled) {
++		t.Fatalf("expired reload returned %v", err)
++	}
++	got := r.ListRule()
++	if len(got) != 1 || got[0].GetRuleTag() != "installed" {
++		t.Fatalf("expired reload changed the installed rules: %+v", got)
++	}
++}
+diff --git a/app/router/router.go b/app/router/router.go
+index 406f932..60695cb 100644
+--- a/app/router/router.go
++++ b/app/router/router.go
+@@ -69,19 +69,35 @@ func (r *Router) PickRoute(ctx routing.Context) (routing.Route, error) {
+ 
+ // AddRule implements routing.Router.
+ func (r *Router) AddRule(config *serial.TypedMessage, shouldAppend bool) error {
++	return r.AddRuleContext(context.Background(), config, shouldAppend)
++}
++
++// AddRuleContext applies an API request only while its context is active.
++func (r *Router) AddRuleContext(ctx context.Context, config *serial.TypedMessage, shouldAppend bool) error {
++	if err := ctx.Err(); err != nil {
++		return err
++	}
+ 	inst, err := config.GetInstance()
+ 	if err != nil {
+ 		return err
+ 	}
+ 	if c, ok := inst.(*Config); ok {
+-		return r.ReloadRules(c, shouldAppend)
++		return r.reloadRules(ctx, c, shouldAppend)
+ 	}
+ 	return errors.New("AddRule: config type error")
+ }
+ 
+ func (r *Router) ReloadRules(config *Config, shouldAppend bool) error {
++	return r.reloadRules(context.Background(), config, shouldAppend)
++}
++
++func (r *Router) reloadRules(ctx context.Context, config *Config, shouldAppend bool) error {
+ 	r.mu.Lock()
+ 	defer r.mu.Unlock()
++	// A request can expire while a preceding update holds the lock.
++	if err := ctx.Err(); err != nil {
++		return err
++	}
+ 
+ 	oldRules := *r.rules.Load()
+ 	oldBalancers := *r.balancers.Load()
+@@ -110,6 +126,9 @@ func (r *Router) ReloadRules(config *Config, shouldAppend bool) error {
+ 	}
+ 
+ 	for _, rule := range config.Rule {
++		if err := ctx.Err(); err != nil {
++			return err
++		}
+ 		cond, err := rule.BuildCondition()
+ 		if err != nil {
+ 			return err
+@@ -140,6 +159,9 @@ func (r *Router) ReloadRules(config *Config, shouldAppend bool) error {
+ 		newRules = append(newRules, rr)
+ 	}
+ 
++	if err := ctx.Err(); err != nil {
++		return err
++	}
+ 	r.balancers.Store(&newBalancers)
+ 	r.rules.Store(&newRules)
+ 	if !shouldAppend {
