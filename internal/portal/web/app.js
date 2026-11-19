@@ -68,7 +68,7 @@ function setView(name) {
   }
   if (adminToken) {
     if (name === "candidates") loadCandidates(true);
-    if (name === "system") loadSystem();
+    if (name === "system") { loadSystem(); loadUpdates(); }
   }
 }
 
@@ -119,7 +119,7 @@ $("auth-form").addEventListener("submit", async (event) => {
     $("admin-password").value = "";
   }
   try {
-    await Promise.all([loadOverview(), loadClients(), loadSources(), loadSystem()]);
+    await Promise.all([loadOverview(), loadClients(), loadSources(), loadSystem(), loadUpdates()]);
     notify("Админ-панель подключена");
   } catch (error) { notify(error.message, true); }
 });
@@ -262,14 +262,14 @@ $("artifact-close").addEventListener("click", () => $("artifact-dialog").close()
 $("artifact-copy").addEventListener("click", async () => { await navigator.clipboard.writeText(artifactConfig); notify("Конфиг скопирован"); });
 $("artifact-download").addEventListener("click", () => {
   const link = document.createElement("a");
-  link.href = URL.createObjectURL(new Blob([artifactConfig], {type:"text/plain"}));
+  link.href = URL.createObjectURL(new Blob([artifactConfig], {type:"application/octet-stream"}));
   link.download = `${artifactName.replace(/[^a-z0-9_-]+/gi, "-")}.conf`;
   link.click();
-  URL.revokeObjectURL(link.href);
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
 });
 
 async function loadSources() {
-  const data = await request("/api/admin/sources", {}, true);
+  const data = await request("/api/admin/sources?include_urls=1", {}, true);
   const target = $("admin-sources");
   target.replaceChildren();
   target.className = "data-list";
@@ -283,9 +283,10 @@ async function loadSources() {
     const row = node("article", "data-row");
     const identity = node("div");
     identity.append(node("strong", "", source.label), node("small", "", source.kind));
+    if (source.url) identity.append(node("small", "", source.url));
     row.append(identity, metric("Кандидаты", String(source.candidate_count || 0)), metric("Ошибка", source.last_refresh_error || "нет"), badge(source.enabled ? "Включён" : "Выключен", source.enabled ? "good" : "warn"));
     const actions = node("div", "actions");
-    actions.append(button("Обновить", () => refreshSource(source)), button(source.enabled ? "Отключить" : "Включить", () => toggleSource(source)), button("Удалить", () => deleteSource(source), "danger"));
+    actions.append(button("Обновить", () => refreshSource(source)), button("Изменить метку", () => renameSource(source)), button(source.enabled ? "Отключить" : "Включить", () => toggleSource(source)), button("Удалить", () => deleteSource(source), "danger"));
     row.append(actions);
     target.append(row);
   });
@@ -293,13 +294,13 @@ async function loadSources() {
 
 $("source-preview").addEventListener("click", async () => {
   try {
-    const result = await request("/api/admin/sources/preview", {method:"POST", body:{input:$("source-input").value}}, true);
+    const result = await request("/api/admin/sources/preview", {method:"POST", body:{input:$("source-input").value, label:$("source-label").value}}, true);
     $("source-result").textContent = JSON.stringify(result, null, 2);
   } catch (error) { $("source-result").textContent = error.message; }
 });
 $("source-import").addEventListener("click", async () => {
   try {
-    const result = await request("/api/admin/sources/import", {method:"POST", body:{input:$("source-input").value}}, true);
+    const result = await request("/api/admin/sources/import", {method:"POST", body:{input:$("source-input").value, label:$("source-label").value}}, true);
     $("source-result").textContent = JSON.stringify(result, null, 2);
     await Promise.all([loadSources(), loadOverview()]);
   } catch (error) { notify(error.message, true); }
@@ -309,8 +310,16 @@ async function refreshSource(source) {
   catch (error) { notify(error.message, true); }
 }
 async function toggleSource(source) {
-  try { await request(`/api/admin/sources/${source.id}`, {method:"PATCH", body:{label:source.label,enabled:!source.enabled}}, true); await loadSources(); }
+  try { await request(`/api/admin/sources/${source.id}`, {method:"PATCH", body:{enabled:!source.enabled}}, true); await loadSources(); }
   catch (error) { notify(error.message, true); }
+}
+async function renameSource(source) {
+  const label = prompt("Метка источника", source.label)?.trim();
+  if (!label || label === source.label) return;
+  try {
+    await request(`/api/admin/sources/${source.id}`, {method:"PATCH", body:{label}}, true);
+    await loadSources();
+  } catch (error) { notify(error.message, true); }
 }
 async function deleteSource(source) {
   if (!confirm(`Удалить источник ${source.label}?`)) return;
@@ -361,6 +370,73 @@ async function loadCandidates(reset = false) {
 ["candidate-filter","candidate-kind"].forEach((id) => $(id).addEventListener("change", () => loadCandidates(true)));
 $("candidate-search").addEventListener("input", () => { clearTimeout(loadCandidates.timer); loadCandidates.timer = setTimeout(() => loadCandidates(true), 250); });
 $("candidate-more").addEventListener("click", () => loadCandidates(false));
+
+let updateTimer;
+let updateInProgress = false;
+
+async function loadUpdates() {
+  clearTimeout(updateTimer);
+  if (!adminToken) return;
+  const status = $("update-status");
+  const target = $("update-components");
+  try {
+    const data = await request("/api/admin/updates/status", {}, true);
+    const result = data.result || {};
+    const installing = result.state === "installing";
+    const release = data.available?.hydrat;
+    $("update-check").disabled = !data.enabled || data.checking || installing;
+    if (!data.enabled) {
+      target.replaceChildren();
+      status.textContent = "Служба обновлений на хосте не подключена.";
+      if (updateInProgress) updateTimer = setTimeout(loadUpdates, 3000);
+      return;
+    }
+    updateInProgress = installing || result.state === "rollback_waiting";
+    const labels = {
+      installing: "Устанавливается обновление. Соединение со шлюзом может прерваться.",
+      installed: "Обновление установлено.",
+      rolled_back: "Не удалось установить обновление. Предыдущая версия восстановлена.",
+      failed: "Не удалось подготовить обновление. Подробности в журнале службы.",
+      rollback_waiting: "Предыдущая версия запущена. Ждём готовности маршрутов.",
+      rollback_failed: "Откат не завершён. Проверьте журнал службы обновлений на хосте."
+    };
+    status.textContent = data.checking ? "Проверяем версии…" : labels[result.state] ||
+      (data.check_error ? "Не удалось проверить часть версий." :
+        release?.manual ? "Для этого образа обновление Hydrat выполняется вручную." :
+        release ? "Доступно обновление Hydrat." : "Обновлений Hydrat нет.");
+    if (data.checking || updateInProgress) updateTimer = setTimeout(loadUpdates, 3000);
+    const current = data.installed?.hydrat || "не определена";
+    const offer = release?.version;
+    const detail = node("div");
+    detail.append(node("strong", "", "Hydrat"), node("small", "", offer ? `Установлена ${current} · доступна ${offer}` : `Установлена ${current}`));
+    const install = button("Обновить Hydrat", () => installUpdate(offer));
+    install.disabled = !offer || release.manual || data.checking || updateInProgress || result.state === "rollback_failed";
+    const row = node("div", "data-row update-row");
+    row.append(detail, install);
+    target.replaceChildren(row);
+  } catch {
+    status.textContent = "Служба обновлений недоступна.";
+    if (updateInProgress) updateTimer = setTimeout(loadUpdates, 3000);
+  }
+}
+
+async function installUpdate(version) {
+  if (!confirm(`Установить Hydrat ${version}? Шлюз перезапустится. После обновления войдите в панель заново.`)) return;
+  try {
+    await request("/api/admin/updates/install", {method:"POST", body:{component:"hydrat", version}}, true);
+    updateInProgress = true;
+  } catch (error) {
+    notify(error.message, true);
+  }
+  await loadUpdates();
+}
+
+$("update-check").addEventListener("click", async () => {
+  try {
+    await request("/api/admin/updates/check", {method:"POST"}, true);
+    await loadUpdates();
+  } catch (error) { notify(error.message, true); }
+});
 
 async function loadSystem() {
   const [system, profiles] = await Promise.all([

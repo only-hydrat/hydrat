@@ -369,6 +369,8 @@ docker compose exec gateway sh -c '
 
 ## 发布与回滚
 
+要通过管理面板更新 Hydrat，请先配置[宿主机更新服务](../../updates/README.md)。发布镜像包含 Xray 和 Tor。
+
 部署前请保留精确的旧镜像，并创建可使用主密钥验证的数据库备份。已验收运行状态由镜像、内嵌配置、数据库和已应用计划共同组成。请将 `ROLLBACK_IMAGE`、`PREVIOUS_IMAGE_ID`、`PREVIOUS_CONFIG_SHA256`、`BACKUP_PATH`、`APPLIED_PLAN_BACKUP_PATH` 和 `FAILED_APPLIED_PLAN_PATH` 记录到发布日志；回滚需要这些值。`/etc/hydrat/config.yml` 已烘焙进镜像。Checkout 中的 `config/config.yml` 仅在从源码构建时作为输入，不会挂载到运行容器。
 
 ```bash
@@ -451,7 +453,7 @@ test -s "$tempdir/reopened.db"
 备份验证后：
 
 1. 记录当前 Git commit、两个容器镜像 ID、restart/OOM 计数及 desired/applied generation。
-2. 部署官方发布版本时，在 `.env` 中用 `HYDRAT_IMAGE` 指定目标版本并拉取镜像。开发时使用 `docker-compose.dev.yml` 构建精确 commit；不要构建包含未提交更改的 checkout。
+2. 使用目标发布标签中的 Compose 文件、配置和脚本。对照新版本的配置项，保留现有的 `.env`、覆盖文件和数据路径。将 `HYDRAT_IMAGE` 设为目标版本。使用 I2P 时，也请设置对应的 `HYDRAT_I2P_IMAGE`。开发时使用 `docker-compose.dev.yml` 构建指定的提交。
 3. 使用同一镜像重新创建 **gateway 和 controller 两个服务**，并通过强制 readiness gate：
 
    预构建镜像部署（默认）：

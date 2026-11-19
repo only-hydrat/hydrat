@@ -60,7 +60,15 @@ func run() error {
 
 func runWithServiceLogOpener(openLog serviceLogOpener) (runErr error) {
 	if len(os.Args) < 2 {
-		return errors.New("usage: hydrat <agent|controller|backup|restore>")
+		return errors.New("usage: hydrat <agent|controller|backup|restore|updater>")
+	}
+	if os.Args[1] == "updater" {
+		return runUpdater(os.Args[2:])
+	}
+	if os.Args[1] == "tor-runtime-check" {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return torpool.CheckRuntime(ctx, "/usr/bin/tor", "/usr/local/bin/lyrebird")
 	}
 	if os.Args[1] == "i2p-runtime" {
 		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -236,23 +244,30 @@ func runRestore(ctx context.Context, cfg config.Config, inputPath string) error 
 	if err := store.ValidateBackup(temporaryPath, box); err != nil {
 		return fmt.Errorf("validate backup: %w", err)
 	}
-	if _, err := os.Stat(cfg.Paths.Database); err == nil {
-		previous := cfg.Paths.Database + ".before-restore-" + time.Now().UTC().Format("20060102T150405Z")
-		if err := os.Rename(cfg.Paths.Database, previous); err != nil {
+	previous := cfg.Paths.Database + ".before-restore-" + time.Now().UTC().Format("20060102T150405.000000000Z")
+	for _, suffix := range []string{"", "-wal", "-shm"} {
+		// An interrupted restore may have archived the database already.
+		err := os.Rename(cfg.Paths.Database+suffix, previous+suffix)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
 			return err
 		}
-		for _, suffix := range []string{"-wal", "-shm"} {
-			if _, sidecarErr := os.Stat(cfg.Paths.Database + suffix); sidecarErr == nil {
-				if err := os.Rename(cfg.Paths.Database+suffix, previous+suffix); err != nil {
-					return err
-				}
-			} else if !errors.Is(sidecarErr, os.ErrNotExist) {
-				return sidecarErr
-			}
-		}
-		log.Printf("previous database retained at %s", previous)
+		log.Printf("previous database file retained at %s", previous+suffix)
 	}
-	return os.Rename(temporaryPath, cfg.Paths.Database)
+	dir, err := os.Open(filepath.Dir(cfg.Paths.Database))
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	if err := dir.Sync(); err != nil {
+		return err
+	}
+	if err := os.Rename(temporaryPath, cfg.Paths.Database); err != nil {
+		return err
+	}
+	return dir.Sync()
 }
 
 func runAgent(ctx context.Context, cfg config.Config) error {
@@ -945,6 +960,7 @@ func runController(ctx context.Context, cfg config.Config) error {
 		InternalToken:     portalToken,
 		Routing:           routingManager,
 		WireGuardEndpoint: endpoint,
+		UpdateSocket:      os.Getenv("HYDRAT_UPDATE_SOCKET"),
 	})
 	server := &http.Server{Addr: cfg.Portal.Bind, Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second}
 	go func() {

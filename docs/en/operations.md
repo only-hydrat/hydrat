@@ -471,6 +471,8 @@ docker compose exec gateway sh -c '
 
 ## Release and rollback
 
+To update Hydrat from the panel, configure the [host updater](../../updates/README.md). The release image includes Xray and Tor.
+
 Before deployment, preserve the exact previous image and create a key-aware
 database backup. The accepted runtime consists of the image, embedded
 configuration, database, and applied plan. Record `ROLLBACK_IMAGE`,
@@ -566,9 +568,11 @@ After backup validation:
 
 1. Record current Git commit, both container image IDs, restart/OOM counters
    and desired/applied generation.
-2. For an official release, set the desired `HYDRAT_IMAGE` tag in `.env` and
-   pull it. For development, build the exact commit with `docker-compose.dev.yml`;
-   do not build an uncommitted checkout.
+2. Use the Compose files, configuration, and scripts from the chosen release tag.
+   Compare the new settings with your own and keep your `.env`, overrides, and
+   data paths. Set `HYDRAT_IMAGE` to that release and set the matching
+   `HYDRAT_I2P_IMAGE` if you use I2P. For development, build the chosen commit
+   with `docker-compose.dev.yml`.
 3. Recreate **both** services from the same image through the readiness gate:
 
    Prebuilt image (default):

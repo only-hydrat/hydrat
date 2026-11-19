@@ -379,9 +379,12 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("open config: %w", err)
 	}
 	defer file.Close()
+	return Decode(file)
+}
 
+func Decode(reader io.Reader) (Config, error) {
 	cfg := Defaults()
-	decoder := yaml.NewDecoder(file)
+	decoder := yaml.NewDecoder(reader)
 	decoder.KnownFields(true)
 	if err := decoder.Decode(&cfg); err != nil {
 		return Config{}, fmt.Errorf("decode config: %w", err)

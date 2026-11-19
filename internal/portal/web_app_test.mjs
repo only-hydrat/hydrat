@@ -124,7 +124,7 @@ test("login clears the password before dashboard requests finish", async () => {
 
 test("loadSources excludes pending_delete sources so UI does not misleadingly keep deleted sources", async () => {
   const page = dashboard(async (url) => {
-    if (url === "/api/admin/sources") {
+    if (url === "/api/admin/sources?include_urls=1") {
       return Response.json({
         sources: [
           {id: "src_active", label: "Active VLESS", kind: "vless", enabled: true, pending_delete: false, candidate_count: 1},
@@ -143,7 +143,7 @@ test("loadSources excludes pending_delete sources so UI does not misleadingly ke
 
 test("loadSources marks inventory empty when all sources are pending_delete", async () => {
   const page = dashboard(async (url) => {
-    if (url === "/api/admin/sources") {
+    if (url === "/api/admin/sources?include_urls=1") {
       return Response.json({
         sources: [
           {id: "src_deleted", label: "Deleted VLESS", kind: "vless", enabled: false, pending_delete: true, candidate_count: 1}
@@ -160,6 +160,36 @@ test("loadSources marks inventory empty when all sources are pending_delete", as
   assert.equal(target.textContent, "Источников пока нет");
 });
 
+test("sources show the complete URL and allow an independent user label", async () => {
+  const fullURL = "https://example.net/path/to/subscription?token=secret%2Bpart&profile=original";
+  const requests = [];
+  const page = dashboard(async (url, options) => {
+    requests.push({url, method:options.method, body:options.body, auth:options.headers.get("Authorization")});
+    if (url.endsWith("?include_urls=1")) {
+      return Response.json({sources:[{id:"src_1", label:"Капибара", url:fullURL, kind:"vless_subscription", enabled:true}]});
+    }
+    return Response.json({});
+  });
+  page.context.prompt = (_label, value) => {
+    assert.equal(value, "Капибара");
+    return "  Платная подписка  ";
+  };
+  runInContext('adminToken = "live-token"', page.context);
+  await runInContext("loadSources()", page.context);
+  const [row] = page.elements.get("admin-sources").children;
+  assert.ok(row.children[0].children.some(item => item.textContent === fullURL && item.tagName !== "a"));
+  const rename = row.children.at(-1).children.find(item => item.textContent === "Изменить метку");
+  await rename.listeners.click();
+  const patch = requests.find(item => item.method === "PATCH");
+  assert.equal(patch.auth, "Bearer live-token");
+  assert.deepEqual(JSON.parse(patch.body), {label:"Платная подписка"});
+  page.elements.get("source-label").value = "Капибара";
+  page.elements.get("source-input").value = fullURL;
+  await page.elements.get("source-import").listeners.click();
+  const imported = requests.find(item => item.url === "/api/admin/sources/import");
+  assert.deepEqual(JSON.parse(imported.body), {input:fullURL, label:"Капибара"});
+});
+
 test("deleteSource deletes source with Bearer token and updates UI without logging out", async () => {
   const requests = [];
   let deleted = false;
@@ -169,7 +199,7 @@ test("deleteSource deletes source with Bearer token and updates UI without loggi
       deleted = true;
       return new Response(null, {status: 204});
     }
-    if (url === "/api/admin/sources") {
+    if (url === "/api/admin/sources?include_urls=1") {
       return Response.json({
         sources: deleted
           ? [{id: "src_1", label: "VLESS", kind: "vless", enabled: false, pending_delete: true, candidate_count: 1}]
@@ -284,4 +314,72 @@ test("system shows healthy API separately from unready routing", async () => {
   assert.ok(texts.includes("Шлюз/API"));
   assert.ok(texts.includes("Готовность маршрутизации"));
   assert.ok(texts.includes("controller unavailable: reserve_not_ready"));
+});
+
+test("update panel offers only Hydrat, including when an old updater returns components", async () => {
+  const requests = [];
+  const page = dashboard(async (url, options) => {
+    requests.push({url, method: options.method, body: options.body});
+    return new Response(JSON.stringify({
+      enabled:true, installed:{hydrat:"1.2.0"},
+      available:{hydrat:{version:"1.2.1"}, xray:{version:"26.11.9"}, tor:{version:"0.4.9.17"}}
+    }), {status:200});
+  });
+  await runInContext('adminToken="token"; loadUpdates()', page.context);
+  const [row] = page.elements.get("update-components").children;
+  assert.equal(page.elements.get("update-components").children.length, 1);
+  assert.equal(row.children[0].children[0].textContent, "Hydrat");
+  assert.match(row.children[0].children[1].textContent, /1\.2\.1/);
+  assert.equal(row.children[1].disabled, false);
+  await row.children[1].listeners.click();
+  assert.deepEqual(JSON.parse(requests[1].body), {component:"hydrat", version:"1.2.1"});
+});
+
+test("WireGuard download keeps the .conf filename and raw bytes", async () => {
+  const page = dashboard();
+  let file, downloaded;
+  page.context.Blob = Blob;
+  page.context.URL = {
+    createObjectURL(blob) { file = blob; return "blob:wireguard"; },
+    revokeObjectURL() {}
+  };
+  page.document.createElement = () => ({
+    click() { downloaded = this.download; }
+  });
+  const config = "[Interface]\nAddress = 10.44.0.2/32\n";
+  page.context.artifactTestConfig = config;
+  runInContext('artifactName = "nik-phone"; artifactConfig = artifactTestConfig;', page.context);
+  page.elements.get("artifact-download").listeners.click();
+  assert.equal(downloaded, "nik-phone.conf");
+  assert.equal(file.type, "application/octet-stream");
+  assert.equal(await file.text(), config);
+});
+
+test("a locally assembled image keeps the Hydrat release visible and disables installation", async () => {
+  const page = dashboard(async () => new Response(JSON.stringify({
+    enabled: true,
+    installed: {hydrat:"1.2.0"},
+    available: {hydrat:{version:"1.2.1", manual:true}}
+  }), {status:200}));
+  await runInContext('adminToken="token"; loadUpdates()', page.context);
+  const [row] = page.elements.get("update-components").children;
+  assert.match(row.children[0].children[1].textContent, /1\.2\.1/);
+  assert.equal(row.children[1].disabled, true);
+  assert.match(page.elements.get("update-status").textContent, /вручную/);
+});
+
+test("rollback status keeps polling after temporary loss of the updater", async () => {
+  let requestCount = 0;
+  const page = dashboard(async () => {
+    const enabled = ++requestCount !== 2;
+    return new Response(JSON.stringify({
+      enabled,
+      result: enabled ? {state:"rollback_waiting"} : {}
+    }), {status:200});
+  });
+  const timers = [];
+  page.context.setTimeout = (fn, delay) => { timers.push({fn, delay}); };
+  await runInContext('adminToken="token"; loadUpdates()', page.context);
+  await runInContext("loadUpdates()", page.context);
+  assert.equal(timers.filter(timer => timer.delay === 3000).length, 2);
 });

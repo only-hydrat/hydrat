@@ -64,7 +64,7 @@ If you change the external UDP port, set it in both `WIREGUARD_PORT` and `WIREGU
 docker compose up -d
 ```
 
-Compose downloads `ghcr.io/only-hydrat/hydrat:1.2.0`. To choose another version, set `HYDRAT_IMAGE` in `.env`.
+Compose downloads `ghcr.io/only-hydrat/hydrat:1.2.1`. To choose another version, set `HYDRAT_IMAGE` in `.env`.
 
 ### 4. Open the panel
 
@@ -109,13 +109,14 @@ Keep using this pair of Compose files for future updates. System settings includ
 
 Back up `.env`, your configuration, and data before updating. See the [operations guide](operations.md) for a consistent backup of SQLite and its keys.
 
-```sh
-git pull --ff-only
-docker compose pull
-docker compose up -d
-```
+Install a new Hydrat release from the System page once you have configured the [host updater](../../updates/README.md). The image includes Xray and Tor.
 
-If `HYDRAT_IMAGE` or `HYDRAT_I2P_IMAGE` pins a version, update it in `.env`. For I2P installations, add `-f docker-compose.yml -f docker-compose.i2p.yml` to Compose commands.
+For a manual update, use the Compose files and scripts from the [chosen release](https://github.com/only-hydrat/hydrat/releases). Review configuration changes and keep your `.env`, overrides, and data paths. Set `HYDRAT_IMAGE` to the version of that release. If you use I2P, also set the matching `HYDRAT_I2P_IMAGE`.
+
+```sh
+docker compose pull
+./scripts/deploy.sh
+```
 
 Check service health and route readiness on the server:
 

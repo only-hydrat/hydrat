@@ -64,7 +64,7 @@ PORTAL_PORT=8088
 docker compose up -d
 ```
 
-Compose 会下载 `ghcr.io/only-hydrat/hydrat:1.2.0`。如需其他版本，可在 `.env` 中设置 `HYDRAT_IMAGE`。
+Compose 会下载 `ghcr.io/only-hydrat/hydrat:1.2.1`。如需其他版本，可在 `.env` 中设置 `HYDRAT_IMAGE`。
 
 ### 4. 打开面板
 
@@ -109,13 +109,14 @@ docker compose -f docker-compose.yml -f docker-compose.i2p.yml up -d
 
 更新前请备份 `.env`、自己的配置和数据。SQLite 与密钥的一致性备份步骤见[运维指南](operations.md)。
 
-```sh
-git pull --ff-only
-docker compose pull
-docker compose up -d
-```
+配置[宿主机更新服务](../../updates/README.md)后，可在「系统」页面安装新的 Hydrat 版本。镜像包含 Xray 和 Tor。
 
-如果通过 `HYDRAT_IMAGE` 或 `HYDRAT_I2P_IMAGE` 固定了版本，请在 `.env` 中更新它。使用 I2P 时，请为 Compose 命令添加 `-f docker-compose.yml -f docker-compose.i2p.yml`。
+手动更新时，请使用[目标版本](https://github.com/only-hydrat/hydrat/releases)中的 Compose 文件和脚本。对照配置变更，保留现有的 `.env`、覆盖文件和数据路径。将 `HYDRAT_IMAGE` 设为该版本。使用 I2P 时，也请设置对应的 `HYDRAT_I2P_IMAGE`。
+
+```sh
+docker compose pull
+./scripts/deploy.sh
+```
 
 在服务器上检查服务和路由状态：
 

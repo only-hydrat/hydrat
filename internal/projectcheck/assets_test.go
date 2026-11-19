@@ -1125,8 +1125,8 @@ func TestProductionEnvironmentAndComposeContract(t *testing.T) {
 	}
 	for _, expected := range []string{
 		"FROM --platform=$BUILDPLATFORM golang:1.27.1-bookworm AS xray-build",
-		"ARG XRAY_COMMIT=52a412d9e2f5c2a5142b1b4e2ab3771dacb8b120",
-		"ARG XRAY_SOURCE_SHA256=0159e934d908cd176fed51dc61209e546046351928af685b143cad2ebe704831",
+		"ARG XRAY_COMMIT=676eaf66f8f05d4d558ee7a74b4736623d3feeb9",
+		"ARG XRAY_SOURCE_SHA256=05623c5394d82870edcfdd9355169b05453da133544355012b2cd1874e67f100",
 		"https://codeload.github.com/XTLS/Xray-core/zip/${XRAY_COMMIT}",
 		"grpc.NewServer(grpc.MaxRecvMsgSize(16 * 1024 * 1024))",
 		"requiresTransportSecurity(vlessCfg.Address)",
@@ -1134,7 +1134,7 @@ func TestProductionEnvironmentAndComposeContract(t *testing.T) {
 		"trojan without TLS is prohibited",
 		"-buildvcs=false",
 		"-buildid=",
-		"-X github.com/xtls/xray-core/core.build=52a412d-hydrat4",
+		`-X github.com/xtls/xray-core/core.build=$(printf '%.7s' "$XRAY_COMMIT")-hydrat4`,
 		"COPY internal/xrayflow/ ./common/hydratflow/",
 		"git apply --check /tmp/hydrat-flow-recovery.patch",
 		"go test ./common/hydratflow",

@@ -298,6 +298,12 @@ func TestPortalServesNormalizedEndpointForExistingStoredProfiles(t *testing.T) {
 	if configResp.Code != http.StatusOK {
 		t.Fatalf("config status=%d body=%s", configResp.Code, configResp.Body.String())
 	}
+	if typ := configResp.Header().Get("Content-Type"); typ != "application/octet-stream" {
+		t.Fatalf("download MIME type permits a .txt suffix: %q", typ)
+	}
+	if disposition := configResp.Header().Get("Content-Disposition"); disposition != `attachment; filename="wireguard.conf"` {
+		t.Fatalf("unexpected WireGuard attachment name: %q", disposition)
+	}
 	bodyText := configResp.Body.String()
 	if !bytes.Contains([]byte(bodyText), []byte("Endpoint = 203.0.113.10:51820\n")) {
 		t.Fatalf("config text missing normalized endpoint, got:\n%s", bodyText)

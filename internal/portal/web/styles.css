@@ -125,6 +125,7 @@ textarea { min-height: 200px; resize: vertical; }
 #admin-sources .data-row, #admin-profiles .data-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 #admin-sources .data-row > :first-child { grid-column: 1 / -1; }
 #admin-sources .data-row > .badge { grid-column: 1 / -1; }
+#source-label + label { margin-top: 14px; }
 #i2p-settings .data-row { grid-template-columns: minmax(0, 1fr); }
 #i2p-settings .data-row > * { overflow-wrap: anywhere; }
 .details { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: 0 20px; margin: 0; }
@@ -226,4 +227,13 @@ dialog::backdrop { background: #000b; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
+}
+
+#update-components .update-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+#update-components .update-row > :first-child { grid-column: auto; }
+#update-components .button { min-height: 44px; }
+@media (max-width: 420px) {
+  #update-components .update-row { grid-template-columns: minmax(0, 1fr); }
 }

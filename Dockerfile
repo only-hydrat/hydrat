@@ -1,3 +1,5 @@
+ARG TOR_PACKAGE_VERSION=0.4.9.17-1~d12.bookworm+1
+
 FROM --platform=$BUILDPLATFORM golang:1.26.5-bookworm AS build
 
 ARG TARGETOS
@@ -52,8 +54,9 @@ FROM --platform=$BUILDPLATFORM golang:1.27.1-bookworm AS xray-build
 
 ARG TARGETOS
 ARG TARGETARCH
-ARG XRAY_COMMIT=52a412d9e2f5c2a5142b1b4e2ab3771dacb8b120
-ARG XRAY_SOURCE_SHA256=0159e934d908cd176fed51dc61209e546046351928af685b143cad2ebe704831
+# XTLS/Xray-core v26.11.9
+ARG XRAY_COMMIT=676eaf66f8f05d4d558ee7a74b4736623d3feeb9
+ARG XRAY_SOURCE_SHA256=05623c5394d82870edcfdd9355169b05453da133544355012b2cd1874e67f100
 
 ENV GOTOOLCHAIN=local \
     GOPROXY=https://proxy.golang.org,direct \
@@ -96,7 +99,7 @@ RUN sed -i \
     && go mod download \
     && CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
       go build -buildvcs=false -trimpath \
-        -ldflags="-s -w -buildid= -X github.com/xtls/xray-core/core.build=52a412d-hydrat4" \
+        -ldflags="-s -w -buildid= -X github.com/xtls/xray-core/core.build=$(printf '%.7s' "$XRAY_COMMIT")-hydrat4" \
         -o /out/xray ./main
 
 FROM --platform=$BUILDPLATFORM golang:1.26.5-bookworm AS probe-runtime-test
@@ -129,18 +132,29 @@ RUN CGO_ENABLED=0 go test -tags=xrayintegration -count=1 -v \
       ./internal/dataplane ./internal/xrayapi
 ENTRYPOINT ["go", "test", "-tags=xrayintegration", "-count=1", "-v", "./internal/dataplane", "./internal/xrayapi"]
 
+# Tor Project Bookworm packages, with hashes from its signed package indexes.
+FROM scratch AS tor-amd64
+ARG TOR_PACKAGE_VERSION
+ADD --chmod=0644 --checksum=sha256:0a8745352f01acc630b8ce0122f15e37c01fc8ec98fcd791be5fa37b675484d3 https://deb.torproject.org/torproject.org/pool/main/t/tor/tor_${TOR_PACKAGE_VERSION}_amd64.deb /tor.deb
+
+FROM scratch AS tor-arm64
+ARG TOR_PACKAGE_VERSION
+ADD --chmod=0644 --checksum=sha256:120aeb1578d88bf87bde41874b112e9471a4510587597700c2cbb9401cf378c2 https://deb.torproject.org/torproject.org/pool/main/t/tor/tor_${TOR_PACKAGE_VERSION}_arm64.deb /tor.deb
+
+FROM tor-${TARGETARCH} AS tor-package
+
 FROM debian:12-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
     XRAY_LOCATION_ASSET=/data/geo
 
-RUN apt-get update \
+RUN --mount=type=bind,from=tor-package,source=/tor.deb,target=/tmp/tor.deb \
+    apt-get update \
     && apt-get install -y --no-install-recommends \
-       ca-certificates curl dnsmasq-base iproute2 nftables procps tor wireguard-tools \
+       ca-certificates curl dnsmasq-base iproute2 nftables procps wireguard-tools /tmp/tor.deb \
     && rm -rf /var/lib/apt/lists/*
 
-# Debian's Tor package provides the runtime. Lyrebird is built from pinned
-# upstream source for obfs4 and WebTunnel transports.
+# Lyrebird is built from pinned upstream source for obfs4 and WebTunnel.
 RUN groupadd --gid 10001 hydrat \
     && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent hydrat \
     && install -d -m 0755 /etc/hydrat /run/hydrat /usr/local/share/xray /data/geo \
@@ -155,5 +169,6 @@ COPY config/xray/probe.json /etc/hydrat/xray-probe.json
 COPY config/xray/active.json /etc/hydrat/xray-active.json
 COPY config/nftables/hydrat.nft /etc/hydrat/nftables.nft
 COPY config/config.yml /etc/hydrat/config.yml
+COPY docker-compose.yml docker-compose.i2p.yml docker-compose.updates.yml /usr/local/share/hydrat/release/
 
 ENTRYPOINT ["/usr/local/bin/hydrat"]

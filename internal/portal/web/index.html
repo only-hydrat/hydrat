@@ -83,6 +83,8 @@
         <div class="split sources-layout">
           <div class="panel">
             <div class="panel-head"><h2>Добавить источник</h2></div>
+            <label for="source-label">Метка (необязательно)</label>
+            <input id="source-label" type="text" placeholder="Например, домашняя подписка">
             <label for="source-input">VLESS, URL подписки или Tor bridge</label>
             <textarea id="source-input" placeholder="VLESS URI&#10;proxy-source URL подписки&#10;Bridge obfs4 …"></textarea>
             <div class="button-row">
@@ -189,6 +191,14 @@
           <p><a href="https://support.mozilla.org/en-US/kb/configure-dns-over-https-protection-levels-firefox-android" target="_blank" rel="noreferrer">DNS в Firefox на Android</a> · <a href="https://proton.me/support/firefox-onion-sites" target="_blank" rel="noreferrer">Настройка .onion в Firefox</a></p>
         </details>
 
+        <section class="panel">
+          <div class="panel-head">
+            <h2>Обновления</h2>
+            <button id="update-check" class="button ghost" type="button" disabled>Проверить обновления</button>
+          </div>
+          <p id="update-status" role="status">Войдите как администратор, чтобы проверить обновления Hydrat.</p>
+          <div id="update-components" class="data-list"></div>
+        </section>
         <div class="system-panels">
           <div class="panel">
             <div class="panel-head"><h2>Состояние системы</h2></div>

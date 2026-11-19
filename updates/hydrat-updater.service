@@ -1,0 +1,17 @@
+[Unit]
+Description=Hydrat Compose updater
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+EnvironmentFile=/etc/hydrat-updater.conf
+ExecStart=/usr/local/sbin/hydrat-updater updater -project ${HYDRAT_UPDATER_PROJECT} -files ${HYDRAT_UPDATER_FILES}
+StateDirectory=hydrat-updates
+StateDirectoryMode=0711
+UMask=0077
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

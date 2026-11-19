@@ -33,6 +33,6 @@ docker run --rm --name "$LAB_NAME-client" --network "container:$LAB_NAME" \
   --tmpfs /tmp:size=16m,mode=1777 -v "$LAB_DIR/i2p-test:/i2p-test:ro" \
   -v "$LAB_RUN:/run/hydrat-i2p:ro" \
   -e HYDRAT_I2P_BRIDGE_TEST=1 -e HYDRAT_I2P_XRAY_BINARY=/usr/local/bin/xray \
-  --entrypoint /i2p-test "${HYDRAT_I2P_TEST_XRAY_IMAGE:-ghcr.io/only-hydrat/hydrat:1.2.0}" \
+  --entrypoint /i2p-test "${HYDRAT_I2P_TEST_XRAY_IMAGE:-ghcr.io/only-hydrat/hydrat:1.2.1}" \
   -test.run '^TestPublicI2PBridge$' -test.v -test.timeout 7m
 docker stats --no-stream --format '{{.Name}} CPU={{.CPUPerc}} memory={{.MemUsage}} PIDs={{.PIDs}}' "$LAB_NAME"

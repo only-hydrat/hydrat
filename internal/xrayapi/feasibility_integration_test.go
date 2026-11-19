@@ -28,6 +28,7 @@ const (
 	fixtureXrayAPIPort     = 22102
 	fixtureDNSIngressPort  = 22153
 	http2FrameHeaderLength = 9
+	pinnedXrayBuild        = "676eaf6-hydrat4"
 )
 
 func TestPinnedXrayDNSAndRoutingFeasibility(t *testing.T) {
@@ -37,8 +38,8 @@ func TestPinnedXrayDNSAndRoutingFeasibility(t *testing.T) {
 	}
 	if output, err := exec.Command(binaryPath, "version").CombinedOutput(); err != nil {
 		t.Fatalf("read pinned Xray version: %v: %s", err, strings.TrimSpace(string(output)))
-	} else if !bytes.Contains(output, []byte("52a412d")) {
-		t.Fatalf("unexpected Xray build (want pinned 52a412d): %s", strings.TrimSpace(string(output)))
+	} else if !bytes.Contains(output, []byte(pinnedXrayBuild)) {
+		t.Fatalf("unexpected Xray build (want %s): %s", pinnedXrayBuild, strings.TrimSpace(string(output)))
 	}
 
 	dns := startTCPDNSFixture(t)

@@ -112,8 +112,15 @@ func (store *Store) ListSources(ctx context.Context) ([]Source, error) {
 }
 
 func (store *Store) UpdateSource(ctx context.Context, id, label string, enabled bool) error {
-	if label == "" {
+	return store.PatchSource(ctx, id, &label, &enabled)
+}
+
+func (store *Store) PatchSource(ctx context.Context, id string, label *string, enabled *bool) error {
+	if label != nil && *label == "" {
 		return errors.New("source label must not be empty")
+	}
+	if label == nil && enabled == nil {
+		return errors.New("source patch must contain label or enabled")
 	}
 	tx, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -121,7 +128,7 @@ func (store *Store) UpdateSource(ctx context.Context, id, label string, enabled 
 	}
 	defer func() { _ = tx.Rollback() }()
 	result, err := tx.ExecContext(ctx, `
-        UPDATE sources SET label = ?, enabled = ?, updated_at = ?
+        UPDATE sources SET label = COALESCE(?, label), enabled = COALESCE(?, enabled), updated_at = ?
 		WHERE id = ? AND pending_delete = 0
     `, label, enabled, time.Now().Unix(), id)
 	if err != nil {
@@ -130,10 +137,38 @@ func (store *Store) UpdateSource(ctx context.Context, id, label string, enabled 
 	if err := requireAffected(result, "source"); err != nil {
 		return err
 	}
-	if err := incrementInventoryEpochTx(ctx, tx); err != nil {
-		return err
+	if enabled != nil {
+		if err := incrementInventoryEpochTx(ctx, tx); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
+}
+
+// ListSourceURLs returns decrypted URLs for the explicit admin source view.
+func (store *Store) ListSourceURLs(ctx context.Context) (map[string]string, error) {
+	rows, err := store.db.QueryContext(ctx, `
+		SELECT id, encrypted_payload FROM sources
+		WHERE pending_delete = 0 AND kind IN (?, ?, ?, ?)
+	`, sources.KindVLESS, sources.KindVLESSSubscription, sources.KindTorSubscription, sources.KindRemoteAuto)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	urls := make(map[string]string)
+	for rows.Next() {
+		var id string
+		var encrypted []byte
+		if err := rows.Scan(&id, &encrypted); err != nil {
+			return nil, err
+		}
+		plain, err := store.box.Open(id, encrypted)
+		if err != nil {
+			return nil, err
+		}
+		urls[id] = string(plain)
+	}
+	return urls, rows.Err()
 }
 
 func (store *Store) DeleteSource(

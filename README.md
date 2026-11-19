@@ -64,7 +64,7 @@ PORTAL_PORT=8088
 docker compose up -d
 ```
 
-Compose загрузит `ghcr.io/only-hydrat/hydrat:1.2.0`. Другую версию можно выбрать через `HYDRAT_IMAGE` в `.env`.
+Compose загрузит `ghcr.io/only-hydrat/hydrat:1.2.1`. Другую версию можно выбрать через `HYDRAT_IMAGE` в `.env`.
 
 ### 4. Откройте панель
 
@@ -109,13 +109,14 @@ docker compose -f docker-compose.yml -f docker-compose.i2p.yml up -d
 
 Перед обновлением сохраните `.env`, свою конфигурацию и данные. Порядок согласованного резервного копирования SQLite и ключей описан в [руководстве по эксплуатации](docs/operations.md).
 
-```sh
-git pull --ff-only
-docker compose pull
-docker compose up -d
-```
+В разделе «Система» можно установить новый релиз Hydrat, если подключена [служба обновлений](updates/README.md). Образ включает Xray и Tor.
 
-Если версия закреплена через `HYDRAT_IMAGE` или `HYDRAT_I2P_IMAGE`, обновите её в `.env`. Для установки с I2P добавляйте `-f docker-compose.yml -f docker-compose.i2p.yml` к командам Compose.
+При ручном обновлении возьмите Compose-файлы и скрипты из [выбранного релиза](https://github.com/only-hydrat/hydrat/releases). Сверьте изменения конфигурации и сохраните свои `.env`, overrides и пути данных. Укажите версию из того же релиза в `HYDRAT_IMAGE`, а при использовании I2P также в `HYDRAT_I2P_IMAGE`.
+
+```sh
+docker compose pull
+./scripts/deploy.sh
+```
 
 Проверить сервис и готовность маршрутов можно на сервере:
 

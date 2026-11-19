@@ -401,3 +401,58 @@ func (recorder *profileRecorder) ExploreNext(context.Context) ([]torpool.Profile
 	recorder.rotations++
 	return nil, nil
 }
+
+func TestAdminSourcesImportAndEditLabelAndShowCompleteURL(t *testing.T) {
+	database := testStore(t)
+	handler := New(ServerConfig{Store: database, AdminPassword: "secret"})
+	link := "https://example.net/path/to/subscription?token=private%2Bkey&profile=full"
+	input := map[string]string{"input": "proxy-source " + link, "label": "  Капибара  "}
+	preview := adminRequest(t, handler, http.MethodPost, "/api/admin/sources/preview", "secret", input)
+	if preview.Code != http.StatusOK || !strings.Contains(preview.Body.String(), "Капибара") || strings.Contains(preview.Body.String(), "private") {
+		t.Fatalf("unexpected preview %d: %s", preview.Code, preview.Body.String())
+	}
+	imported := adminRequest(t, handler, http.MethodPost, "/api/admin/sources/import", "secret", input)
+	if imported.Code != http.StatusCreated {
+		t.Fatalf("import status %d: %s", imported.Code, imported.Body.String())
+	}
+	safe := adminRequest(t, handler, http.MethodGet, "/api/admin/sources", "secret", nil)
+	if safe.Code != http.StatusOK || strings.Contains(safe.Body.String(), "private") {
+		t.Fatalf("default source list leaked a URL: %d", safe.Code)
+	}
+
+	path := "/api/admin/sources?include_urls=1"
+	if unauthorized := adminRequest(t, handler, http.MethodGet, path, "", nil); unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous URL list returned %d", unauthorized.Code)
+	}
+	read := func() struct {
+		store.Source
+		URL string
+	} {
+		t.Helper()
+		listed := adminRequest(t, handler, http.MethodGet, path, "secret", nil)
+		var body struct {
+			Sources []struct {
+				store.Source
+				URL string
+			}
+		}
+		if listed.Code != http.StatusOK || listed.Header().Get("Cache-Control") != "no-store" ||
+			json.Unmarshal(listed.Body.Bytes(), &body) != nil || len(body.Sources) != 1 {
+			t.Fatalf("unexpected URL list: status %d", listed.Code)
+		}
+		return body.Sources[0]
+	}
+	source := read()
+	if source.Label != "Капибара" || source.URL != link || !source.Enabled {
+		t.Fatalf("source label, link or initial enabled state is wrong: %+v", source)
+	}
+	for _, patch := range []map[string]any{{"enabled": false}, {"label": "Платная подписка"}} {
+		updated := adminRequest(t, handler, http.MethodPatch, "/api/admin/sources/"+source.ID, "secret", patch)
+		if updated.Code != http.StatusNoContent {
+			t.Fatalf("patch status %d: %s", updated.Code, updated.Body.String())
+		}
+	}
+	if changed := read(); changed.Label != "Платная подписка" || changed.Enabled || changed.URL != link {
+		t.Fatalf("partial patch changed another field: %+v", changed)
+	}
+}

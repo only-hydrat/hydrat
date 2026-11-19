@@ -19,6 +19,7 @@ import (
 	"github.com/only-hydrat/hydrat/internal/sources"
 	"github.com/only-hydrat/hydrat/internal/store"
 	"github.com/only-hydrat/hydrat/internal/torpool"
+	"github.com/only-hydrat/hydrat/internal/update"
 	"github.com/only-hydrat/hydrat/internal/wireguard"
 	"github.com/skip2/go-qrcode"
 )
@@ -46,6 +47,7 @@ type ServerConfig struct {
 	ClientChanges       chan<- struct{}
 	Routing             RoutingProvider
 	WireGuardEndpoint   string
+	UpdateSocket        string
 }
 
 type RoutingState struct {
@@ -191,10 +193,13 @@ func New(config ServerConfig) http.Handler {
 	server.mux.HandleFunc("POST /api/admin/profiles/explore", server.admin(server.exploreProfile))
 	server.mux.HandleFunc("GET /api/admin/candidates", server.admin(server.listCandidates))
 	server.mux.HandleFunc("GET /api/admin/system", server.admin(server.systemSummary))
+	updateHandler := update.Proxy(config.UpdateSocket)
+	server.mux.HandleFunc("GET /api/admin/updates/{operation}", server.admin(updateHandler.ServeHTTP))
+	server.mux.HandleFunc("POST /api/admin/updates/{operation}", server.admin(updateHandler.ServeHTTP))
 	server.mux.HandleFunc("GET /api/admin/routing", server.admin(server.getRouting))
 	server.mux.HandleFunc("PUT /api/admin/routing", server.admin(server.updateRouting))
 	server.mux.HandleFunc("POST /api/admin/routing/geo/update", server.admin(server.triggerGeoUpdate))
-	return server
+	return update.Maintenance(config.UpdateSocket, server)
 }
 
 func (server *Server) me(response http.ResponseWriter, request *http.Request) {
@@ -448,7 +453,7 @@ func (server *Server) clientConfig(response http.ResponseWriter, request *http.R
 		return
 	}
 	config = server.formatClientConfig(config)
-	response.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	response.Header().Set("Content-Type", "application/octet-stream")
 	response.Header().Set("Content-Disposition", `attachment; filename="wireguard.conf"`)
 	_, _ = io.WriteString(response, config)
 }
@@ -722,11 +727,10 @@ func (server *Server) livenessStatus(ctx context.Context) string {
 }
 
 func (server *Server) previewSources(response http.ResponseWriter, request *http.Request) {
-	input, ok := server.decodeInput(response, request)
+	preview, ok := server.decodeSourcePreview(response, request)
 	if !ok {
 		return
 	}
-	preview := sources.PreviewInput(input)
 	for index := range preview.Items {
 		preview.Items[index] = preview.Items[index].Safe()
 	}
@@ -734,11 +738,10 @@ func (server *Server) previewSources(response http.ResponseWriter, request *http
 }
 
 func (server *Server) importSources(response http.ResponseWriter, request *http.Request) {
-	input, ok := server.decodeInput(response, request)
+	preview, ok := server.decodeSourcePreview(response, request)
 	if !ok {
 		return
 	}
-	preview := sources.PreviewInput(input)
 	result, err := server.store.ImportSources(request.Context(), preview.Items)
 	if err != nil {
 		writeError(response, http.StatusInternalServerError, "source import failed")
@@ -757,26 +760,52 @@ func (server *Server) listSources(response http.ResponseWriter, request *http.Re
 		writeError(response, http.StatusInternalServerError, "source list failed")
 		return
 	}
-	writeJSON(response, http.StatusOK, map[string]any{"sources": listed})
+	if request.URL.Query().Get("include_urls") != "1" {
+		writeJSON(response, http.StatusOK, map[string]any{"sources": listed})
+		return
+	}
+	urls, err := server.store.ListSourceURLs(request.Context())
+	if err != nil {
+		writeError(response, http.StatusInternalServerError, "source URLs unavailable")
+		return
+	}
+	type sourceWithURL struct {
+		store.Source
+		URL string `json:"url,omitempty"`
+	}
+	result := make([]sourceWithURL, 0, len(listed))
+	for _, source := range listed {
+		result = append(result, sourceWithURL{Source: source, URL: urls[source.ID]})
+	}
+	writeJSON(response, http.StatusOK, map[string]any{"sources": result})
 }
 
 func (server *Server) updateSource(response http.ResponseWriter, request *http.Request) {
 	var body struct {
-		Label   string `json:"label"`
-		Enabled *bool  `json:"enabled"`
+		Label   *string `json:"label"`
+		Enabled *bool   `json:"enabled"`
 	}
 	if !server.decodeJSON(response, request, &body) {
 		return
 	}
-	if body.Enabled == nil {
-		writeError(response, http.StatusBadRequest, "enabled is required")
+	if body.Label != nil {
+		*body.Label = strings.TrimSpace(*body.Label)
+		if *body.Label == "" {
+			writeError(response, http.StatusBadRequest, "source label must not be empty")
+			return
+		}
+	}
+	if body.Label == nil && body.Enabled == nil {
+		writeError(response, http.StatusBadRequest, "label or enabled is required")
 		return
 	}
-	if err := server.store.UpdateSource(request.Context(), request.PathValue("id"), strings.TrimSpace(body.Label), *body.Enabled); err != nil {
+	if err := server.store.PatchSource(request.Context(), request.PathValue("id"), body.Label, body.Enabled); err != nil {
 		writeError(response, http.StatusNotFound, err.Error())
 		return
 	}
-	server.signalSourceChange()
+	if body.Enabled != nil {
+		server.signalSourceChange()
+	}
 	response.WriteHeader(http.StatusNoContent)
 }
 
@@ -837,18 +866,27 @@ func (server *Server) exploreProfile(response http.ResponseWriter, request *http
 	writeJSON(response, http.StatusOK, map[string]any{"profiles": profiles})
 }
 
-func (server *Server) decodeInput(response http.ResponseWriter, request *http.Request) (string, bool) {
+func (server *Server) decodeSourcePreview(response http.ResponseWriter, request *http.Request) (sources.Preview, bool) {
 	var body struct {
 		Input string `json:"input"`
+		Label string `json:"label"`
 	}
 	if !server.decodeJSON(response, request, &body) {
-		return "", false
+		return sources.Preview{}, false
 	}
 	if strings.TrimSpace(body.Input) == "" {
 		writeError(response, http.StatusBadRequest, "input is required")
-		return "", false
+		return sources.Preview{}, false
 	}
-	return body.Input, true
+	preview := sources.PreviewInput(body.Input)
+	if label := strings.TrimSpace(body.Label); label != "" {
+		for i := range preview.Items {
+			if preview.Items[i].Error == "" {
+				preview.Items[i].Display = label
+			}
+		}
+	}
+	return preview, true
 }
 
 func (server *Server) decodeJSON(response http.ResponseWriter, request *http.Request, target any) bool {

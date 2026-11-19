@@ -1,0 +1,13 @@
+# Optional link to the updater installed on the host. The controller can
+# access only the Unix socket and the maintenance marker in this directory.
+services:
+  controller:
+    environment:
+      HYDRAT_UPDATE_SOCKET: /run/hydrat-updates/update.sock
+    volumes:
+      - type: bind
+        source: /var/lib/hydrat-updates/ipc
+        target: /run/hydrat-updates
+        read_only: true
+        bind:
+          create_host_path: false
