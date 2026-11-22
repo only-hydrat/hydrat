@@ -183,6 +183,14 @@ node --test internal/portal/web_app_test.mjs
 
 Нашли ошибку или хотите предложить изменение — [откройте issue](https://github.com/only-hydrat/hydrat/issues). Перед PR прочитайте [правила участия](CONTRIBUTING.md) и [кодекс поведения](CODE_OF_CONDUCT.md).
 
+## Windows и другие системы
+
+Hydrat собирается кросс-компиляцией под Windows x64/arm64 и macOS arm64: `GOOS=windows GOARCH=amd64 go build ./...`. Но шлюз — это Linux-программа: команды `agent` и `controller` читают и проверяют конфиг, а затем честно отказываются работать, потому что нужны WireGuard, nftables и сетевое пространство имён Linux. Никакого Windows-плейна в проекте нет. Unix-сокеты, управляемые процессы Tor/I2P/probe, advisory-блокировки адресных книг и защищённые retained-логи на Windows возвращают `*platform.UnsupportedError`; ошибки запуска пишутся в stderr. Переносимая часть — конфиг, хранилище, маршрутизация, планировщик — собирается и тестируется на всех платформах.
+
+**Windows 7 не поддерживается**: модулю нужен Go 1.26.5, а [Go 1.21 убрал поддержку Windows 7/8](https://go.dev/doc/go1.21#ports), поэтому даже сборки под Win7 нет. И это не потеря: шлюзу всё равно нужны WireGuard, nftables и netns, то есть Linux-хост. Сценарий для Win7-машины — держать шлюз на Linux-хосте или роутере и подключаться к нему клиентом WireGuard; клиентская часть в этот репозиторий не входит.
+
+Детали и список явных ошибок: [docs/windows-support.md](docs/windows-support.md).
+
 ## Лицензия
 
 [MIT](LICENSE).

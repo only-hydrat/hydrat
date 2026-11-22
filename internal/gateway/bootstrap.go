@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 )
@@ -107,12 +106,4 @@ type ExecRunner struct{}
 func (ExecRunner) Run(ctx context.Context, name string, args ...string) error {
 	_, err := (ExecRunner{}).Output(ctx, name, args...)
 	return err
-}
-
-func (ExecRunner) Output(ctx context.Context, name string, args ...string) ([]byte, error) {
-	output, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
-	if err != nil {
-		return output, fmt.Errorf("%s: %w: %s", name, err, string(output))
-	}
-	return output, nil
 }

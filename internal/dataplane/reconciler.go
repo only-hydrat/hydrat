@@ -20,6 +20,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/only-hydrat/hydrat/internal/platform"
 )
 
 type Protocol string
@@ -965,7 +967,7 @@ func syncDirectory(path string) error {
 	if err != nil {
 		return err
 	}
-	if err := directory.Sync(); err != nil {
+	if err := platform.SyncDirectory(directory); err != nil {
 		_ = directory.Close()
 		return err
 	}

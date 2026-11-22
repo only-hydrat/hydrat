@@ -5,6 +5,14 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  # Lets a contributor run the same checks from their own fork before opening a
+  # pull request, where fork workflows need maintainer approval.
+  workflow_dispatch:
+
+# The pipeline only reads the checked-out tree: no job needs the default write
+# token, including the Docker builds that stay local.
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -48,3 +56,19 @@ jobs:
             -e HYDRAT_I2PD_BINARY=/usr/local/bin/i2pd \
             --entrypoint /i2p-test hydrat-i2p:ci \
             -test.run '^TestRealI2PProcessIsClientOnlyAndStops$' -test.v -test.timeout 40s
+
+  windows:
+    name: Windows build and portable unit tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+      - name: Build every package
+        run: go build ./...
+      - name: Vet every package
+        run: go vet ./...
+      - name: Run unit tests
+        run: go test ./...

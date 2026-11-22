@@ -3,14 +3,15 @@ package onion
 import (
 	"context"
 	"errors"
-	"github.com/only-hydrat/hydrat/internal/dataplane"
-	"github.com/only-hydrat/hydrat/internal/torpool"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
 	"time"
+
+	"github.com/only-hydrat/hydrat/internal/dataplane"
+	"github.com/only-hydrat/hydrat/internal/platform"
+	"github.com/only-hydrat/hydrat/internal/torpool"
 )
 
 // Runtime owns the persistent address namespace. A lost book cannot silently
@@ -30,7 +31,7 @@ func NewRuntime(path string) (*Runtime, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, err
 	}
-	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0600)
+	lock, err := openBookLock(path + ".lock")
 	if err != nil {
 		return nil, err
 	}
@@ -40,8 +41,8 @@ func NewRuntime(path string) (*Runtime, error) {
 			lock.Close()
 		}
 	}()
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		return nil, errors.New("onion address book already owned")
+	if err := lockBook(lock); err != nil {
+		return nil, err
 	}
 	marker := path + ".initialized"
 	if _, err := os.Stat(marker); err == nil {
@@ -71,7 +72,7 @@ func NewRuntime(path string) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
-	err = dir.Sync()
+	err = platform.SyncDirectory(dir)
 	dir.Close()
 	if err != nil {
 		return nil, err

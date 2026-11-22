@@ -41,7 +41,7 @@ func ValidateBackup(path string, box *secretbox.Box) error {
 	if box == nil {
 		return errors.New("secret box is required")
 	}
-	uri := (&url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro&immutable=1"}).String()
+	uri := (&url.URL{Scheme: "file", Path: databaseURIPath(path), RawQuery: "mode=ro&immutable=1"}).String()
 	db, err := sql.Open("sqlite", uri)
 	if err != nil {
 		return err
