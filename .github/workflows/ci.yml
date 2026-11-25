@@ -69,7 +69,10 @@ jobs:
         with:
           gradle-version: '8.13'
       - name: Install Android SDK and NDK
-        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;28.2.13676358'
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4
+        with:
+          log-accepted-android-sdk-licenses: false
+          packages: 'platforms;android-35 build-tools;35.0.0 ndk;28.2.13676358'
       - name: Prepare and build Android
         env:
           HYDRAT_BUILD_JOBS: '4'
