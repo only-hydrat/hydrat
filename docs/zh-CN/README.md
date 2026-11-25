@@ -7,17 +7,16 @@
 </p>
 <p align="center">
   <a href="https://github.com/only-hydrat/hydrat/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/only-hydrat/hydrat/ci.yml?branch=main&label=CI&style=flat-square" alt="CI" /></a>
-  <a href="https://github.com/only-hydrat/hydrat/releases"><img src="https://img.shields.io/github/v/release/only-hydrat/hydrat?style=flat-square" alt="发布版本" /></a>
+  <a href="https://github.com/only-hydrat/hydrat/releases/latest"><img src="https://img.shields.io/github/v/release/only-hydrat/hydrat?filter=v%2A&amp;label=Gateway&amp;style=flat-square" alt="网关版本" /></a>
   <a href="../../LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square" alt="MIT 许可证" /></a>
 </p>
 
 # Hydrat
 
-**设备只需一份 WireGuard 配置，路由选择交给你的服务器。**
+Hydrat 会检测 VLESS 订阅和 Tor 网桥，自动选择路由，并在连接故障时切换到备用路由。
 
-Hydrat 是一个自托管 VPN 网关。添加 VLESS 订阅和 Tor 网桥后，网关会检查节点、为客户端分配路由，并在故障时选择替代路由。手机、电脑或路由器只需使用普通的 WireGuard 客户端。
-
-网关部署在你自己的 Linux 服务器上。如果只需要为一台设备使用 VPN，[Hydrat App](#应用) 可以直接在设备上检查订阅并切换路由。
+- **[Hydrat App](#应用)** 在 Android、Windows 或 Linux 设备上直接运行 VPN。
+- **[Hydrat 网关](#快速开始)** 部署在自己的 Linux 服务器上。手机、电脑和路由器可通过标准 WireGuard 客户端连接。
 
 <p align="center">
   <a href="#应用">应用</a> · <a href="#功能">网关功能</a> · <a href="#快速开始">安装网关</a> · <a href="#界面">截图</a> · <a href="#文档">文档</a>
@@ -25,11 +24,17 @@ Hydrat 是一个自托管 VPN 网关。添加 VLESS 订阅和 Tor 网桥后，�
 
 ## 应用
 
-Hydrat App 提供系统 VPN，支持导入 VLESS 订阅和 Tor 网桥，自动选择路由并在故障时切换到备用路由。每个 HTTPS 订阅均可设置独立的 HWID。
+安装 Hydrat 后，在 **Подключения**（连接）中添加来源，然后点击 **Подключить**（连接）。每个 HTTPS 订阅都可以单独设置 HWID。
 
-[下载适用于 Android、Windows 或 Linux 的 Hydrat App](https://github.com/only-hydrat/hydrat/releases/tag/app-v0.1.2)
+| 平台 | 下载 | 安装 |
+| --- | --- | --- |
+| Android 10+ · arm64 | [APK](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.2/Hydrat-android-arm64-0.1.2.apk) | [说明](../../app/android/README.md) |
+| Windows 10/11 · x64 | [MSI](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.2/Hydrat-windows-x64-0.1.2.msi) · [ZIP](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.2/Hydrat-windows-x64-0.1.2.zip) | [说明](../../app/native/cmd/windows/README.md) |
+| Debian 和 Ubuntu · amd64 | [DEB](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.2/hydrat-app_0.1.2_amd64.deb) | [说明](../../app/linux/README.md) |
 
-应用版本使用 `app-v…` 标签。你可以在应用设置中检查更新。
+打开 **Настройки → Обновления**（设置 → 更新）检查版本。有新版时，Hydrat 会提供适用于当前平台的下载链接。下载后请手动安装。
+
+[Hydrat App 0.1.2 和校验和](https://github.com/only-hydrat/hydrat/releases/tag/app-v0.1.2)
 
 ## 功能
 
@@ -106,14 +111,14 @@ docker compose -f docker-compose.yml -f docker-compose.i2p.yml up -d
 
 后续更新也请使用这两个 Compose 文件。系统设置中提供地址簿、订阅、状态和预热控制。[I2P 指南](i2p.md)。
 
-## 使用前需要了解
+## 网关使用须知
 
 - **WireGuard 必须能连接到网关。** Hydrat 不会伪装这一段连接。如果运营商封锁 WireGuard 或服务器 IP，更换出口代理无法解决问题。
 - **切换保留隧道，但不保证保留每个会话。** 路由故障或出口 IP 变化后，应用可能需要重新建立 TCP/QUIC 连接。TCP 和 UDP 也可能使用不同路由。
 - **检测从网关发起。** 它不衡量设备到服务器之间的网络质量，也不能保证每个网站都能访问。
 - **Tor 和 I2P 访问默认关闭。** 访问这些网站需要网关 DNS；浏览器的 DNS over HTTPS 可能绕过它。预热期间或切换配置后的首次连接可能需要等待。普通浏览器仍会保留 Cookie 和指纹，禁用中继也不会向网络隐藏 Tor/I2P 的使用情况。
 
-## 更新与诊断
+## 网关更新与诊断
 
 更新前请备份 `.env`、自己的配置和数据。SQLite 与密钥的一致性备份步骤见[运维指南](operations.md)。
 

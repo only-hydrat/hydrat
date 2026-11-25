@@ -7,17 +7,16 @@
 </p>
 <p align="center">
   <a href="https://github.com/only-hydrat/hydrat/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/only-hydrat/hydrat/ci.yml?branch=main&label=CI&style=flat-square" alt="CI" /></a>
-  <a href="https://github.com/only-hydrat/hydrat/releases"><img src="https://img.shields.io/github/v/release/only-hydrat/hydrat?style=flat-square" alt="Release" /></a>
+  <a href="https://github.com/only-hydrat/hydrat/releases/latest"><img src="https://img.shields.io/github/v/release/only-hydrat/hydrat?filter=v%2A&amp;label=Gateway&amp;style=flat-square" alt="Gateway version" /></a>
   <a href="../../LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square" alt="MIT license" /></a>
 </p>
 
 # Hydrat
 
-**One WireGuard config on your device. Route selection on your server.**
+Hydrat checks VLESS subscriptions and Tor bridges, chooses a route, and switches to a backup when it fails.
 
-Hydrat is a self-hosted VPN gateway. Add VLESS subscriptions and Tor bridges; the gateway tests them, assigns routes to clients, and selects a replacement when a route fails. Your phone, computer, or router only needs a regular WireGuard client.
-
-The gateway runs on your own Linux server. For a single device, [Hydrat App](#apps) checks subscriptions and switches routes on the device itself.
+- **[Hydrat App](#apps)** runs a VPN directly on your Android, Windows, or Linux device.
+- **[Hydrat gateway](#quick-start)** runs on your Linux server. Phones, computers, and routers connect through a standard WireGuard client.
 
 <p align="center">
   <a href="#apps">Apps</a> · <a href="#features">Gateway features</a> · <a href="#quick-start">Gateway installation</a> · <a href="#interface">Screenshots</a> · <a href="#documentation">Documentation</a>
@@ -25,11 +24,17 @@ The gateway runs on your own Linux server. For a single device, [Hydrat App](#ap
 
 ## Apps
 
-Hydrat App provides a system VPN, imports VLESS subscriptions and Tor bridges, selects a route and switches to a backup if it fails. Each HTTPS subscription can have its own HWID.
+Install Hydrat, add sources under **Подключения** (Connections), and select **Подключить** (Connect). You can set a separate HWID for each HTTPS subscription.
 
-[Download Hydrat App for Android, Windows or Linux](https://github.com/only-hydrat/hydrat/releases/tag/app-v0.1.2)
+| Platform | Download | Setup |
+| --- | --- | --- |
+| Android 10+ · arm64 | [APK](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.2/Hydrat-android-arm64-0.1.2.apk) | [Guide](../../app/android/README.md) |
+| Windows 10/11 · x64 | [MSI](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.2/Hydrat-windows-x64-0.1.2.msi) · [ZIP](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.2/Hydrat-windows-x64-0.1.2.zip) | [Guide](../../app/native/cmd/windows/README.md) |
+| Debian and Ubuntu · amd64 | [DEB](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.2/hydrat-app_0.1.2_amd64.deb) | [Guide](../../app/linux/README.md) |
 
-App releases use `app-v…` tags. You can check for a new version in the app settings.
+Open **Настройки → Обновления** (Settings → Updates) to check your version. When an update is available, Hydrat offers a download for your platform. Install it manually.
+
+[Hydrat App 0.1.2 and checksums](https://github.com/only-hydrat/hydrat/releases/tag/app-v0.1.2)
 
 ## Features
 
@@ -106,14 +111,14 @@ docker compose -f docker-compose.yml -f docker-compose.i2p.yml up -d
 
 Keep using this pair of Compose files for future updates. System settings include the address book, subscriptions, status, and warmup controls. [I2P guide](i2p.md).
 
-## Things to know
+## Gateway considerations
 
 - **WireGuard must reach the gateway.** Hydrat does not disguise this part of the connection. If your ISP blocks WireGuard or the server IP, changing the outbound proxy will not help.
 - **Failover preserves the tunnel, not every session.** A failed route or changed exit IP may require applications to reconnect their TCP/QUIC sessions. TCP and UDP can use different routes.
 - **Probes run from the gateway.** They do not measure the connection between your device and the server or guarantee access to every website.
 - **Tor and I2P access are off by default.** Their sites require the gateway DNS; browser DNS over HTTPS can bypass it. The first connection during warmup or after a profile change may take time. A regular browser keeps cookies and its fingerprint, and disabling transit does not hide Tor/I2P use from the network.
 
-## Updates and diagnostics
+## Gateway updates and diagnostics
 
 Back up `.env`, your configuration, and data before updating. See the [operations guide](operations.md) for a consistent backup of SQLite and its keys.
 

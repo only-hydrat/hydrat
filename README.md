@@ -7,17 +7,16 @@
 </p>
 <p align="center">
   <a href="https://github.com/only-hydrat/hydrat/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/only-hydrat/hydrat/ci.yml?branch=main&label=CI&style=flat-square" alt="CI" /></a>
-  <a href="https://github.com/only-hydrat/hydrat/releases"><img src="https://img.shields.io/github/v/release/only-hydrat/hydrat?style=flat-square" alt="Релиз" /></a>
+  <a href="https://github.com/only-hydrat/hydrat/releases/latest"><img src="https://img.shields.io/github/v/release/only-hydrat/hydrat?filter=v%2A&amp;label=Gateway&amp;style=flat-square" alt="Версия шлюза" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square" alt="Лицензия MIT" /></a>
 </p>
 
 # Hydrat
 
-**Один WireGuard-конфиг на устройстве, выбор маршрутов — на вашем сервере.**
+Hydrat проверяет VLESS-подписки и Tor-мосты, выбирает маршрут и переключается на резерв при сбое.
 
-Hydrat — VPN-шлюз для самостоятельного размещения. Вы добавляете VLESS-подписки и Tor-мосты, а шлюз проверяет их, назначает маршруты клиентам и выбирает замену при сбое. На телефоне, компьютере или роутере достаточно обычного клиента WireGuard.
-
-Для шлюза нужен свой Linux-сервер. Если VPN нужен на одном устройстве, [Hydrat App](#приложения) проверяет подписки и переключает маршруты на самом устройстве.
+- **[Hydrat App](#приложения)** запускает VPN прямо на устройстве. Подходит для Android, Windows и Linux.
+- **[Шлюз Hydrat](#быстрый-запуск)** работает на вашем Linux-сервере. Телефоны, компьютеры и роутеры подключаются к нему обычным клиентом WireGuard.
 
 <p align="center">
   <a href="#приложения">Приложения</a> · <a href="#возможности">Возможности шлюза</a> · <a href="#быстрый-запуск">Установка шлюза</a> · <a href="#интерфейс">Скриншоты</a> · <a href="#документация">Документация</a>
@@ -25,11 +24,17 @@ Hydrat — VPN-шлюз для самостоятельного размещен
 
 ## Приложения
 
-Hydrat App подключает системный VPN, импортирует VLESS-подписки и Tor-мосты, подбирает маршрут и переключается на резерв при сбое. Для HTTPS-подписок можно задать отдельный HWID.
+Установите Hydrat, добавьте источники в разделе «Подключения» и нажмите «Подключить». Для каждой HTTPS-подписки можно указать свой HWID.
 
-[Скачать Hydrat App](https://github.com/only-hydrat/hydrat/releases/tag/app-v0.1.2) · [Android](app/android/README.md) · [Windows](app/native/cmd/windows/README.md) · [Linux](app/linux/README.md)
+| Платформа | Скачать | Установка |
+| --- | --- | --- |
+| Android 10+ · arm64 | [APK](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.2/Hydrat-android-arm64-0.1.2.apk) | [Инструкция](app/android/README.md) |
+| Windows 10/11 · x64 | [MSI](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.2/Hydrat-windows-x64-0.1.2.msi) · [ZIP](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.2/Hydrat-windows-x64-0.1.2.zip) | [Инструкция](app/native/cmd/windows/README.md) |
+| Debian и Ubuntu · amd64 | [DEB](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.2/hydrat-app_0.1.2_amd64.deb) | [Инструкция](app/linux/README.md) |
 
-Приложения используют теги `app-v…`. Проверка новой версии доступна в настройках приложения.
+Откройте **Настройки → Обновления**, чтобы проверить версию. Если доступно обновление, Hydrat предложит установщик для вашей системы. Установка выполняется вручную.
+
+[Hydrat App 0.1.2 и контрольные суммы](https://github.com/only-hydrat/hydrat/releases/tag/app-v0.1.2)
 
 ## Возможности
 
@@ -106,14 +111,14 @@ docker compose -f docker-compose.yml -f docker-compose.i2p.yml up -d
 
 При следующих обновлениях используйте ту же пару Compose-файлов. В «Системе» доступны адресная книга, подписки, статус и прогрев. [Руководство по I2P](docs/i2p.md).
 
-## Что важно учитывать
+## Что важно учитывать для шлюза
 
 - **WireGuard должен доходить до шлюза.** Hydrat не маскирует этот участок соединения. Если провайдер блокирует WireGuard или IP сервера, смена выходного прокси не поможет.
 - **Переключение сохраняет туннель, но не каждую сессию.** При отказе маршрута или смене выходного IP приложениям может потребоваться переподключить TCP/QUIC-соединения. TCP и UDP могут использовать разные маршруты.
 - **Проверки выполняются со шлюза.** Они не измеряют качество сети между телефоном и сервером и не гарантируют доступность каждого сайта.
 - **Tor и I2P по умолчанию выключены.** Для их сайтов нужен DNS шлюза; браузерный DNS через HTTPS может его обходить. Первое соединение при прогреве или смене профиля может занять время. Обычный браузер сохраняет cookies и отпечаток, а отсутствие ретрансляции не скрывает использование Tor/I2P от сети.
 
-## Обновление и диагностика
+## Обновление шлюза и диагностика
 
 Перед обновлением сохраните `.env`, свою конфигурацию и данные. Порядок согласованного резервного копирования SQLite и ключей описан в [руководстве по эксплуатации](docs/operations.md).
 
