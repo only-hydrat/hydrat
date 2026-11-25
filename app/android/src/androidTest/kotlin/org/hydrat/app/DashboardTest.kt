@@ -8,6 +8,7 @@ import androidx.test.uiautomator.By
 import androidx.test.uiautomator.Direction
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -17,6 +18,16 @@ class DashboardTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context = instrumentation.targetContext
     private val device = UiDevice.getInstance(instrumentation)
+
+    @Test fun formatsTranslationsOnAndroidRuntime() {
+        val previous = UiLanguage.choice(context)
+        try {
+            UiLanguage.select(context, "en")
+            assertEquals("Installed version: 0.1.3", tr("Установлена версия {0}", "0.1.3"))
+        } finally {
+            UiLanguage.select(context, previous)
+        }
+    }
 
     @Test fun threeScreensAndSourceManagement() {
         context.getSharedPreferences("connection", Context.MODE_PRIVATE).edit().remove("hwid").commit()

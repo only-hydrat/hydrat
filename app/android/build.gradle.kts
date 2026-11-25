@@ -28,6 +28,7 @@ android {
     sourceSets.getByName("main") {
         jniLibs.srcDir("build/hydrat/jni")
         assets.srcDir("build/hydrat/assets")
+        assets.srcDir("../../internal/i18n/catalog")
     }
     packaging.jniLibs.useLegacyPackaging = true
     compileOptions {

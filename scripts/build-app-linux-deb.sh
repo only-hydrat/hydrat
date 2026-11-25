@@ -34,6 +34,7 @@ install -m 0644 "$native/.xray/LICENSE" "$docs/Xray.txt"
 install -m 0644 "$source/README.md" "$docs/README.md"
 install -m 0644 "$root/app/android/src/main/res/drawable-nodpi/hydrat_launcher_mark.png" "$app/icon.png"
 install -m 0644 "$source/theme.css" "$app/theme.css"
+install -m 0644 "$root/internal/i18n/catalog/messages.json" "$app/messages.json"
 install -m 0755 "$source/hydrat.py" "$packaging/tor-runtime" "$app/"
 ln -s ../lib/hydrat-app/hydrat.py "$package/usr/bin/hydrat-app"
 install -Dm 0644 "$packaging/hydrat-app.service" "$package/lib/systemd/system/hydrat-app.service"
@@ -51,7 +52,7 @@ Priority: optional
 Architecture: amd64
 Maintainer: Hydrat <only-hydrat@users.noreply.github.com>
 Installed-Size: $(du -sk "$package" | cut -f1)
-Depends: adduser, init-system-helpers, systemd, systemd-resolved, polkitd, iproute2, nftables, python3, python3-gi, gir1.2-gtk-3.0, ca-certificates, libc6 (>= 2.34), zlib1g
+Depends: adduser, init-system-helpers, systemd, systemd-resolved, polkitd, iproute2, nftables, python3, python3-gi, gir1.2-gtk-3.0, gir1.2-ayatanaappindicator3-0.1, ca-certificates, libc6 (>= 2.34), zlib1g
 Homepage: https://github.com/only-hydrat/hydrat
 Description: Hydrat desktop VPN client
  GTK desktop client and local system VPN service with automatic VLESS and Tor

@@ -4,6 +4,8 @@
 
 # Production operations
 
+Change the panel language in **System → Settings → Language**. Automatic uses the browser language. To set a default for everyone, set `HYDRAT_PORTAL_LANGUAGE` to `ru`, `en`, or `zh-CN` in `.env`. A user's choice takes precedence.
+
 ## Distribution and inactive devices
 
 The soft limit is two active clients per route, including duplicate entries

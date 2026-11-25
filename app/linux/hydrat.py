@@ -3,10 +3,12 @@
 import argparse
 import http.client
 import json
+import os
 from pathlib import Path
 import re
 import socket
 import threading
+from tempfile import NamedTemporaryFile
 from urllib.parse import quote
 
 import gi
@@ -16,18 +18,76 @@ gi.require_version("Gdk", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
 from gi.repository import Gdk, GdkPixbuf, GLib, Gtk
 
+try:
+    gi.require_version("AyatanaAppIndicator3", "0.1")
+    from gi.repository import AyatanaAppIndicator3 as Indicator
+except (ImportError, ValueError):
+    Indicator = None
+
 
 APP_DIR = Path(__file__).resolve().parent
 SOCKET = "/run/hydrat-app/control.sock"
 SUBSCRIPTION_KINDS = {"vless_subscription", "tor_subscription", "remote_auto"}
 
+LANGUAGE_CHOICES = ("", "ru", "en", "zh-CN")
+LANGUAGE_FILE = Path(GLib.get_user_config_dir()) / "hydrat-app" / "language"
+
+
+def saved_language():
+    try:
+        value = LANGUAGE_FILE.read_text().strip()
+    except OSError:
+        return ""
+    return value if value in LANGUAGE_CHOICES else ""
+
+
+def detected_language():
+    for name in GLib.get_language_names():
+        base = re.split(r"[-_.@]", name, maxsplit=1)[0].lower()
+        if base in ("ru", "en"):
+            return base
+        if base == "zh":
+            return "zh-CN"
+    return "ru"
+
+
+def load_messages():
+    path = APP_DIR / "messages.json"
+    if not path.is_file() and len(APP_DIR.parents) >= 2:
+        path = APP_DIR.parents[1] / "internal/i18n/catalog/messages.json"
+    try:
+        return json.loads(path.read_text(encoding="utf-8")).get(saved_language() or detected_language(), {})
+    except OSError:
+        return {}
+
+
+MESSAGES = load_messages()
+
+
+def tr(source, *values):
+    message = MESSAGES.get(source, source)
+    return message.format(*values) if values else message
+
+
+def save_language(value):
+    LANGUAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with NamedTemporaryFile(dir=LANGUAGE_FILE.parent, mode="w", delete=False) as pending:
+        name = Path(pending.name)
+        try:
+            pending.write(value + "\n")
+            pending.close()
+            name.replace(LANGUAGE_FILE)
+        finally:
+            name.unlink(missing_ok=True)
+
+
 ISSUE_TEXT = {
-    "unsupported source format": "ожидается подписка, конфиг VLESS или мост Tor",
-    "invalid VLESS URI": "проверьте ссылку VLESS",
-    "invalid subscription URL": "проверьте адрес подписки",
-    "invalid Tor bridge line": "проверьте строку моста Tor",
-    "unsupported Tor bridge transport": "транспорт моста Tor не поддерживается",
-    "source refresh failed": "источник сохранён, загрузить ноды не удалось",
+    "unsupported source format": tr("ожидается подписка, конфиг VLESS или мост Tor"),
+    "invalid VLESS URI": tr("проверьте ссылку VLESS"),
+    "invalid subscription URL": tr("проверьте адрес подписки"),
+    "invalid Tor bridge line": tr("проверьте строку моста Tor"),
+    "unsupported Tor bridge transport": tr("транспорт моста Tor не поддерживается"),
+    "source refresh failed": tr("источник сохранён, загрузить ноды не удалось"),
 }
 
 
@@ -63,12 +123,12 @@ class LocalAPI:
             else:
                 result = {}
             if response.status >= 300 or result.get("Error"):
-                raise ValueError(result.get("Error") or "Служба Hydrat отклонила запрос.")
+                raise ValueError(tr(result.get("Error") or "Служба Hydrat отклонила запрос."))
             return result
         except PermissionError:
-            raise ValueError("Для доступа нужна группа hydrat-users. После добавления в неё войдите в систему заново.") from None
+            raise ValueError(tr("Для доступа нужна группа hydrat-users. После добавления в неё войдите в систему заново.")) from None
         except (OSError, http.client.HTTPException):
-            raise ValueError("Служба Hydrat недоступна. Проверьте hydrat-app.service.") from None
+            raise ValueError(tr("Служба Hydrat недоступна. Проверьте hydrat-app.service.")) from None
         finally:
             with_connection.close()
 
@@ -141,18 +201,54 @@ class Window(Gtk.ApplicationWindow):
         switch.set_stack(self.pages)
         add(header, switch)
         add(root, self.pages, True)
-        self.pages.add_titled(scrolled(self.overview()), "home", "Главная")
-        self.pages.add_titled(scrolled(self.sources()), "sources", "Подключения")
-        self.pages.add_titled(self.settings(), "settings", "Настройки")
+        self.pages.add_titled(scrolled(self.overview()), "home", tr("Главная"))
+        self.pages.add_titled(scrolled(self.sources()), "sources", tr("Подключения"))
+        self.pages.add_titled(self.settings(), "settings", tr("Настройки"))
         self.pages.connect("notify::visible-child-name", self.page_changed)
+        self.tray = self.build_tray()
+        self.connect("delete-event", self.close_to_tray)
         self.connect("destroy", self.on_destroy)
         self.show_all()
         self.log_button.hide()
         self.refresh()
         self.timer = GLib.timeout_add_seconds(2, self.refresh)
 
+    def build_tray(self):
+        if Indicator is None:
+            return None
+        self.tray_icon = str(APP_DIR / "icon.png")
+        tray = Indicator.Indicator.new("hydrat-vpn", self.tray_icon, Indicator.IndicatorCategory.APPLICATION_STATUS)
+        tray.set_title("Hydrat")
+        menu = Gtk.Menu()
+        self.tray_status = Gtk.MenuItem(label=tr("Загружаем состояние…"), sensitive=False)
+        self.tray_action = Gtk.MenuItem(label=tr("Подключить"), sensitive=False)
+        self.tray_action.connect("activate", self.toggle)
+        show = Gtk.MenuItem(label=tr("Открыть Hydrat"))
+        show.connect("activate", lambda _: self.present())
+        quit_item = Gtk.MenuItem(label=tr("Закрыть интерфейс"))
+        quit_item.connect("activate", lambda _: self.destroy())
+        for item in (self.tray_status, self.tray_action, Gtk.SeparatorMenuItem(), show, quit_item):
+            menu.append(item)
+        menu.show_all()
+        tray.set_menu(menu)
+        tray.connect("connection-changed", self.tray_connection_changed)
+        tray.set_status(Indicator.IndicatorStatus.ACTIVE)
+        return tray
+
+    def tray_connection_changed(self, _, connected):
+        if not connected and not self.closing and not self.get_visible():
+            self.present()
+
+    def close_to_tray(self, *_):
+        if self.tray is not None and self.tray.props.connected:
+            self.hide()
+            return True
+        return False
+
     def on_destroy(self, *_):
         self.closing = True
+        if self.tray is not None:
+            self.tray.set_status(Indicator.IndicatorStatus.PASSIVE)
         GLib.source_remove(self.timer)
 
     def request(self, method, path, body=None, *, complete, timeout=95, headers=None):
@@ -197,7 +293,7 @@ class Window(Gtk.ApplicationWindow):
             self.polling = False
             self.status = status
             if error:
-                self.connection.set_text("Статус VPN недоступен")
+                self.connection.set_text(tr("Статус VPN недоступен"))
                 self.connection_hint.set_text(error)
                 self.log_button.show()
                 self.render_actions()
@@ -210,39 +306,40 @@ class Window(Gtk.ApplicationWindow):
     def overview(self):
         page = box(gap=12)
         status = add(page, panel())
-        self.connection = add(status, label("Загружаем состояние…", "headline"))
+        self.connection = add(status, label(tr("Загружаем состояние…"), "headline"))
         self.connection_hint = add(status, label(style="muted"))
         self.connection_action = add(status, label(style="muted"))
         actions = add(status, box(horizontal=True))
-        self.primary = add(actions, button("Подключить", self.toggle, "primary"))
-        self.log_button = add(actions, button("Журнал службы", self.open_log))
-        routes = add(page, panel("Маршруты"))
+        self.primary = add(actions, button(tr("Подключить"), self.toggle, "primary"))
+        self.log_button = add(actions, button(tr("Журнал службы"), self.open_log))
+        routes = add(page, panel(tr("Маршруты")))
         grid = Gtk.Grid(row_spacing=8, column_spacing=18)
         self.routes = {}
-        for row, (key, name) in enumerate((("tcp", "TCP"), ("udp", "UDP"), ("tcp_reserve", "Резерв TCP"), ("udp_reserve", "Резерв UDP"))):
+        for row, (key, name) in enumerate((("tcp", "TCP"), ("udp", "UDP"), ("tcp_reserve", tr("Резерв TCP")), ("udp_reserve", tr("Резерв UDP")))):
             grid.attach(label(name, "muted"), 0, row, 1, 1)
-            self.routes[key] = label("Маршрут не выбран")
+            self.routes[key] = label(tr("Маршрут не выбран"))
             grid.attach(self.routes[key], 1, row, 1, 1)
         add(routes, grid)
-        self.search = add(routes, label("Загружаем состояние…", "muted"))
+        self.search = add(routes, label(tr("Загружаем состояние…"), "muted"))
         return page
 
     def open_log(self, _):
-        self.connection_action.set_text("Откройте журнал в терминале: sudo journalctl -u hydrat-app")
+        self.connection_action.set_text(tr("Откройте журнал в терминале: sudo journalctl -u hydrat-app"))
         self.connection_action.set_selectable(True)
 
     def toggle(self, _):
         status = self.status
-        if status is None:
+        if self.busy or status is None or status["Connection"] == "stopping":
             return
         if status["Connection"] == "requested":
-            self.action("DELETE", "/connection", None, self.connection_action, "Отключаем VPN…",
+            self.action("DELETE", "/connection", None, self.connection_action, tr("Отключаем VPN…"),
                         lambda _: self.connection_action.set_text(""))
         elif status["Sources"] == 0:
+            self.present()
             self.pages.set_visible_child_name("sources")
             self.input.grab_focus()
         else:
-            self.action("POST", "/connection", None, self.connection_action, "Запускаем VPN…",
+            self.action("POST", "/connection", None, self.connection_action, tr("Запускаем VPN…"),
                         lambda _: self.connection_action.set_text(""))
 
     def render_status(self, status):
@@ -252,27 +349,27 @@ class Window(Gtk.ApplicationWindow):
         searching = status["SearchingSeconds"]
         hint, tone = "", None
         if connection == "failed":
-            title, hint, tone = "Не удалось запустить VPN", "Подробности в журнале службы Hydrat.", "error"
+            title, hint, tone = tr("Не удалось запустить VPN"), tr("Подробности в журнале службы Hydrat."), "error"
         elif connection == "stopping":
-            title = "Отключаем VPN…"
+            title = tr("Отключаем VPN…")
         elif status["Recovering"]:
-            title, tone = "Восстанавливаем подключение…", "warning"
+            title, tone = tr("Восстанавливаем подключение…"), "warning"
         elif tcp and udp:
-            title, tone = "VPN подключён", "accent"
+            title, tone = tr("VPN подключён"), "accent"
         elif tcp:
-            title, tone = "VPN подключён · UDP недоступен", "warning"
+            title, tone = tr("VPN подключён · UDP недоступен"), "warning"
         elif udp:
-            title, tone = "VPN подключён · TCP недоступен", "warning"
+            title, tone = tr("VPN подключён · TCP недоступен"), "warning"
         elif not status["Sources"]:
-            title, hint = "Добавьте источник", "Подойдёт подписка, конфиг VLESS или мост Tor."
+            title, hint = tr("Добавьте источник"), tr("Подойдёт подписка, конфиг VLESS или мост Tor.")
         elif running and searching >= 30:
-            title = "Рабочий маршрут пока не найден"
+            title = tr("Рабочий маршрут пока не найден")
         elif running:
-            title = "Подбираем маршрут…"
+            title = tr("Подбираем маршрут…")
         elif connection == "requested":
-            title = "Запускаем VPN…"
+            title = tr("Запускаем VPN…")
         else:
-            title = "VPN отключён"
+            title = tr("VPN отключён")
         styles = self.connection.get_style_context()
         for item in ("error", "warning", "accent"):
             styles.remove_class(item)
@@ -283,46 +380,53 @@ class Window(Gtk.ApplicationWindow):
         self.log_button.set_visible(connection == "failed")
         for role, widget in self.routes.items():
             reserve = "TCPReserveStatus" if role.startswith("tcp") else "UDPReserveStatus"
-            widget.set_text("Проверяется" if role.endswith("reserve") and status[reserve] == "checking" else "Маршрут не выбран")
+            widget.set_text(tr("Проверяется") if role.endswith("reserve") and status[reserve] == "checking" else tr("Маршрут не выбран"))
         for node in status.get("Nodes") or ():
             if node["Role"] not in self.routes:
                 continue
-            parts = [node["Label"] or "Маршрут", node["Protocol"].upper()]
+            parts = [node["Label"] or tr("Маршрут"), node["Protocol"].upper()]
             if node["LatencyMS"]:
-                parts.append(f'{node["LatencyMS"]:.0f} мс')
+                parts.append(tr("{0:.0f} мс", node['LatencyMS']))
             if node["ThroughputMbps"]:
-                parts.append(f'{node["ThroughputMbps"]:.1f} Мбит/с')
+                parts.append(tr("{0:.1f} Мбит/с", node['ThroughputMbps']))
             if node["State"] == "unavailable":
-                parts.append("сбой")
+                parts.append(tr("сбой"))
             self.routes[node["Role"]].set_text(" · ".join(filter(None, parts)))
         if running:
             search = status["Search"]
-            phase = {"search": "Поиск", "background": "Фоновый поиск", "paused": "Пауза", "waiting": "Ожидание"}.get(search["Mode"], "Проверки")
+            phase = {"search": tr("Поиск"), "background": tr("Фоновый поиск"), "paused": tr("Пауза"), "waiting": tr("Ожидание")}.get(search["Mode"], tr("Проверки"))
             if search["Workers"]:
-                phase += f' · потоки: {search["Workers"]}'
-            self.search.set_text(f'{phase} · Проверено {status["Checked"]}/{status["Candidates"]} · '
-                                 f'Готово {status["Qualified"]} · Сохранено {status["Saved"]}')
+                phase += tr(" · потоки: {0}", search['Workers'])
+            self.search.set_text(tr("{0} · Проверено {1}/{2} · Готово {3} · Сохранено {4}", phase, status['Checked'], status['Candidates'], status['Qualified'], status['Saved']))
         else:
-            self.search.set_text(f'Нод в каталоге: {status["Candidates"]}')
+            self.search.set_text(tr("Нод в каталоге: {0}", status['Candidates']))
         self.render_sources(status.get("Inventory") or [])
         self.render_actions()
 
     def render_actions(self):
         status = self.status
         connection = status["Connection"] if status else ""
-        self.primary.set_sensitive(not self.busy and bool(status) and connection != "stopping")
+        can_toggle = not self.busy and bool(status) and connection != "stopping"
+        self.primary.set_sensitive(can_toggle)
         if status:
             if connection == "requested":
-                title = "Отключить"
+                title = tr("Отключить")
             elif connection == "stopping":
-                title = "Отключаем…"
+                title = tr("Отключаем…")
             elif not status["Sources"]:
-                title = "Добавить источник"
+                title = tr("Добавить источник")
             elif connection == "failed":
-                title = "Подключить снова"
+                title = tr("Подключить снова")
             else:
-                title = "Подключить"
+                title = tr("Подключить")
             self.primary.set_label(title)
+        if self.tray is not None:
+            state = self.connection.get_text()
+            if self.tray_status.get_label() != state:
+                self.tray_status.set_label(state)
+                self.tray.set_icon_full(self.tray_icon, "Hydrat — " + state)
+            self.tray_action.set_label(self.primary.get_label())
+            self.tray_action.set_sensitive(can_toggle)
         for widget in (self.import_button, self.suggested, self.refresh_button, self.remove, self.save, self.save_geo):
             widget.set_sensitive(not self.busy and bool(status))
         self.refresh_button.set_sensitive(not self.busy and bool(status and self.inventory))
@@ -336,28 +440,28 @@ class Window(Gtk.ApplicationWindow):
 
     def sources(self):
         page = box(gap=12)
-        inventory = add(page, panel("Источники"))
-        self.empty = add(inventory, label("Источников пока нет.", "muted"))
+        inventory = add(page, panel(tr("Источники")))
+        self.empty = add(inventory, label(tr("Источников пока нет."), "muted"))
         self.source_list = Gtk.ListBox()
         self.source_list.set_selection_mode(Gtk.SelectionMode.SINGLE)
         self.source_list.connect("row-selected", lambda *_: self.render_actions())
         add(inventory, self.source_list)
         inventory_buttons = add(inventory, box(horizontal=True))
-        self.refresh_button = add(inventory_buttons, button("Обновить", self.refresh_sources))
-        self.edit_hwid = add(inventory_buttons, button("HWID источника", self.edit_source_hwid))
-        self.remove = add(inventory_buttons, button("Удалить источник", self.delete_source, "danger"))
-        importer = add(page, panel("Добавить источники"))
-        add(importer, label("Вставьте ссылки на подписки или конфиги, по одной на строку.", "muted"))
+        self.refresh_button = add(inventory_buttons, button(tr("Обновить"), self.refresh_sources))
+        self.edit_hwid = add(inventory_buttons, button(tr("HWID источника"), self.edit_source_hwid))
+        self.remove = add(inventory_buttons, button(tr("Удалить источник"), self.delete_source, "danger"))
+        importer = add(page, panel(tr("Добавить источники")))
+        add(importer, label(tr("Вставьте ссылки на подписки или конфиги, по одной на строку."), "muted"))
         self.input = Gtk.TextView()
         self.input.set_wrap_mode(Gtk.WrapMode.CHAR)
         view = scrolled(self.input)
         view.set_min_content_height(106)
         add(importer, view)
-        self.import_hwid = Gtk.Entry(max_length=64, placeholder_text="Общий HWID")
-        add_field(importer, "HWID одной HTTPS-подписки", self.import_hwid)
+        self.import_hwid = Gtk.Entry(max_length=64, placeholder_text=tr("Общий HWID"))
+        add_field(importer, tr("HWID одной HTTPS-подписки"), self.import_hwid)
         buttons = add(importer, box(horizontal=True))
-        self.import_button = add(buttons, button("Импортировать", self.import_sources, "primary"))
-        self.suggested = add(buttons, button("Добавить бесплатные подписки", self.import_suggested))
+        self.import_button = add(buttons, button(tr("Импортировать"), self.import_sources, "primary"))
+        self.suggested = add(buttons, button(tr("Добавить бесплатные подписки"), self.import_suggested))
         self.source_notice = add(importer, label(style="muted"))
         return page
 
@@ -372,11 +476,11 @@ class Window(Gtk.ApplicationWindow):
         for index, item in enumerate(inventory, 1):
             row = Gtk.ListBoxRow()
             row.source = item
-            name = item["Label"] or f"Источник {index}"
-            state = " · ошибка обновления" if item["Failed"] else ""
+            name = item["Label"] or tr("Источник {0}", index)
+            state = tr(" · ошибка обновления") if item["Failed"] else ""
             if item.get("CustomHWID"):
-                state += " · свой HWID"
-            row.add(label(f'{name} · Ноды: {item["Candidates"]}{state}'))
+                state += tr(" · свой HWID")
+            row.add(label(tr("{0} · Ноды: {1}{2}", name, item['Candidates'], state)))
             self.source_list.add(row)
             row.show_all()
             if item["ID"] == selected_id:
@@ -388,7 +492,7 @@ class Window(Gtk.ApplicationWindow):
         raw = buffer.get_text(*buffer.get_bounds(), True)
         hwid = self.import_hwid.get_text().strip()
         if not raw.strip():
-            self.source_notice.set_text("Вставьте ссылку или конфиг.")
+            self.source_notice.set_text(tr("Вставьте ссылку или конфиг."))
             self.input.grab_focus()
             return
 
@@ -399,33 +503,34 @@ class Window(Gtk.ApplicationWindow):
                 number = issue["Line"]
                 if 1 <= number <= len(lines):
                     retry.append(lines[number - 1])
-                    details.append(f'Строка {len(retry)} — {ISSUE_TEXT.get(issue["Reason"], "проверьте источник")}')
+                    reason = ISSUE_TEXT.get(issue["Reason"]) or tr("проверьте формат источника")
+                    details.append(tr("Строка {0} — {1}", len(retry), reason))
             buffer.set_text("\n".join(retry))
             if not retry:
                 self.import_hwid.set_text("")
             self.source_notice.set_text("\n".join((self.import_summary(result), *details)))
 
         if hwid and not re.fullmatch(r"[A-Za-z0-9=-]{10,64}", hwid):
-            self.source_notice.set_text("В HWID должно быть 10–64 символа: латиница, цифры, дефис или знак равенства.")
+            self.source_notice.set_text(tr("В HWID должно быть 10–64 символа: латиница, цифры, дефис или знак равенства."))
             self.import_hwid.grab_focus()
             return
-        self.action("POST", "/sources/import", raw, self.source_notice, "Импортируем источники…", completed,
+        self.action("POST", "/sources/import", raw, self.source_notice, tr("Импортируем источники…"), completed,
                     headers={"X-Hydrat-Source-HWID": hwid} if hwid else None)
 
     @staticmethod
     def import_summary(result):
         counts = [f"{name}: {result[key]}" for key, name in
-                  (("Imported", "Добавлено"), ("Restored", "Восстановлено"), ("Skipped", "Уже в списке"),
-                   ("Unavailable", "Некорректных строк"), ("RefreshFailed", "Ошибок загрузки")) if result.get(key)]
-        return " · ".join(counts) or "Нет источников для импорта."
+                  (("Imported", tr("Добавлено")), ("Restored", tr("Восстановлено")), ("Skipped", tr("Уже в списке")),
+                   ("Unavailable", tr("Некорректных строк")), ("RefreshFailed", tr("Ошибок загрузки"))) if result.get(key)]
+        return " · ".join(counts) or tr("Нет источников для импорта.")
 
     def import_suggested(self, _):
-        self.action("POST", "/sources/suggested", None, self.source_notice, "Проверяем подписки…",
+        self.action("POST", "/sources/suggested", None, self.source_notice, tr("Проверяем подписки…"),
                     lambda result: self.source_notice.set_text(self.import_summary(result)))
 
     def refresh_sources(self, _):
-        self.action("POST", "/sources/refresh", None, self.source_notice, "Обновляем источники…",
-                    lambda result: self.source_notice.set_text(f'Обновлено: {result["Updated"]} · Ошибок: {result["Failed"]}'))
+        self.action("POST", "/sources/refresh", None, self.source_notice, tr("Обновляем источники…"),
+                    lambda result: self.source_notice.set_text(tr("Обновлено: {0} · Ошибок: {1}", result['Updated'], result['Failed'])))
 
     def edit_source_hwid(self, _):
         row = self.source_list.get_selected_row()
@@ -436,42 +541,42 @@ class Window(Gtk.ApplicationWindow):
 
         def loaded(result):
             self.source_notice.set_text("")
-            dialog = css(Gtk.Dialog(title="HWID источника", transient_for=self, modal=True, destroy_with_parent=True), "hydrat")
-            dialog.add_buttons("Отмена", Gtk.ResponseType.CANCEL, "Сохранить", Gtk.ResponseType.OK)
+            dialog = css(Gtk.Dialog(title=tr("HWID источника"), transient_for=self, modal=True, destroy_with_parent=True), "hydrat")
+            dialog.add_buttons(tr("Отмена"), Gtk.ResponseType.CANCEL, tr("Сохранить"), Gtk.ResponseType.OK)
             dialog.set_default_response(Gtk.ResponseType.OK)
             content = dialog.get_content_area()
             content.set_border_width(16)
             content.set_spacing(8)
-            add(content, label(source["Label"] or "Подписка", "section"))
-            entry = add(content, Gtk.Entry(text=result["HWID"], max_length=64, placeholder_text="Общий HWID"))
+            add(content, label(source["Label"] or tr("Подписка"), "section"))
+            entry = add(content, Gtk.Entry(text=result["HWID"], max_length=64, placeholder_text=tr("Общий HWID")))
             entry.set_activates_default(True)
-            entry.get_accessible().set_name("HWID источника")
-            add(content, label("Пустое поле использует общий HWID.", "muted"))
+            entry.get_accessible().set_name(tr("HWID источника"))
+            add(content, label(tr("Пустое поле использует общий HWID."), "muted"))
             content.show_all()
             response = dialog.run()
             value = entry.get_text().strip()
             dialog.destroy()
             if response == Gtk.ResponseType.OK:
-                self.action("PUT", path, {"HWID": value}, self.source_notice, "Сохраняем HWID…",
-                            lambda report: self.source_notice.set_text("HWID сохранён. Не удалось обновить источник."
-                                                                     if report["Failed"] else "HWID сохранён. Источник обновлён."))
+                self.action("PUT", path, {"HWID": value}, self.source_notice, tr("Сохраняем HWID…"),
+                            lambda report: self.source_notice.set_text(tr("HWID сохранён. Не удалось обновить источник.")
+                                                                     if report["Failed"] else tr("HWID сохранён. Источник обновлён.")))
 
-        self.action("GET", path, None, self.source_notice, "Загружаем HWID…", loaded)
+        self.action("GET", path, None, self.source_notice, tr("Загружаем HWID…"), loaded)
 
     def delete_source(self, _):
         row = self.source_list.get_selected_row()
         if row is None:
             return
         source = row.source
-        name = source["Label"] or "выбранный источник"
+        name = source["Label"] or tr("выбранный источник")
         dialog = Gtk.MessageDialog(transient_for=self, modal=True, message_type=Gtk.MessageType.QUESTION,
-                                   buttons=Gtk.ButtonsType.OK_CANCEL, text=f"Удалить «{name}» и его ноды?")
+                                   buttons=Gtk.ButtonsType.OK_CANCEL, text=tr("Удалить «{0}» и его ноды?", name))
         dialog.set_default_response(Gtk.ResponseType.CANCEL)
         response = dialog.run()
         dialog.destroy()
         if response == Gtk.ResponseType.OK:
-            self.action("DELETE", "/sources/" + quote(source["ID"], safe=""), None, self.source_notice, "Удаляем источник…",
-                        lambda _: self.source_notice.set_text("Источник удалён."))
+            self.action("DELETE", "/sources/" + quote(source["ID"], safe=""), None, self.source_notice, tr("Удаляем источник…"),
+                        lambda _: self.source_notice.set_text(tr("Источник удалён.")))
 
     def settings(self):
         outer = box(gap=6)
@@ -480,23 +585,47 @@ class Window(Gtk.ApplicationWindow):
         switcher.set_stack(tabs)
         add(outer, switcher)
         add(outer, tabs, True)
-        tabs.add_titled(self.connection_settings(), "common", "Общие")
+        tabs.add_titled(self.connection_settings(), "common", tr("Общие"))
         tabs.add_titled(self.geo_settings(), "geo", "GeoIP / GeoSite")
-        tabs.add_titled(scrolled(self.update_settings()), "updates", "Обновления")
+        tabs.add_titled(scrolled(self.update_settings()), "updates", tr("Обновления"))
+        tabs.add_titled(self.language_settings(), "language", tr("Язык"))
         return outer
+
+    def language_settings(self):
+        page = box()
+        card = add(page, panel(tr("Язык")))
+        choice = Gtk.ComboBoxText()
+        for value, title in zip(LANGUAGE_CHOICES, (tr("Автоматически"), "Русский", "English", "简体中文")):
+            choice.append(value or "auto", title)
+        choice.set_active_id(saved_language() or "auto")
+        add(card, choice)
+        notice = add(card, label(style="muted"))
+
+        def save(_):
+            value = choice.get_active_id()
+            if value is None:
+                return
+            try:
+                save_language("" if value == "auto" else value)
+                notice.set_text(tr("Язык изменится при следующем запуске Hydrat."))
+            except OSError:
+                notice.set_text(tr("Не удалось сохранить язык."))
+
+        add(card, button(tr("Сохранить"), save, "primary"))
+        return page
 
     def update_settings(self):
         page = box()
-        card = add(page, panel("Обновления"))
+        card = add(page, panel(tr("Обновления")))
         try:
             version = (APP_DIR / "VERSION").read_text().strip()
         except OSError:
             version = ""
-        self.installed_version = add(card, label(f"Установлена версия {version}" if version else "Установленная версия", "muted"))
-        self.check_update_button = add(card, button("Проверить обновления", self.check_update))
+        self.installed_version = add(card, label(tr("Установлена версия {0}", version) if version else tr("Установленная версия"), "muted"))
+        self.check_update_button = add(card, button(tr("Проверить обновления"), self.check_update))
         self.check_update_button.set_halign(Gtk.Align.START)
         self.update_notice = add(card, label(style="muted"))
-        self.download_update = add(card, Gtk.LinkButton(label="Скачать DEB"))
+        self.download_update = add(card, Gtk.LinkButton(label=tr("Скачать DEB")))
         self.download_update.set_halign(Gtk.Align.START)
         self.download_update.set_no_show_all(True)
         return page
@@ -504,54 +633,54 @@ class Window(Gtk.ApplicationWindow):
     def check_update(self, _):
         self.check_update_button.set_sensitive(False)
         self.download_update.hide()
-        self.update_notice.set_text("Проверяем обновления…")
+        self.update_notice.set_text(tr("Проверяем обновления…"))
 
         def checked(result, error):
             self.check_update_button.set_sensitive(True)
             if error:
                 self.update_notice.set_text(error)
                 return
-            self.installed_version.set_text(f'Установлена версия {result["Current"]}')
+            self.installed_version.set_text(tr("Установлена версия {0}", result['Current']))
             if result["DownloadURL"]:
-                self.update_notice.set_text(f'Доступна версия {result["Latest"]}')
+                self.update_notice.set_text(tr("Доступна версия {0}", result['Latest']))
                 self.download_update.set_uri(result["DownloadURL"])
                 self.download_update.show()
             else:
-                self.update_notice.set_text("Установлена актуальная версия." if result["Latest"] else "Подходящих релизов пока нет.")
+                self.update_notice.set_text(tr("Установлена актуальная версия.") if result["Latest"] else tr("Подходящих релизов пока нет."))
 
         self.request("GET", "/updates", complete=checked, timeout=16)
 
     def connection_settings(self):
         page, fields = box(), box()
         self.fields = {}
-        conn = add(fields, panel("Подключение"))
+        conn = add(fields, panel(tr("Подключение")))
         self.dns = Gtk.ComboBoxText()
-        for name in ("Авто", "Cloudflare", "Quad9", "Google"):
+        for name in (tr("Авто"), "Cloudflare", "Quad9", "Google"):
             self.dns.append_text(name)
         self.dns.set_active(0)
-        add_field(conn, "DNS-резолвер", self.dns)
-        self.geo_rules = add(conn, Gtk.CheckButton(label="Правила GeoIP и GeoSite"))
-        search = add(fields, panel("Поиск и качество"))
+        add_field(conn, tr("DNS-резолвер"), self.dns)
+        self.geo_rules = add(conn, Gtk.CheckButton(label=tr("Правила GeoIP и GeoSite")))
+        search = add(fields, panel(tr("Поиск и качество")))
         for key, name, low, high in (
-            ("FastWorkers", "Проверок при подключении", 1, 8),
-            ("BackgroundWorkers", "Проверок в фоне", 1, 8),
-            ("MinVLESSScore", "Порог качества VLESS", 50, 100),
-            ("BackgroundIntervalSeconds", "Интервал поиска, с", 15, 900),
+            ("FastWorkers", tr("Проверок при подключении"), 1, 8),
+            ("BackgroundWorkers", tr("Проверок в фоне"), 1, 8),
+            ("MinVLESSScore", tr("Порог качества VLESS"), 50, 100),
+            ("BackgroundIntervalSeconds", tr("Интервал поиска, с"), 15, 900),
         ):
             widget = Gtk.SpinButton.new_with_range(low, high, 1)
             self.fields[key] = widget
             add_field(search, name, widget)
-        sources = add(fields, panel("Подписки"))
+        sources = add(fields, panel(tr("Подписки")))
         interval = Gtk.SpinButton.new_with_range(15, 1440, 1)
         self.fields["SourceRefreshMinutes"] = interval
-        add_field(sources, "Обновлять каждые, мин", interval)
-        self.hwid = Gtk.Entry(max_length=64, placeholder_text="Автоматически")
-        add_field(sources, "HWID для VLESS", self.hwid)
-        add(sources, label("10–64 символа. Латиница, цифры, дефис и знак равенства.", "muted"))
+        add_field(sources, tr("Обновлять каждые, мин"), interval)
+        self.hwid = Gtk.Entry(max_length=64, placeholder_text=tr("Автоматически"))
+        add_field(sources, tr("HWID для VLESS"), self.hwid)
+        add(sources, label(tr("10–64 символа. Латиница, цифры, дефис и знак равенства."), "muted"))
         add(page, scrolled(fields), True)
-        add(page, label("Настройки подключения применяются при следующем подключении.", "muted"))
+        add(page, label(tr("Настройки подключения применяются при следующем подключении."), "muted"))
         self.settings_notice = add(page, label(style="muted"))
-        self.save = add(page, button("Сохранить", self.save_settings, "primary"))
+        self.save = add(page, button(tr("Сохранить"), self.save_settings, "primary"))
         self.save.set_halign(Gtk.Align.END)
         return page
 
@@ -559,21 +688,21 @@ class Window(Gtk.ApplicationWindow):
         page, fields = box(), box()
         self.geofields = {}
         for group, specs in (
-            ("Базы", (("IPURL", "Ссылка на GeoIP"), ("SiteURL", "Ссылка на GeoSite"))),
-            ("Правила маршрутизации", (("TunnelIP", "GeoIP через VPN"), ("DirectIP", "GeoIP напрямую"),
-                                      ("TunnelSite", "GeoSite через VPN"), ("DirectSite", "GeoSite напрямую"))),
+            (tr("Базы"), (("IPURL", tr("Ссылка на GeoIP")), ("SiteURL", tr("Ссылка на GeoSite")))),
+            (tr("Правила маршрутизации"), (("TunnelIP", tr("GeoIP через VPN")), ("DirectIP", tr("GeoIP напрямую")),
+                                      ("TunnelSite", tr("GeoSite через VPN")), ("DirectSite", tr("GeoSite напрямую")))),
         ):
             card = add(fields, panel(group))
-            if group == "Базы":
-                add(card, label("Укажите HTTPS-ссылки на .dat. Пустые поля используют встроенные базы.", "muted"))
+            if group == tr("Базы"):
+                add(card, label(tr("Укажите HTTPS-ссылки на .dat. Пустые поля используют встроенные базы."), "muted"))
             for key, name in specs:
                 widget = Gtk.Entry(max_length=4096)
                 self.geofields[key] = widget
                 add_field(card, name, widget)
         add(page, scrolled(fields), True)
-        add(page, label("Правила применяются при следующем подключении.", "muted"))
+        add(page, label(tr("Правила применяются при следующем подключении."), "muted"))
         self.geo_notice = add(page, label(style="muted"))
-        self.save_geo = add(page, button("Проверить и сохранить", self.save_geo_rules, "primary"))
+        self.save_geo = add(page, button(tr("Проверить и сохранить"), self.save_geo_rules, "primary"))
         self.save_geo.set_halign(Gtk.Align.END)
         return page
 
@@ -611,13 +740,13 @@ class Window(Gtk.ApplicationWindow):
         values = {key: widget.get_value_as_int() for key, widget in self.fields.items()}
         values.update(DNSPreset=self.dns.get_active(), GeoRules=self.geo_rules.get_active(),
                       HWID=self.hwid.get_text().strip())
-        self.action("PUT", "/settings", values, self.settings_notice, "Сохраняем…",
-                    lambda _: self.settings_notice.set_text("Настройки сохранены."))
+        self.action("PUT", "/settings", values, self.settings_notice, tr("Сохраняем…"),
+                    lambda _: self.settings_notice.set_text(tr("Настройки сохранены.")))
 
     def save_geo_rules(self, _):
         values = {key: widget.get_text().strip() for key, widget in self.geofields.items()}
-        self.action("PUT", "/settings/geo", values, self.geo_notice, "Проверяем правила…",
-                    lambda _: self.geo_notice.set_text("Правила сохранены."))
+        self.action("PUT", "/settings/geo", values, self.geo_notice, tr("Проверяем правила…"),
+                    lambda _: self.geo_notice.set_text(tr("Правила сохранены.")))
 
 
 def add_field(parent, title, widget):

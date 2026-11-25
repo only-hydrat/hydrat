@@ -4,12 +4,15 @@ import (
 	"context"
 	"embed"
 	"errors"
+	"html/template"
 	"io/fs"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/only-hydrat/hydrat/internal/i18n"
 	"github.com/only-hydrat/hydrat/internal/proberuntime"
 	"github.com/only-hydrat/hydrat/internal/qoe"
 	"github.com/only-hydrat/hydrat/internal/sources"
@@ -20,18 +23,80 @@ import (
 //go:embed web/*
 var dashboardFiles embed.FS
 
-func (server *Server) dashboard(response http.ResponseWriter, _ *http.Request) {
-	content, err := dashboardFiles.ReadFile("web/index.html")
-	if err != nil {
-		writeError(response, http.StatusInternalServerError, "dashboard unavailable")
+const portalLanguageCookie = "hydrat_language"
+
+var dashboardTemplates = func() map[string]*template.Template {
+	pages := make(map[string]*template.Template)
+	for _, locale := range []string{"ru", "en", "zh-CN"} {
+		page := template.New("index.html").Funcs(template.FuncMap{
+			"t": func(source string) string { return i18n.Text(locale, source) },
+		})
+		pages[locale] = template.Must(page.ParseFS(dashboardFiles, "web/index.html"))
+	}
+	return pages
+}()
+
+func portalLanguage(request *http.Request) (locale, saved string) {
+	if cookie, err := request.Cookie(portalLanguageCookie); err == nil {
+		switch cookie.Value {
+		case "ru", "en", "zh-CN":
+			saved = cookie.Value
+		}
+	}
+	locale = i18n.Select(saved, os.Getenv("HYDRAT_PORTAL_LANGUAGE"), request.Header.Get("Accept-Language"))
+	return locale, saved
+}
+
+func (server *Server) saveLanguage(response http.ResponseWriter, request *http.Request) {
+	if request.Header.Get("Sec-Fetch-Site") == "cross-site" {
+		http.Error(response, "forbidden", http.StatusForbidden)
 		return
 	}
+	request.Body = http.MaxBytesReader(response, request.Body, 128)
+	if err := request.ParseForm(); err != nil {
+		http.Error(response, "invalid language selection", http.StatusBadRequest)
+		return
+	}
+	selected := request.PostForm.Get("language")
+	maxAge := 365 * 24 * 60 * 60
+	switch selected {
+	case "":
+		maxAge = -1
+	case "ru", "en", "zh-CN":
+	default:
+		http.Error(response, "unsupported language", http.StatusBadRequest)
+		return
+	}
+	http.SetCookie(response, &http.Cookie{
+		Name: portalLanguageCookie, Value: selected, Path: "/", MaxAge: maxAge,
+		HttpOnly: true, Secure: request.TLS != nil, SameSite: http.SameSiteLaxMode,
+	})
+	response.Header().Set("Cache-Control", "no-store")
+	http.Redirect(response, request, "/#system", http.StatusSeeOther)
+}
+
+func (server *Server) dashboard(response http.ResponseWriter, request *http.Request) {
+	locale, _ := portalLanguage(request)
 	response.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = response.Write(content)
+	response.Header().Set("Cache-Control", "no-store")
+	response.Header().Set("Content-Language", locale)
+	if err := dashboardTemplates[locale].Execute(response, locale); err != nil {
+		return
+	}
 }
 
 func (server *Server) asset(response http.ResponseWriter, request *http.Request) {
 	name := request.PathValue("name")
+	if name == "language.js" {
+		locale, saved := portalLanguage(request)
+		response.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		response.Header().Set("Cache-Control", "no-store")
+		_, _ = response.Write([]byte("globalThis.hydratLocale = {language:" + strconv.Quote(locale) +
+			",saved:" + strconv.Quote(saved) + ",messages:"))
+		_, _ = response.Write(i18n.MessagesJSON(locale))
+		_, _ = response.Write([]byte("};\n"))
+		return
+	}
 	if name != "app.js" && name != "styles.css" {
 		http.NotFound(response, request)
 		return

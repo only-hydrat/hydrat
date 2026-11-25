@@ -237,3 +237,11 @@ dialog::backdrop { background: #000b; }
 @media (max-width: 420px) {
   #update-components .update-row { grid-template-columns: minmax(0, 1fr); }
 }
+
+#language-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .65rem;
+}
+#ui-language { width: auto; }

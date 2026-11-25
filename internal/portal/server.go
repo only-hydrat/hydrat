@@ -157,6 +157,7 @@ func New(config ServerConfig) http.Handler {
 		mux:               http.NewServeMux(),
 	}
 	server.mux.HandleFunc("GET /{$}", server.dashboard)
+	server.mux.HandleFunc("POST /language", server.saveLanguage)
 	server.mux.HandleFunc("GET /assets/{name}", server.asset)
 	server.mux.HandleFunc("GET /api/health", server.health)
 	server.mux.HandleFunc("GET /api/ready", server.ready)

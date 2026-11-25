@@ -572,9 +572,9 @@ func TestDashboardAssetsExposeQoE(t *testing.T) {
 			`data-stat="tor-candidates"`, `data-stat="tor-warm"`,
 		},
 		"/assets/app.js": {
-			"candidate.qoe", "QoE ${qoeText}", "system.qoe_statuses",
+			"candidate.qoe", "stateLabel(qoeStates, qoeText)", "system.qoe_statuses",
 			"system.probe_runtime", "system.active_probe_runtime",
-			"Active runtime", "value.last_recycle_reason",
+			"Среда активных проверок", "value.last_recycle_reason",
 		},
 		"/assets/styles.css": {".candidate-meta", ".probe-runtime"},
 	} {

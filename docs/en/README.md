@@ -28,13 +28,15 @@ Install Hydrat, add sources under **Подключения** (Connections), and 
 
 | Platform | Download | Setup |
 | --- | --- | --- |
-| Android 10+ · arm64 | [APK](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.2/Hydrat-android-arm64-0.1.2.apk) | [Guide](../../app/android/README.md) |
-| Windows 10/11 · x64 | [MSI](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.2/Hydrat-windows-x64-0.1.2.msi) · [ZIP](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.2/Hydrat-windows-x64-0.1.2.zip) | [Guide](../../app/native/cmd/windows/README.md) |
-| Debian and Ubuntu · amd64 | [DEB](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.2/hydrat-app_0.1.2_amd64.deb) | [Guide](../../app/linux/README.md) |
+| Android 10+ · arm64 | [APK](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.3/Hydrat-android-arm64-0.1.3.apk) | [Guide](../../app/android/README.md) |
+| Windows 10/11 · x64 | [MSI](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.3/Hydrat-windows-x64-0.1.3.msi) · [ZIP](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.3/Hydrat-windows-x64-0.1.3.zip) | [Guide](../../app/native/cmd/windows/README.md) |
+| Debian and Ubuntu · amd64 | [DEB](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.3/hydrat-app_0.1.3_amd64.deb) | [Guide](../../app/linux/README.md) |
 
-Open **Настройки → Обновления** (Settings → Updates) to check your version. When an update is available, Hydrat offers a download for your platform. Install it manually.
+Control the VPN from Quick Settings on Android or the system tray on Windows and Debian. The app settings offer Russian, English, and Simplified Chinese.
 
-[Hydrat App 0.1.2 and checksums](https://github.com/only-hydrat/hydrat/releases/tag/app-v0.1.2)
+Open **Settings → Updates** to check your version. When an update is available, Hydrat offers a download for your platform. Install it manually.
+
+[Hydrat App 0.1.3 and checksums](https://github.com/only-hydrat/hydrat/releases/tag/app-v0.1.3)
 
 ## Features
 

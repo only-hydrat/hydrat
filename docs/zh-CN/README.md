@@ -28,13 +28,15 @@ Hydrat 会检测 VLESS 订阅和 Tor 网桥，自动选择路由，并在连接�
 
 | 平台 | 下载 | 安装 |
 | --- | --- | --- |
-| Android 10+ · arm64 | [APK](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.2/Hydrat-android-arm64-0.1.2.apk) | [说明](../../app/android/README.md) |
-| Windows 10/11 · x64 | [MSI](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.2/Hydrat-windows-x64-0.1.2.msi) · [ZIP](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.2/Hydrat-windows-x64-0.1.2.zip) | [说明](../../app/native/cmd/windows/README.md) |
-| Debian 和 Ubuntu · amd64 | [DEB](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.2/hydrat-app_0.1.2_amd64.deb) | [说明](../../app/linux/README.md) |
+| Android 10+ · arm64 | [APK](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.3/Hydrat-android-arm64-0.1.3.apk) | [说明](../../app/android/README.md) |
+| Windows 10/11 · x64 | [MSI](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.3/Hydrat-windows-x64-0.1.3.msi) · [ZIP](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.3/Hydrat-windows-x64-0.1.3.zip) | [说明](../../app/native/cmd/windows/README.md) |
+| Debian 和 Ubuntu · amd64 | [DEB](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.3/hydrat-app_0.1.3_amd64.deb) | [说明](../../app/linux/README.md) |
 
-打开 **Настройки → Обновления**（设置 → 更新）检查版本。有新版时，Hydrat 会提供适用于当前平台的下载链接。下载后请手动安装。
+在 Android 快捷设置或 Windows、Debian 系统托盘中即可切换 VPN。应用设置支持俄语、英语和简体中文。
 
-[Hydrat App 0.1.2 和校验和](https://github.com/only-hydrat/hydrat/releases/tag/app-v0.1.2)
+打开 **设置 → 更新**检查版本。有新版时，Hydrat 会提供适用于当前平台的下载链接。下载后请手动安装。
+
+[Hydrat App 0.1.3 和校验和](https://github.com/only-hydrat/hydrat/releases/tag/app-v0.1.3)
 
 ## 功能
 

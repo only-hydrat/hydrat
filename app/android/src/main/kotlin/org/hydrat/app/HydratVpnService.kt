@@ -14,6 +14,7 @@ import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.PowerManager
+import org.json.JSONObject
 import java.util.concurrent.Executors
 
 class HydratVpnService : VpnService() {
@@ -30,6 +31,11 @@ class HydratVpnService : VpnService() {
     }
 
 
+    override fun onCreate() {
+        super.onCreate()
+        UiLanguage.load(this)
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == STOP) {
             disconnect()
@@ -37,9 +43,13 @@ class HydratVpnService : VpnService() {
         }
         if ((state == "off" || state == "failed") && !stopping && !destroyed) {
             state = "starting"
-            startForeground(NOTIFICATION, notification("Подключение"))
+            startForeground(NOTIFICATION, notification(tr("Подключение")))
             worker.execute {
-                val ready = runCatching { NativeEngine.initialize(this) }.isSuccess
+                val ready = runCatching {
+                    NativeEngine.initialize(this)
+                    val status = NativeEngine.status()?.decodeToString()?.let(::JSONObject)
+                    (status?.optInt("Sources") ?: 0) > 0
+                }.getOrDefault(false)
                 mainExecutor.execute {
                     if (!stopping && !destroyed) {
                         if (ready) establishTunnel() else fail()
@@ -75,7 +85,7 @@ class HydratVpnService : VpnService() {
         }
         nativeRunning = true
         state = "running"
-        updateNotification("VPN включён")
+        updateNotification(tr("VPN включён"))
         val preferences = ConnectionPreferences(this)
         val dnsPreset = preferences.dnsPreset
         val geoRules = preferences.geoRules
@@ -107,7 +117,7 @@ class HydratVpnService : VpnService() {
 
     private fun fail() {
         state = "failed"
-        updateNotification("Ошибка подключения")
+        updateNotification(tr("Ошибка подключения"))
     }
 
     private fun disconnect() {
@@ -156,7 +166,7 @@ class HydratVpnService : VpnService() {
             .setContentTitle("Hydrat").setContentText(message)
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setContentIntent(open)
-            .addAction(Notification.Action.Builder(null, "Отключить", stop).build())
+            .addAction(Notification.Action.Builder(null, tr("Отключить"), stop).build())
             .setOngoing(true)
             .build()
     }
@@ -166,7 +176,11 @@ class HydratVpnService : VpnService() {
         const val STOP = "org.hydrat.app.DISCONNECT"
         @Volatile var blockingTraffic = false
             private set
+        internal val stateListeners = mutableSetOf<() -> Unit>() // Accessed on the main thread.
         @Volatile var state = "off"
-            private set
+            private set(value) {
+                field = value
+                stateListeners.forEach { it() }
+            }
     }
 }

@@ -42,3 +42,25 @@ func TestImportFeedbackKeepsProblemLines(t *testing.T) {
 		t.Fatalf("details = %q, want %q", feedback.details, want)
 	}
 }
+
+func TestTrayAndWindowConnectionAction(t *testing.T) {
+	for _, tc := range []struct {
+		phase, label   string
+		sources        int
+		known, enabled bool
+	}{
+		{"disconnected", "Подключить", 1, false, false},
+		{"disconnected", "Добавить источник", 0, true, true},
+		{"disconnected", "Подключить", 1, true, true},
+		{"requested", "Отключить", 0, true, true},
+		{"stopping", "Отключаем…", 1, true, false},
+		{"failed", "Подключить снова", 1, true, true},
+	} {
+		status := device.ControlStatus{Connection: tc.phase, Status: device.Status{Sources: tc.sources}}
+		label, enabled := connectionAction(status, tc.known)
+		if label != tc.label || enabled != tc.enabled {
+			t.Errorf("state=%s known=%v sources=%d: action=%q/%v, want %q/%v",
+				tc.phase, tc.known, tc.sources, label, enabled, tc.label, tc.enabled)
+		}
+	}
+}

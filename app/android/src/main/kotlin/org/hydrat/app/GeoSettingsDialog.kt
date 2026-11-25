@@ -28,22 +28,22 @@ internal class GeoSettingsDialog(
                 filters = arrayOf(InputFilter.LengthFilter(4096))
                 isSaveEnabled = false
                 importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
-                if (url) hint = "База из приложения"
+                if (url) hint = tr("База из приложения")
                 setText(settings.optString(key))
             }.also { content.addView(it, ui.block(3)) }
         }
-        content.addView(ui.text("Укажите HTTPS-ссылки на базы .dat или оставьте поля пустыми для баз из приложения.", 14))
-        field("IPURL", "Ссылка на GeoIP", url = true)
-        field("SiteURL", "Ссылка на GeoSite", url = true)
-        content.addView(ui.text("Группы через запятую. Правила VPN имеют приоритет над прямым доступом.", 14), ui.block(16))
-        field("TunnelIP", "GeoIP через VPN")
-        field("DirectIP", "GeoIP напрямую")
-        field("TunnelSite", "GeoSite через VPN")
-        field("DirectSite", "GeoSite напрямую")
-        content.addView(ui.text("Новые настройки применятся при следующем подключении.", 14), ui.block(12))
-        val dialog = AlertDialog.Builder(activity).setTitle("GeoIP и GeoSite")
+        content.addView(ui.text(tr("Укажите HTTPS-ссылки на базы .dat или оставьте поля пустыми для баз из приложения."), 14))
+        field("IPURL", tr("Ссылка на GeoIP"), url = true)
+        field("SiteURL", tr("Ссылка на GeoSite"), url = true)
+        content.addView(ui.text(tr("Группы через запятую. Правила VPN имеют приоритет над прямым доступом."), 14), ui.block(16))
+        field("TunnelIP", tr("GeoIP через VPN"))
+        field("DirectIP", tr("GeoIP напрямую"))
+        field("TunnelSite", tr("GeoSite через VPN"))
+        field("DirectSite", tr("GeoSite напрямую"))
+        content.addView(ui.text(tr("Новые настройки применятся при следующем подключении."), 14), ui.block(12))
+        val dialog = AlertDialog.Builder(activity).setTitle(tr("GeoIP и GeoSite"))
             .setView(ScrollView(activity).apply { addView(content) })
-            .setNegativeButton("Отмена", null).setPositiveButton("Сохранить", null).create()
+            .setNegativeButton(tr("Отмена"), null).setPositiveButton(tr("Сохранить"), null).create()
         dialog.setOnShowListener {
             val save = dialog.getButton(AlertDialog.BUTTON_POSITIVE)
             save.setOnClickListener {
@@ -52,7 +52,7 @@ internal class GeoSettingsDialog(
                 save.isEnabled = false
                 dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled = false
                 dialog.setCancelable(false)
-                save.text = "Проверяем…"
+                save.text = tr("Проверяем…")
                 worker.execute {
                     val result = runCatching { NativeEngine.saveGeoSettings(payload.toString()) }.getOrNull()
                     activity.runOnUiThread {
@@ -60,12 +60,12 @@ internal class GeoSettingsDialog(
                         if (result == "") {
                             dialog.dismiss()
                         } else {
-                            save.text = "Сохранить"
+                            save.text = tr("Сохранить")
                             save.isEnabled = true
                             dialog.getButton(AlertDialog.BUTTON_NEGATIVE).isEnabled = true
                             dialog.setCancelable(true)
                             AlertDialog.Builder(activity).setMessage(message(result))
-                                .setPositiveButton("Закрыть", null).show()
+                                .setPositiveButton(tr("Закрыть"), null).show()
                         }
                     }
                 }
@@ -75,13 +75,13 @@ internal class GeoSettingsDialog(
     }
 
     private fun message(code: String?): String = when (code) {
-        "invalid_geo_url" -> "Укажите HTTPS-ссылку на файл .dat."
-        "invalid_geo_tags" -> "Проверьте имена групп. Укажите до 32 групп через запятую в каждом поле."
-        "missing_geo_tags" -> "Для каждой подключённой базы укажите хотя бы одну группу."
-        "geoip_download" -> "Не удалось скачать базу GeoIP."
-        "geosite_download" -> "Не удалось скачать базу GeoSite."
-        "geoip_groups" -> "Не удалось прочитать указанные группы GeoIP. Проверьте файл и имена групп."
-        "geosite_groups" -> "Не удалось прочитать указанные группы GeoSite. Проверьте файл и имена групп."
-        else -> "Не удалось сохранить настройки GeoIP и GeoSite."
+        "invalid_geo_url" -> tr("Укажите HTTPS-ссылку на файл .dat.")
+        "invalid_geo_tags" -> tr("Проверьте имена групп. Укажите до 32 групп через запятую в каждом поле.")
+        "missing_geo_tags" -> tr("Для каждой подключённой базы укажите хотя бы одну группу.")
+        "geoip_download" -> tr("Не удалось скачать базу GeoIP.")
+        "geosite_download" -> tr("Не удалось скачать базу GeoSite.")
+        "geoip_groups" -> tr("Не удалось прочитать указанные группы GeoIP. Проверьте файл и имена групп.")
+        "geosite_groups" -> tr("Не удалось прочитать указанные группы GeoSite. Проверьте файл и имена групп.")
+        else -> tr("Не удалось сохранить настройки GeoIP и GeoSite.")
     }
 }

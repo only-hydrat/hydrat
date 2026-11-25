@@ -16,7 +16,9 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-const hwidHelp = "10–64 символа. Латинские буквы, цифры, дефис и знак равенства. Пустое поле включает автоматический HWID."
+func hwidHelp() string {
+	return tr("10–64 символа. Латинские буквы, цифры, дефис и знак равенства. Пустое поле включает автоматический HWID.")
+}
 
 func settingsPage(ctx context.Context, workers *sync.WaitGroup, window **walk.MainWindow, app *device.App,
 	prefs *preferences, geo xraycore.GeoSettings) ui.TabPage {
@@ -24,7 +26,7 @@ func settingsPage(ctx context.Context, workers *sync.WaitGroup, window **walk.Ma
 	dnsPreset := current.DNSPreset
 	var resolvers [4]*walk.PushButton
 	var resolverButtons []ui.Widget
-	for i, label := range []string{"Авто", "Cloudflare", "Quad9", "Google"} {
+	for i, label := range []string{tr("Авто"), "Cloudflare", "Quad9", "Google"} {
 		name := "navigation"
 		if i == dnsPreset {
 			name = "navigation-selected"
@@ -48,38 +50,38 @@ func settingsPage(ctx context.Context, workers *sync.WaitGroup, window **walk.Ma
 	var save *walk.PushButton
 	var outcome *walk.TextLabel
 
-	settings := ui.TabPage{Title: "Общие", Layout: ui.VBox{Spacing: 9}, Children: []ui.Widget{
+	settings := ui.TabPage{Title: tr("Общие"), Layout: ui.VBox{Spacing: 9}, Children: []ui.Widget{
 		ui.ScrollView{Layout: ui.VBox{Spacing: 10}, Children: []ui.Widget{
-			card("Подключение",
-				ui.Label{Text: "DNS-резолвер"},
+			card(tr("Подключение"),
+				ui.Label{Text: tr("DNS-резолвер")},
 				ui.Composite{Layout: ui.HBox{MarginsZero: true, Spacing: 4}, Children: resolverButtons},
-				ui.CheckBox{AssignTo: &geoEnabled, Text: "Правила GeoIP и GeoSite", Checked: current.GeoRules, MinSize: ui.Size{Width: 250, Height: 24}, Alignment: ui.AlignHNearVCenter},
+				ui.CheckBox{AssignTo: &geoEnabled, Text: tr("Правила GeoIP и GeoSite"), Checked: current.GeoRules, MinSize: ui.Size{Width: 250, Height: 24}, Alignment: ui.AlignHNearVCenter},
 			),
-			card("Поиск и качество",
-				numericSetting("Проверок при подключении", &fast, current.FastWorkers, 1, 8, ""),
-				numericSetting("Проверок в фоне", &background, current.BackgroundWorkers, 1, 8, ""),
-				numericSetting("Порог качества VLESS", &score, current.MinVLESSScore, 50, 100, ""),
-				numericSetting("Интервал поиска", &interval, current.BackgroundIntervalSeconds, 15, 900, " с"),
+			card(tr("Поиск и качество"),
+				numericSetting(tr("Проверок при подключении"), &fast, current.FastWorkers, 1, 8, ""),
+				numericSetting(tr("Проверок в фоне"), &background, current.BackgroundWorkers, 1, 8, ""),
+				numericSetting(tr("Порог качества VLESS"), &score, current.MinVLESSScore, 50, 100, ""),
+				numericSetting(tr("Интервал поиска"), &interval, current.BackgroundIntervalSeconds, 15, 900, tr(" с")),
 			),
-			card("Подписки",
-				numericSetting("Обновлять подписки каждые", &refreshInterval, current.SourceRefreshMinutes, 15, 1440, " мин"),
-				settingRow("HWID для VLESS", ui.LineEdit{AssignTo: &hwid, Text: current.HWID, MaxLength: 64, CueBanner: "Автоматически",
-					Accessibility: ui.Accessibility{Name: "HWID для подписок VLESS", Description: hwidHelp},
+			card(tr("Подписки"),
+				numericSetting(tr("Обновлять подписки каждые"), &refreshInterval, current.SourceRefreshMinutes, 15, 1440, tr(" мин")),
+				settingRow(tr("HWID для VLESS"), ui.LineEdit{AssignTo: &hwid, Text: current.HWID, MaxLength: 64, CueBanner: tr("Автоматически"),
+					Accessibility: ui.Accessibility{Name: tr("HWID для подписок VLESS"), Description: hwidHelp()},
 					OnTextChanged: func() {
 						if hwidError != nil {
 							hwidError.SetVisible(false)
 						}
 					}}),
-				settingHint(hwidHelp),
-				ui.TextLabel{AssignTo: &hwidError, Text: "Исправьте HWID или оставьте поле пустым.", Visible: false, MinSize: ui.Size{Width: 140}},
+				settingHint(hwidHelp()),
+				ui.TextLabel{AssignTo: &hwidError, Text: tr("Исправьте HWID или оставьте поле пустым."), Visible: false, MinSize: ui.Size{Width: 140}},
 			),
 			ui.VSpacer{},
 		}},
-		settingHint("Настройки подключения и поиска вступят в силу при следующем подключении."),
+		settingHint(tr("Настройки подключения и поиска вступят в силу при следующем подключении.")),
 		ui.TextLabel{AssignTo: &outcome, Text: " ", MinSize: ui.Size{Width: 140}},
 		ui.Composite{Layout: ui.HBox{MarginsZero: true}, Children: []ui.Widget{
 			ui.HSpacer{},
-			ui.PushButton{AssignTo: &save, Name: "primary", MinSize: ui.Size{Width: 158, Height: 40}, Text: "Сохранить", OnClicked: func() {
+			ui.PushButton{AssignTo: &save, Name: "primary", MinSize: ui.Size{Width: 158, Height: 40}, Text: tr("Сохранить"), OnClicked: func() {
 				value := connectionPreferences{
 					DNSPreset: dnsPreset, GeoRules: geoEnabled.Checked(), HWID: hwid.Text(),
 					MobileSettings: device.MobileSettings{
@@ -89,42 +91,42 @@ func settingsPage(ctx context.Context, workers *sync.WaitGroup, window **walk.Ma
 					},
 				}
 				hwidError.SetVisible(false)
-				completeSetting(ctx, workers, *window, save, outcome, "Сохраняем…",
+				completeSetting(ctx, workers, *window, save, outcome, tr("Сохраняем…"),
 					func(context.Context) error { return prefs.save(app, value) },
 					func(err error) string {
 						switch {
 						case err == nil:
-							return "Настройки сохранены."
+							return tr("Настройки сохранены.")
 						case errors.Is(err, refresh.ErrInvalidHWID):
 							hwidError.SetVisible(true)
 							_ = hwid.SetFocus()
 							hwid.SetTextSelection(0, len(hwid.Text()))
-							return "Проверьте поле HWID."
+							return tr("Проверьте поле HWID.")
 						default:
-							return "Не удалось записать настройки. Повторите попытку."
+							return tr("Не удалось записать настройки. Повторите попытку.")
 						}
 					})
 			}},
 		}},
 	}}
 	_, pages := newPageNavigation(nil, settings, geoSettingsPage(ctx, workers, window, prefs, geo),
-		appUpdatesPage(ctx, workers, window))
-	return ui.TabPage{Title: "Настройки", Layout: ui.VBox{MarginsZero: true}, Children: []ui.Widget{pages}}
+		appUpdatesPage(ctx, workers, window), languagePage(prefs.dir))
+	return ui.TabPage{Title: tr("Настройки"), Layout: ui.VBox{MarginsZero: true}, Children: []ui.Widget{pages}}
 }
 
 func appUpdatesPage(ctx context.Context, workers *sync.WaitGroup, window **walk.MainWindow) ui.TabPage {
 	var status *walk.TextLabel
 	var check, download *walk.PushButton
 	var downloadURL string
-	return ui.TabPage{Title: "Обновления", Layout: ui.VBox{Spacing: 10}, Children: []ui.Widget{
-		card("Обновления",
-			ui.TextLabel{Text: "Установлена версия " + appupdate.CurrentVersion()},
+	return ui.TabPage{Title: tr("Обновления"), Layout: ui.VBox{Spacing: 10}, Children: []ui.Widget{
+		card(tr("Обновления"),
+			ui.TextLabel{Text: tr("Установлена версия ") + appupdate.CurrentVersion()},
 			ui.TextLabel{AssignTo: &status, MinSize: ui.Size{Width: 140}},
 			ui.Composite{Layout: ui.HBox{MarginsZero: true}, Children: []ui.Widget{
-				ui.PushButton{AssignTo: &check, Text: "Проверить обновления", MinSize: ui.Size{Width: 160, Height: 38}, OnClicked: func() {
+				ui.PushButton{AssignTo: &check, Text: tr("Проверить обновления"), MinSize: ui.Size{Width: 160, Height: 38}, OnClicked: func() {
 					download.SetVisible(false)
 					var result appupdate.Result
-					completeSetting(ctx, workers, *window, check, status, "Проверяем обновления…", func(request context.Context) error {
+					completeSetting(ctx, workers, *window, check, status, tr("Проверяем обновления…"), func(request context.Context) error {
 						var err error
 						result, err = appupdate.Check(request, appupdate.Windows)
 						return err
@@ -132,18 +134,18 @@ func appUpdatesPage(ctx context.Context, workers *sync.WaitGroup, window **walk.
 						downloadURL = result.DownloadURL
 						switch {
 						case err != nil:
-							return "Не удалось проверить обновления. Повторите попытку."
+							return tr("Не удалось проверить обновления. Повторите попытку.")
 						case downloadURL != "":
 							download.SetVisible(true)
-							return "Доступна версия " + result.Latest
+							return tr("Доступна версия ") + result.Latest
 						case result.Latest == "":
-							return "Подходящих релизов пока нет."
+							return tr("Подходящих релизов пока нет.")
 						default:
-							return "Установлена актуальная версия."
+							return tr("Установлена актуальная версия.")
 						}
 					})
 				}},
-				ui.PushButton{AssignTo: &download, Name: "primary", Text: "Скачать MSI", Visible: false, MinSize: ui.Size{Width: 105, Height: 38}, OnClicked: func() {
+				ui.PushButton{AssignTo: &download, Name: "primary", Text: tr("Скачать MSI"), Visible: false, MinSize: ui.Size{Width: 105, Height: 38}, OnClicked: func() {
 					if downloadURL == "" {
 						return
 					}
@@ -152,7 +154,7 @@ func appUpdatesPage(ctx context.Context, workers *sync.WaitGroup, window **walk.
 						err = windows.ShellExecute(windows.Handle((*window).Handle()), nil, url, nil, nil, windows.SW_SHOWNORMAL)
 					}
 					if err != nil {
-						_ = status.SetText("Не удалось открыть браузер.")
+						_ = status.SetText(tr("Не удалось открыть браузер."))
 					}
 				}},
 				ui.HSpacer{},
@@ -192,37 +194,37 @@ func geoSettingsPage(ctx context.Context, workers *sync.WaitGroup, window **walk
 	}
 	return ui.TabPage{Title: "GeoIP / GeoSite", Layout: ui.VBox{Spacing: 9}, Children: []ui.Widget{
 		ui.ScrollView{Layout: ui.VBox{Spacing: 10}, Children: []ui.Widget{
-			card("Базы",
-				settingHint("Укажите HTTPS-ссылки на файлы .dat. Пустые поля используют базы из приложения."),
-				edit("Ссылка на GeoIP", geo.IPURL, "Встроенная база", &ipURL),
-				edit("Ссылка на GeoSite", geo.SiteURL, "Встроенная база", &siteURL),
+			card(tr("Базы"),
+				settingHint(tr("Укажите HTTPS-ссылки на файлы .dat. Пустые поля используют базы из приложения.")),
+				edit(tr("Ссылка на GeoIP"), geo.IPURL, tr("Встроенная база"), &ipURL),
+				edit(tr("Ссылка на GeoSite"), geo.SiteURL, tr("Встроенная база"), &siteURL),
 			),
-			card("Правила маршрутизации",
-				settingHint("Укажите группы через запятую. Правила VPN имеют приоритет."),
-				edit("GeoIP через VPN", geo.TunnelIP, "", &ipTunnel),
-				edit("GeoIP напрямую", geo.DirectIP, "", &ipDirect),
-				edit("GeoSite через VPN", geo.TunnelSite, "", &siteTunnel),
-				edit("GeoSite напрямую", geo.DirectSite, "", &siteDirect),
+			card(tr("Правила маршрутизации"),
+				settingHint(tr("Укажите группы через запятую. Правила VPN имеют приоритет.")),
+				edit(tr("GeoIP через VPN"), geo.TunnelIP, "", &ipTunnel),
+				edit(tr("GeoIP напрямую"), geo.DirectIP, "", &ipDirect),
+				edit(tr("GeoSite через VPN"), geo.TunnelSite, "", &siteTunnel),
+				edit(tr("GeoSite напрямую"), geo.DirectSite, "", &siteDirect),
 			),
 			ui.VSpacer{},
 		}},
-		settingHint("Правила вступят в силу при следующем подключении."),
+		settingHint(tr("Правила вступят в силу при следующем подключении.")),
 		ui.TextLabel{AssignTo: &outcome, Text: " ", MinSize: ui.Size{Width: 140}},
 		ui.Composite{Layout: ui.HBox{MarginsZero: true}, Children: []ui.Widget{
 			ui.HSpacer{},
-			ui.PushButton{AssignTo: &save, Name: "primary", MinSize: ui.Size{Width: 158, Height: 40}, Text: "Проверить и сохранить", OnClicked: func() {
+			ui.PushButton{AssignTo: &save, Name: "primary", MinSize: ui.Size{Width: 158, Height: 40}, Text: tr("Проверить и сохранить"), OnClicked: func() {
 				value := xraycore.GeoSettings{
 					IPURL: strings.TrimSpace(ipURL.Text()), SiteURL: strings.TrimSpace(siteURL.Text()),
 					TunnelIP: ipTunnel.Text(), DirectIP: ipDirect.Text(),
 					TunnelSite: siteTunnel.Text(), DirectSite: siteDirect.Text(),
 				}
-				completeSetting(ctx, workers, *window, save, outcome, "Проверяем базы и правила…",
+				completeSetting(ctx, workers, *window, save, outcome, tr("Проверяем базы и правила…"),
 					func(ctx context.Context) error { return prefs.saveGeo(ctx, value) },
 					func(err error) string {
 						if err != nil {
 							return geoErrorText(err)
 						}
-						return "Правила сохранены."
+						return tr("Правила сохранены.")
 					})
 			}},
 		}},
@@ -249,18 +251,18 @@ func completeSetting(ctx context.Context, workers *sync.WaitGroup, window *walk.
 func geoErrorText(err error) string {
 	switch err.Error() {
 	case "invalid_geo_url":
-		return "Укажите HTTPS-ссылки на файлы .dat."
+		return tr("Укажите HTTPS-ссылки на файлы .dat.")
 	case "invalid_geo_tags", "missing_geo_tags":
-		return "Проверьте имена групп. До 32 групп в каждом поле."
+		return tr("Проверьте имена групп. До 32 групп в каждом поле.")
 	case "geoip_download":
-		return "Не удалось скачать базу GeoIP."
+		return tr("Не удалось скачать базу GeoIP.")
 	case "geosite_download":
-		return "Не удалось скачать базу GeoSite."
+		return tr("Не удалось скачать базу GeoSite.")
 	case "geoip_groups":
-		return "Проверьте файл и имена групп GeoIP."
+		return tr("Проверьте файл и имена групп GeoIP.")
 	case "geosite_groups":
-		return "Проверьте файл и имена групп GeoSite."
+		return tr("Проверьте файл и имена групп GeoSite.")
 	default:
-		return "Не удалось сохранить правила."
+		return tr("Не удалось сохранить правила.")
 	}
 }

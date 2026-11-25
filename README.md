@@ -28,13 +28,15 @@ Hydrat проверяет VLESS-подписки и Tor-мосты, выбира
 
 | Платформа | Скачать | Установка |
 | --- | --- | --- |
-| Android 10+ · arm64 | [APK](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.2/Hydrat-android-arm64-0.1.2.apk) | [Инструкция](app/android/README.md) |
-| Windows 10/11 · x64 | [MSI](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.2/Hydrat-windows-x64-0.1.2.msi) · [ZIP](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.2/Hydrat-windows-x64-0.1.2.zip) | [Инструкция](app/native/cmd/windows/README.md) |
-| Debian и Ubuntu · amd64 | [DEB](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.2/hydrat-app_0.1.2_amd64.deb) | [Инструкция](app/linux/README.md) |
+| Android 10+ · arm64 | [APK](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.3/Hydrat-android-arm64-0.1.3.apk) | [Инструкция](app/android/README.md) |
+| Windows 10/11 · x64 | [MSI](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.3/Hydrat-windows-x64-0.1.3.msi) · [ZIP](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.3/Hydrat-windows-x64-0.1.3.zip) | [Инструкция](app/native/cmd/windows/README.md) |
+| Debian и Ubuntu · amd64 | [DEB](https://github.com/only-hydrat/hydrat/releases/download/app-v0.1.3/hydrat-app_0.1.3_amd64.deb) | [Инструкция](app/linux/README.md) |
+
+На Android VPN можно включать из шторки, на Windows и Debian — через значок рядом с часами. Язык выбирается в настройках приложения. Доступны русский, английский и упрощённый китайский.
 
 Откройте **Настройки → Обновления**, чтобы проверить версию. Если доступно обновление, Hydrat предложит установщик для вашей системы. Установка выполняется вручную.
 
-[Hydrat App 0.1.2 и контрольные суммы](https://github.com/only-hydrat/hydrat/releases/tag/app-v0.1.2)
+[Hydrat App 0.1.3 и контрольные суммы](https://github.com/only-hydrat/hydrat/releases/tag/app-v0.1.3)
 
 ## Возможности
 

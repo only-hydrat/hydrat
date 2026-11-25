@@ -36,6 +36,7 @@ func main() {
 }
 
 func run(args []string) error {
+	interfaceLanguage = windowsLanguage()
 	exe, err := os.Executable()
 	if err != nil {
 		return err
@@ -54,7 +55,7 @@ func run(args []string) error {
 		return errors.New("usage: Hydrat.exe [--check]")
 	}
 	if !windows.GetCurrentProcessToken().IsElevated() {
-		return errors.New("Откройте Hydrat с правами администратора для системного VPN.")
+		return errors.New(tr("Откройте Hydrat с правами администратора для системного VPN."))
 	}
 	mutex, err := windows.UTF16PtrFromString("Global\\Hydrat.Device.Tunnel")
 	if err != nil {
@@ -65,7 +66,7 @@ func run(args []string) error {
 		defer windows.CloseHandle(handle)
 	}
 	if errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
-		return errors.New("Hydrat уже запущен.")
+		return errors.New(tr("Hydrat уже запущен."))
 	}
 	if err != nil {
 		return err
@@ -75,6 +76,9 @@ func run(args []string) error {
 		return err
 	}
 	stateDir := filepath.Join(local, "Hydrat")
+	if saved := savedLanguage(stateDir); saved != "" {
+		interfaceLanguage = saved
+	}
 	if err := xrayflow.MakePrivateWindowsDirectory(stateDir); err != nil {
 		return err
 	}
@@ -88,7 +92,7 @@ func run(args []string) error {
 	options.RuntimeDirectory = runtimeDir
 	options.FlowSocket = filepath.Join(runtimeDir, "f")
 	if len(filepath.Join(runtimeDir, "rt-4294967295", "background.sock")) >= 108 {
-		return errors.New("Путь к профилю Windows слишком длинный для сокетов Hydrat.")
+		return errors.New(tr("Путь к профилю Windows слишком длинный для сокетов Hydrat."))
 	}
 	if err := os.Setenv(xrayflow.SocketEnvironment, options.FlowSocket); err != nil {
 		return err
@@ -173,7 +177,7 @@ func bundleOptions(directory string) (device.ProcessOptions, error) {
 		filepath.Join(directory, "geo", "geoip.dat"), filepath.Join(directory, "geo", "geosite.dat")} {
 		info, err := os.Stat(path)
 		if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
-			return device.ProcessOptions{}, fmt.Errorf("Файл %s отсутствует. Распакуйте архив Hydrat целиком.", filepath.Base(path))
+			return device.ProcessOptions{}, fmt.Errorf(tr("Файл %s отсутствует. Распакуйте архив Hydrat целиком."), filepath.Base(path))
 		}
 	}
 	return device.ProcessOptions{

@@ -47,36 +47,36 @@ func (view *sourceView) page() ui.TabPage {
 	if !highContrast() {
 		style = sourceListStyle{view: view}
 	}
-	return ui.TabPage{Title: "Подключения", Layout: ui.VBox{MarginsZero: true}, Children: []ui.Widget{
+	return ui.TabPage{Title: tr("Подключения"), Layout: ui.VBox{MarginsZero: true}, Children: []ui.Widget{
 		ui.ScrollView{Layout: ui.VBox{Spacing: 8}, Children: []ui.Widget{
-			card("Источники",
-				ui.TextLabel{AssignTo: &view.empty, Name: "muted", Text: "Источников пока нет. Вставьте свою ссылку или добавьте бесплатные подписки.", MinSize: ui.Size{Width: 100}},
+			card(tr("Источники"),
+				ui.TextLabel{AssignTo: &view.empty, Name: "muted", Text: tr("Источников пока нет. Вставьте свою ссылку или добавьте бесплатные подписки."), MinSize: ui.Size{Width: 100}},
 				ui.ListBox{AssignTo: &view.list, Model: []string{}, ItemStyler: style, Visible: false, MinSize: ui.Size{Height: 100}, MaxSize: ui.Size{Height: 160},
-					Accessibility: ui.Accessibility{Name: "Добавленные источники"}, OnCurrentIndexChanged: view.syncActions,
+					Accessibility: ui.Accessibility{Name: tr("Добавленные источники")}, OnCurrentIndexChanged: view.syncActions,
 					OnMouseUp: func(_, _ int, _ walk.MouseButton) { view.syncActions() },
 					OnKeyUp:   func(walk.Key) { view.syncActions() }},
 				ui.Composite{Layout: ui.HBox{MarginsZero: true}, Children: []ui.Widget{
-					ui.PushButton{AssignTo: &view.refresh, MinSize: ui.Size{Width: 150, Height: 38}, Text: "Обновить источники", Enabled: false, OnClicked: view.refreshSources},
-					ui.PushButton{AssignTo: &view.edit, MinSize: ui.Size{Width: 130, Height: 38}, Text: "HWID источника", Enabled: false, OnClicked: view.editSourceHWID},
-					ui.PushButton{AssignTo: &view.remove, Name: "danger", MinSize: ui.Size{Width: 140, Height: 38}, Text: "Удалить источник", Enabled: false, OnClicked: view.removeSource},
+					ui.PushButton{AssignTo: &view.refresh, MinSize: ui.Size{Width: 150, Height: 38}, Text: tr("Обновить источники"), Enabled: false, OnClicked: view.refreshSources},
+					ui.PushButton{AssignTo: &view.edit, MinSize: ui.Size{Width: 130, Height: 38}, Text: tr("HWID источника"), Enabled: false, OnClicked: view.editSourceHWID},
+					ui.PushButton{AssignTo: &view.remove, Name: "danger", MinSize: ui.Size{Width: 140, Height: 38}, Text: tr("Удалить источник"), Enabled: false, OnClicked: view.removeSource},
 					ui.HSpacer{},
 				}},
 			),
-			card("Добавить источники",
-				ui.TextLabel{Name: "muted", Text: "Вставьте ссылки на подписки или конфиги, по одной на строку.", MinSize: ui.Size{Width: 120}},
+			card(tr("Добавить источники"),
+				ui.TextLabel{Name: "muted", Text: tr("Вставьте ссылки на подписки или конфиги, по одной на строку."), MinSize: ui.Size{Width: 120}},
 				ui.TextEdit{AssignTo: &view.input, VScroll: true, MinSize: ui.Size{Height: 84}, MaxSize: ui.Size{Height: 110},
-					Accessibility: ui.Accessibility{Name: "Ссылки на подписки или конфиги"}},
-				settingRow("HWID одной HTTPS-подписки", ui.LineEdit{AssignTo: &view.hwid, MaxLength: 64, CueBanner: "Общий HWID",
-					Accessibility: ui.Accessibility{Name: "HWID одной HTTPS-подписки"}}),
+					Accessibility: ui.Accessibility{Name: tr("Ссылки на подписки или конфиги")}},
+				settingRow(tr("HWID одной HTTPS-подписки"), ui.LineEdit{AssignTo: &view.hwid, MaxLength: 64, CueBanner: tr("Общий HWID"),
+					Accessibility: ui.Accessibility{Name: tr("HWID одной HTTPS-подписки")}}),
 				ui.Composite{Layout: ui.HBox{MarginsZero: true}, Children: []ui.Widget{
-					ui.PushButton{AssignTo: &view.add, Name: "primary", MinSize: ui.Size{Width: 128, Height: 38}, Text: "Импортировать", OnClicked: view.importSources},
-					ui.PushButton{AssignTo: &view.suggested, MinSize: ui.Size{Width: 216, Height: 38}, Text: "Добавить бесплатные подписки", OnClicked: view.importSuggested},
+					ui.PushButton{AssignTo: &view.add, Name: "primary", MinSize: ui.Size{Width: 128, Height: 38}, Text: tr("Импортировать"), OnClicked: view.importSources},
+					ui.PushButton{AssignTo: &view.suggested, MinSize: ui.Size{Width: 216, Height: 38}, Text: tr("Добавить бесплатные подписки"), OnClicked: view.importSuggested},
 					ui.HSpacer{},
 				}},
 				ui.TextLabel{AssignTo: &view.result, Text: " ", MinSize: ui.Size{Width: 120}},
 				ui.TextEdit{AssignTo: &view.details, VScroll: true, ReadOnly: true, Visible: false,
 					MinSize: ui.Size{Height: 65}, MaxSize: ui.Size{Height: 92},
-					Accessibility: ui.Accessibility{Name: "Проблемы при импорте"}},
+					Accessibility: ui.Accessibility{Name: tr("Проблемы при импорте")}},
 			),
 			ui.VSpacer{},
 		}},
@@ -156,35 +156,35 @@ func (view *sourceView) run(progress string, action func(context.Context) source
 func (view *sourceView) importSources() {
 	input := view.input.Text()
 	if strings.TrimSpace(input) == "" {
-		_ = view.result.SetText("Вставьте хотя бы одну ссылку или конфиг.")
+		_ = view.result.SetText(tr("Вставьте хотя бы одну ссылку или конфиг."))
 		view.details.SetVisible(false)
 		_ = view.input.SetFocus()
 		return
 	}
 	hwid := view.hwid.Text()
-	view.run("Импортируем источники…", func(ctx context.Context) sourceFeedback {
+	view.run(tr("Импортируем источники…"), func(ctx context.Context) sourceFeedback {
 		report, err := view.app.ImportWithHWID(ctx, input, hwid)
 		return importFeedback(input, report, err)
 	})
 }
 
 func (view *sourceView) importSuggested() {
-	view.run("Проверяем бесплатные подписки…", func(ctx context.Context) sourceFeedback {
+	view.run(tr("Проверяем бесплатные подписки…"), func(ctx context.Context) sourceFeedback {
 		report, err := view.app.ImportSuggested(ctx)
 		if err != nil {
-			return sourceFeedback{summary: "Не удалось добавить бесплатные подписки. Повторите попытку."}
+			return sourceFeedback{summary: tr("Не удалось добавить бесплатные подписки. Повторите попытку.")}
 		}
 		return sourceFeedback{summary: importSummary(report)}
 	})
 }
 
 func (view *sourceView) refreshSources() {
-	view.run("Обновляем источники…", func(ctx context.Context) sourceFeedback {
+	view.run(tr("Обновляем источники…"), func(ctx context.Context) sourceFeedback {
 		report, err := view.app.RefreshSources(ctx)
 		if err != nil {
-			return sourceFeedback{summary: "Обновление прервано. Повторите попытку."}
+			return sourceFeedback{summary: tr("Обновление прервано. Повторите попытку.")}
 		}
-		return sourceFeedback{summary: fmt.Sprintf("Обновлено: %d. Ошибок: %d.", report.Updated, report.Failed)}
+		return sourceFeedback{summary: fmt.Sprintf(tr("Обновлено: %d. Ошибок: %d."), report.Updated, report.Failed)}
 	})
 }
 
@@ -195,15 +195,15 @@ func (view *sourceView) removeSource() {
 	}
 	source := view.inventory[index]
 	label := sourceName(source, index)
-	if walk.MsgBox(*view.window, "Удаление источника", fmt.Sprintf("Удалить «%s» и его ноды?", label),
+	if walk.MsgBox(*view.window, tr("Удаление источника"), fmt.Sprintf(tr("Удалить «%s» и его ноды?"), label),
 		walk.MsgBoxYesNo|walk.MsgBoxIconQuestion|walk.MsgBoxDefButton2) != walk.DlgCmdYes {
 		return
 	}
-	view.run("Удаляем источник…", func(ctx context.Context) sourceFeedback {
+	view.run(tr("Удаляем источник…"), func(ctx context.Context) sourceFeedback {
 		if err := view.app.RemoveSource(ctx, source.ID); err != nil {
-			return sourceFeedback{summary: "Не удалось удалить источник."}
+			return sourceFeedback{summary: tr("Не удалось удалить источник.")}
 		}
-		return sourceFeedback{summary: "Источник удалён."}
+		return sourceFeedback{summary: tr("Источник удалён.")}
 	})
 }
 
@@ -212,7 +212,7 @@ func importFeedback(input string, report device.ImportReport, err error) sourceF
 		return sourceFeedback{summary: message}
 	}
 	if err != nil && len(report.LineErrors) == 0 {
-		return sourceFeedback{summary: "Импорт прерван. Проверьте размер списка или повторите попытку."}
+		return sourceFeedback{summary: tr("Импорт прерван. Проверьте размер списка или повторите попытку.")}
 	}
 	lines := strings.Split(input, "\n")
 	pending := make([]string, 0, len(report.LineErrors))
@@ -222,7 +222,7 @@ func importFeedback(input string, report device.ImportReport, err error) sourceF
 			continue
 		}
 		pending = append(pending, strings.TrimSuffix(lines[issue.Line-1], "\r"))
-		messages = append(messages, fmt.Sprintf("Строка %d — %s", len(pending), importErrorText(issue.Reason)))
+		messages = append(messages, fmt.Sprintf(tr("Строка %d — %s"), len(pending), importErrorText(issue.Reason)))
 	}
 	draft := strings.Join(pending, "\r\n")
 	return sourceFeedback{summary: importSummary(report), details: strings.Join(messages, "\r\n"), draft: &draft}
@@ -243,10 +243,10 @@ func (view *sourceView) editSourceHWID() {
 		return
 	}
 	source := view.inventory[index]
-	view.run("Загружаем HWID…", func(ctx context.Context) sourceFeedback {
+	view.run(tr("Загружаем HWID…"), func(ctx context.Context) sourceFeedback {
 		value, err := view.app.SourceHWID(ctx, source.ID)
 		if err != nil {
-			return sourceFeedback{summary: "Не удалось прочитать HWID."}
+			return sourceFeedback{summary: tr("Не удалось прочитать HWID.")}
 		}
 		return sourceFeedback{after: func() { view.showSourceHWIDEditor(source, sourceName(source, index), value) }}
 	})
@@ -259,17 +259,17 @@ func (view *sourceView) showSourceHWIDEditor(source device.SourceStatus, label, 
 	var problem *walk.TextLabel
 	editor := ui.Dialog{
 		AssignTo: &dialog, DefaultButton: &save, CancelButton: &cancel, FixedSize: true,
-		Title: "HWID источника", MinSize: ui.Size{Width: 420}, Layout: ui.VBox{Spacing: 10},
+		Title: tr("HWID источника"), MinSize: ui.Size{Width: 420}, Layout: ui.VBox{Spacing: 10},
 		Children: []ui.Widget{
 			ui.TextLabel{Text: label},
-			ui.LineEdit{AssignTo: &input, Text: value, MaxLength: 64, CueBanner: "Общий HWID",
-				Accessibility: ui.Accessibility{Name: "HWID источника"}},
-			settingHint("Пустое поле использует общий HWID."),
+			ui.LineEdit{AssignTo: &input, Text: value, MaxLength: 64, CueBanner: tr("Общий HWID"),
+				Accessibility: ui.Accessibility{Name: tr("HWID источника")}},
+			settingHint(tr("Пустое поле использует общий HWID.")),
 			ui.TextLabel{AssignTo: &problem, Visible: false},
 			ui.Composite{Layout: ui.HBox{MarginsZero: true}, Children: []ui.Widget{
 				ui.HSpacer{},
-				ui.PushButton{AssignTo: &cancel, Text: "Отмена", OnClicked: func() { dialog.Cancel() }},
-				ui.PushButton{AssignTo: &save, Name: "primary", Text: "Сохранить", OnClicked: func() {
+				ui.PushButton{AssignTo: &cancel, Text: tr("Отмена"), OnClicked: func() { dialog.Cancel() }},
+				ui.PushButton{AssignTo: &save, Name: "primary", Text: tr("Сохранить"), OnClicked: func() {
 					if _, err := refresh.NormalizeHWID(input.Text()); err != nil {
 						_ = problem.SetText(sourceHWIDError(err))
 						problem.SetVisible(true)
@@ -283,29 +283,29 @@ func (view *sourceView) showSourceHWIDEditor(source device.SourceStatus, label, 
 		},
 	}
 	if err := editor.Create(*view.window); err != nil {
-		_ = view.result.SetText("Не удалось открыть редактор HWID.")
+		_ = view.result.SetText(tr("Не удалось открыть редактор HWID."))
 		return
 	}
 	defer dialog.Dispose()
 	if err := applyTheme(dialog); err != nil {
-		_ = view.result.SetText("Не удалось открыть редактор HWID.")
+		_ = view.result.SetText(tr("Не удалось открыть редактор HWID."))
 		return
 	}
 	if dialog.Run() != walk.DlgCmdOK {
 		return
 	}
-	view.run("Сохраняем HWID…", func(ctx context.Context) sourceFeedback {
+	view.run(tr("Сохраняем HWID…"), func(ctx context.Context) sourceFeedback {
 		report, err := view.app.SetSourceHWID(ctx, source.ID, value)
 		message := sourceHWIDError(err)
 		switch {
 		case message != "":
 			return sourceFeedback{summary: message}
 		case err != nil:
-			return sourceFeedback{summary: "Не удалось сохранить HWID."}
+			return sourceFeedback{summary: tr("Не удалось сохранить HWID.")}
 		case report.Failed > 0:
-			return sourceFeedback{summary: "HWID сохранён. Не удалось обновить источник."}
+			return sourceFeedback{summary: tr("HWID сохранён. Не удалось обновить источник.")}
 		default:
-			return sourceFeedback{summary: "HWID сохранён. Источник обновлён."}
+			return sourceFeedback{summary: tr("HWID сохранён. Источник обновлён.")}
 		}
 	})
 }
@@ -313,9 +313,9 @@ func (view *sourceView) showSourceHWIDEditor(source device.SourceStatus, label, 
 func sourceHWIDError(err error) string {
 	switch {
 	case errors.Is(err, refresh.ErrInvalidHWID):
-		return "В HWID должно быть 10–64 символа: латиница, цифры, дефис или знак равенства."
+		return tr("В HWID должно быть 10–64 символа: латиница, цифры, дефис или знак равенства.")
 	case errors.Is(err, device.ErrSourceHWIDRequiresHTTPS):
-		return "Отдельный HWID можно задать для одной HTTPS-подписки."
+		return tr("Отдельный HWID можно задать для одной HTTPS-подписки.")
 	default:
 		return ""
 	}
@@ -327,17 +327,17 @@ func importSummary(report device.ImportReport) string {
 		label string
 		count int
 	}{
-		{"Добавлено", report.Imported},
-		{"Восстановлено", report.Restored},
-		{"Уже в списке или повторяются", report.Skipped},
-		{"Проблемных строк", report.RefreshFailed + report.Unavailable},
+		{tr("Добавлено"), report.Imported},
+		{tr("Восстановлено"), report.Restored},
+		{tr("Уже в списке или повторяются"), report.Skipped},
+		{tr("Проблемных строк"), report.RefreshFailed + report.Unavailable},
 	} {
 		if item.count > 0 {
 			items = append(items, fmt.Sprintf("%s: %d", item.label, item.count))
 		}
 	}
 	if len(items) == 0 {
-		return "Нет источников для импорта."
+		return tr("Нет источников для импорта.")
 	}
 	return strings.Join(items, ". ") + "."
 }
@@ -345,25 +345,25 @@ func importSummary(report device.ImportReport) string {
 func importErrorText(reason string) string {
 	switch reason {
 	case "unsupported source format":
-		return "ожидается ссылка на подписку, конфиг VLESS или мост Tor"
+		return tr("ожидается ссылка на подписку, конфиг VLESS или мост Tor")
 	case "invalid VLESS URI":
-		return "проверьте ссылку VLESS"
+		return tr("проверьте ссылку VLESS")
 	case "invalid subscription URL":
-		return "проверьте адрес подписки"
+		return tr("проверьте адрес подписки")
 	case "invalid Tor bridge line":
-		return "проверьте строку моста Tor"
+		return tr("проверьте строку моста Tor")
 	case "unsupported Tor bridge transport":
-		return "транспорт моста Tor не поддерживается"
+		return tr("транспорт моста Tor не поддерживается")
 	case "source refresh failed":
-		return "источник сохранён, загрузить ноды не удалось"
+		return tr("источник сохранён, загрузить ноды не удалось")
 	default:
-		return "проверьте формат источника"
+		return tr("проверьте формат источника")
 	}
 }
 
 func sourceName(source device.SourceStatus, index int) string {
 	if source.Label == "" {
-		return fmt.Sprintf("Источник %d", index+1)
+		return fmt.Sprintf(tr("Источник %d"), index+1)
 	}
 	return source.Label
 }
@@ -371,17 +371,17 @@ func sourceName(source device.SourceStatus, index int) string {
 func sourceLabels(inventory []device.SourceStatus) []string {
 	sourceLines := make([]string, 0, len(inventory))
 	for index, source := range inventory {
-		label := fmt.Sprintf("%s · Ноды: %d", sourceName(source, index), source.Candidates)
+		label := fmt.Sprintf(tr("%s · Ноды: %d"), sourceName(source, index), source.Candidates)
 		switch {
 		case !source.Enabled:
-			label += " · отключён"
+			label += tr(" · отключён")
 		case source.Failed:
-			label += " · ошибка обновления"
+			label += tr(" · ошибка обновления")
 		case source.UpdatedAt > 0:
-			label += " · обновлён " + time.Unix(source.UpdatedAt, 0).Format("02.01 15:04")
+			label += tr(" · обновлён ") + time.Unix(source.UpdatedAt, 0).Format("02.01 15:04")
 		}
 		if source.CustomHWID {
-			label += " · свой HWID"
+			label += tr(" · свой HWID")
 		}
 		sourceLines = append(sourceLines, label)
 	}
