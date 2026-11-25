@@ -68,11 +68,26 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
-      - name: Install Android SDK and NDK
+      - name: Install Android SDK
         uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4
         with:
           log-accepted-android-sdk-licenses: false
-          packages: 'platforms;android-35 build-tools;35.0.0 ndk;28.2.13676358'
+          packages: 'platforms;android-35 build-tools;35.0.0'
+      - name: Install pinned Android NDK
+        run: |
+          ndk="$ANDROID_HOME/ndk/28.2.13676358"
+          compiler="toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
+          if [[ ! -x "$ndk/$compiler" ]]; then
+            archive="$RUNNER_TEMP/android-ndk-r28c.zip"
+            curl -fsSL --retry 3 --retry-all-errors --connect-timeout 15 --max-time 240 \
+              https://dl.google.com/android/repository/android-ndk-r28c-linux.zip -o "$archive"
+            printf '%s  %s\n' dfb20d396df28ca02a8c708314b814a4d961dc9074f9a161932746f815aa552f "$archive" | sha256sum -c -
+            unzip -q "$archive" -d "$RUNNER_TEMP"
+            mkdir -p "$ANDROID_HOME/ndk"
+            mv -T "$RUNNER_TEMP/android-ndk-r28c" "$ndk"
+            rm "$archive"
+          fi
+          test -x "$ndk/$compiler"
       - name: Prepare and build Android
         env:
           HYDRAT_BUILD_JOBS: '4'
