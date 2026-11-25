@@ -340,6 +340,7 @@ func recordCandidateProbeTx(
 		}
 		if state.FullSuccessStreak >= 2 {
 			state.Status = CandidateQualified
+			state.BannedUntil = time.Time{}
 		} else {
 			state.Status = CandidatePreflight
 		}

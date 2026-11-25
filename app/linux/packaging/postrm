@@ -1,0 +1,9 @@
+#!/bin/sh
+set -e
+
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload
+fi
+if [ "$1" = purge ]; then
+    deb-systemd-helper purge hydrat-app.service >/dev/null || true
+fi

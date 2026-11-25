@@ -11,6 +11,14 @@ import (
 )
 
 func (store *Store) ImportSources(ctx context.Context, items []sources.PreviewItem) (ImportResult, error) {
+	return store.importSources(ctx, items, "")
+}
+
+func (store *Store) ImportSourceWithHWID(ctx context.Context, item sources.PreviewItem, hwid string) (ImportResult, error) {
+	return store.importSources(ctx, []sources.PreviewItem{item}, hwid)
+}
+
+func (store *Store) importSources(ctx context.Context, items []sources.PreviewItem, hwid string) (ImportResult, error) {
 	tx, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ImportResult{}, err
@@ -70,6 +78,11 @@ func (store *Store) ImportSources(ctx context.Context, items []sources.PreviewIt
 			return ImportResult{}, err
 		}
 	}
+	if hwid != "" {
+		if err := store.setSourceHWID(ctx, tx, "src_"+items[0].Fingerprint, hwid); err != nil {
+			return ImportResult{}, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return ImportResult{}, err
 	}
@@ -80,8 +93,9 @@ func (store *Store) ListSources(ctx context.Context) ([]Source, error) {
 	rows, err := store.db.QueryContext(ctx, `
 		SELECT id, kind, label, fingerprint, enabled, pending_delete,
 		       created_at, updated_at,
-		       last_refresh_at, last_refresh_error, candidate_count
-        FROM sources
+		       last_refresh_at, last_refresh_error, candidate_count,
+		       EXISTS(SELECT 1 FROM source_hwids WHERE source_id=source.id)
+        FROM sources source
         ORDER BY created_at, id
     `)
 	if err != nil {
@@ -103,6 +117,7 @@ func (store *Store) ListSources(ctx context.Context) ([]Source, error) {
 			&source.LastRefreshAt,
 			&source.LastRefreshError,
 			&source.CandidateCount,
+			&source.CustomHWID,
 		); err != nil {
 			return nil, err
 		}
@@ -216,6 +231,9 @@ func (store *Store) DeleteSource(
 		return err
 	}
 	if err := requireAffected(result, "source"); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM source_hwids WHERE source_id=?`, id); err != nil {
 		return err
 	}
 	if err := incrementInventoryEpochTx(ctx, tx); err != nil {

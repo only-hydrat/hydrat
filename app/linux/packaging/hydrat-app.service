@@ -1,0 +1,29 @@
+[Unit]
+Description=Hydrat desktop tunnel
+After=network.target systemd-resolved.service
+Wants=systemd-resolved.service
+
+[Service]
+Type=simple
+User=hydrat-app
+Group=hydrat-users
+StateDirectory=hydrat-app
+StateDirectoryMode=0700
+RuntimeDirectory=hydrat-app
+RuntimeDirectoryMode=0750
+UMask=0077
+WorkingDirectory=/var/lib/hydrat-app
+ExecStart=/usr/lib/hydrat-app/hydrat-service
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+DevicePolicy=closed
+DeviceAllow=/dev/net/tun rw
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+TimeoutStopSec=40s
+
+[Install]
+WantedBy=multi-user.target

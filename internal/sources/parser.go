@@ -15,12 +15,13 @@ import (
 type Kind string
 
 const (
-	KindInvalid           Kind = "invalid"
-	KindVLESS             Kind = "vless"
-	KindVLESSSubscription Kind = "vless_subscription"
-	KindTorBridge         Kind = "tor_bridge"
-	KindTorSubscription   Kind = "tor_subscription"
-	KindRemoteAuto        Kind = "remote_auto"
+	KindInvalid            Kind = "invalid"
+	KindVLESS              Kind = "vless"
+	KindVLESSSubscription  Kind = "vless_subscription"
+	KindTorBridge          Kind = "tor_bridge"
+	KindTorSubscription    Kind = "tor_subscription"
+	KindRemoteAuto         Kind = "remote_auto"
+	KindPublicSubscription Kind = "public_subscription"
 )
 
 var supportedTorTransports = map[string]bool{
@@ -101,6 +102,10 @@ func parseVLESS(lineNumber int, raw string) PreviewItem {
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Scheme != "vless" || parsed.User == nil || parsed.User.Username() == "" || parsed.Hostname() == "" {
 		return PreviewItem{Line: lineNumber, Kind: KindInvalid, Error: "invalid VLESS URI"}
+	}
+	if query := strings.ReplaceAll(parsed.RawQuery, "&amp;", "&"); query != parsed.RawQuery {
+		raw = strings.Replace(raw, "?"+parsed.RawQuery, "?"+query, 1)
+		parsed.RawQuery = query
 	}
 	query := parsed.Query()
 	keys := make([]string, 0, len(query))

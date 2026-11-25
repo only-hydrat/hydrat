@@ -1,0 +1,29 @@
+diff --git a/proxy/socks/client.go b/proxy/socks/client.go
+index aa14f8f..04a12ea 100644
+--- a/proxy/socks/client.go
++++ b/proxy/socks/client.go
+@@ -2,6 +2,7 @@ package socks
+ 
+ import (
+ 	"context"
++	"strings"
+ 	"time"
+ 
+ 	"github.com/xtls/xray-core/common"
+@@ -64,6 +65,16 @@ func (c *Client) Process(ctx context.Context, link *transport.Link, dialer inter
+ 	var conn stat.Connection
+ 
+ 	if err := retry.ExponentialBackoff(5, 100).On(func() error {
++		if path, ok := strings.CutPrefix(dest.Address.String(), "unix:"); ok {
++			if destination.Network != net.Network_TCP || !strings.HasPrefix(path, "/") {
++				return errors.New("Unix SOCKS endpoints support TCP only")
++			}
++			socket, err := (&net.Dialer{}).DialContext(ctx, "unix", path)
++			if err == nil {
++				conn = socket
++			}
++			return err
++		}
+ 		rawConn, err := dialer.Dial(ctx, dest)
+ 		if err != nil {
+ 			return err

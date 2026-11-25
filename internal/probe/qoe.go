@@ -718,7 +718,8 @@ func readQoEBody(ctx context.Context, body io.ReadCloser, limit int64) (int64, e
 
 func localSOCKSDialFailure(err error, address string) bool {
 	var proxyError *net.OpError
-	return errors.As(err, &proxyError) && proxyError.Op == "dial" && proxyError.Addr != nil && proxyError.Addr.String() == address
+	_, target := socks5.Endpoint(address)
+	return errors.As(err, &proxyError) && proxyError.Op == "dial" && proxyError.Addr != nil && proxyError.Addr.String() == target
 }
 
 func classifyQoERouteError(err error) string {

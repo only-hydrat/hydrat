@@ -112,6 +112,7 @@ type dependencies struct {
 	starter   processStarter
 	readiness readinessCheck
 	metrics   metricsReader
+	embedded  bool
 }
 
 type Option func(*dependencies)
@@ -186,8 +187,18 @@ func New(config Config, resetter interface{ Reset(uint64) }, options ...Option) 
 	if resetter == nil {
 		return nil, errors.New("probe runtime resetter is required")
 	}
+	deps := dependencies{
+		starter:   execProcessStarter{},
+		readiness: checkAPIReadiness,
+		metrics:   procMetricsReader{},
+	}
+	for _, option := range options {
+		if option != nil {
+			option(&deps)
+		}
+	}
 	config = withRuntimeDefaults(config)
-	if strings.TrimSpace(config.Binary) == "" {
+	if !deps.embedded && strings.TrimSpace(config.Binary) == "" {
 		return nil, errors.New("probe runtime binary is required")
 	}
 	if strings.TrimSpace(config.ConfigPath) == "" {
@@ -215,16 +226,6 @@ func New(config Config, resetter interface{ Reset(uint64) }, options ...Option) 
 		return nil, errors.New("probe runtime readiness timeout must be positive")
 	}
 
-	deps := dependencies{
-		starter:   execProcessStarter{},
-		readiness: checkAPIReadiness,
-		metrics:   procMetricsReader{},
-	}
-	for _, option := range options {
-		if option != nil {
-			option(&deps)
-		}
-	}
 	manager := &Manager{
 		config:          config,
 		resetter:        resetter,
@@ -436,7 +437,9 @@ func (manager *Manager) Release(lease *Lease, cleanupErr error) {
 		checkCtx, cancel := context.WithTimeout(lifetimeCtx, checkTimeout)
 		readinessErr = manager.check(checkCtx, process, manager.config.APIAddress)
 		cancel()
-		metrics, metricsErr = manager.metrics.Read(process.PID())
+		if pid := process.PID(); pid > 0 {
+			metrics, metricsErr = manager.metrics.Read(pid)
+		}
 		exited = channelClosed(process.Done())
 	}
 
@@ -944,7 +947,11 @@ func channelClosed(channel <-chan struct{}) bool {
 
 func checkAPIReadiness(ctx context.Context, _ ownedProcess, address string) error {
 	dialer := net.Dialer{Timeout: 250 * time.Millisecond}
-	connection, err := dialer.DialContext(ctx, "tcp", address)
+	network := "tcp"
+	if path, ok := strings.CutPrefix(address, "unix://"); ok {
+		network, address = "unix", path
+	}
+	connection, err := dialer.DialContext(ctx, network, address)
 	if err != nil {
 		return err
 	}

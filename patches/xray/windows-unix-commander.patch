@@ -1,0 +1,19 @@
+--- a/app/commander/commander.go
++++ b/app/commander/commander.go
+@@ -3,6 +3,7 @@
+ import (
+ 	"context"
+ 	"net"
++	"path/filepath"
+ 	"strings"
+ 	"sync"
+ 
+@@ -78,7 +79,7 @@
+ 	if len(c.listen) > 0 {
+ 		var addr net.Addr
+ 
+-		if strings.HasPrefix(c.listen, "/") || strings.HasPrefix(c.listen, "@") {
++		if filepath.IsAbs(c.listen) || strings.HasPrefix(c.listen, "@") {
+ 			addr = &net.UnixAddr{Name: c.listen, Net: "unix"}
+ 		} else {
+ 			tcpAddr, err := net.ResolveTCPAddr("tcp", c.listen)

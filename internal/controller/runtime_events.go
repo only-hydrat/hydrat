@@ -188,6 +188,13 @@ func (runtime Runtime) watchEvents(
 	var clientChanges <-chan struct{}
 	var qoeDegradations <-chan struct{}
 	ordinaryWake := ordinaryGate
+	onHardFailure := func() {
+		if runtime.InterruptQualification != nil {
+			runtime.InterruptQualification()
+		}
+		enqueue(PlacementHardFailure)
+		nonBlockingSignal(qualificationSignal)
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -207,11 +214,9 @@ func (runtime Runtime) watchEvents(
 		case <-activeTicker.C:
 			nonBlockingSignal(activeSignal)
 		case <-runtime.HardFailures:
-			enqueue(PlacementHardFailure)
-			nonBlockingSignal(qualificationSignal)
+			onHardFailure()
 		case <-runtime.HardFailureEvents.Wake():
-			enqueue(PlacementHardFailure)
-			nonBlockingSignal(qualificationSignal)
+			onHardFailure()
 		case <-manualReassigns:
 			enqueue(PlacementManual)
 		case <-clientChanges:

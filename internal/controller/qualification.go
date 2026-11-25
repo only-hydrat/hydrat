@@ -38,17 +38,23 @@ type CandidateProbeAgent interface {
 }
 
 type QualificationService struct {
-	Store          *store.Store
-	QoEEnabled     bool
-	Agent          CandidateProbeAgent
-	VLESS          VLESSQualifier
-	Tor            TorProfileAgent
-	Measurer       CandidateMeasurer
-	PoolSize       int
-	PromotionRatio float64
-	ResetWindow    time.Duration
-	FastWorkers    int
-	FullWorkers    int
+	Store                   *store.Store
+	QoEEnabled              bool
+	Agent                   CandidateProbeAgent
+	VLESS                   VLESSQualifier
+	Tor                     TorProfileAgent
+	Measurer                CandidateMeasurer
+	PoolSize                int
+	PromotionRatio          float64
+	ResetWindow             time.Duration
+	FastWorkers             int
+	FullWorkers             int
+	MobileReserves          int
+	MobileRouteInstalled    func() bool
+	MobileBackgroundWorkers int
+	MobileBackgroundMode    func(time.Time) string
+	MobileSearchProgress    func(string, int)
+	MinVLESSScore           float64
 	// TorCandidatesPerCycle bounds background Tor qualification so a large Tor
 	// pool cannot starve the next VLESS qualification cycle. Zero is unlimited.
 	TorCandidatesPerCycle int
@@ -378,6 +384,9 @@ func (service QualificationService) runAgent(ctx context.Context, now time.Time)
 	return runConcurrentQualificationLanes(
 		ctx,
 		func(laneCtx context.Context) error {
+			if service.MobileReserves > 0 {
+				return service.runMobileVLESS(laneCtx, vlessCandidates, candidates, now)
+			}
 			fullJobs, err := service.discoveryJobs(
 				laneCtx, vlessCandidates, now, tournament.ProbeFull,
 			)

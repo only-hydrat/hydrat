@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/only-hydrat/hydrat/internal/dataplane"
@@ -159,6 +158,7 @@ func (engine *Engine) hardFailureCycle(
 		routeByClient[route.ClientID] = index
 	}
 	changed := removedClientRoutes
+	blockedMobileRoute := false
 	requiresTorFence := false
 	clientIDs := make([]string, 0, len(assignmentByClient))
 	for clientID := range assignmentByClient {
@@ -180,7 +180,7 @@ func (engine *Engine) hardFailureCycle(
 		if assignment.TCPOutbound != "" &&
 			(candidateStates[assignment.TCPOutbound].hardFailed || debtByRoute[clientID+":tcp"]) {
 			failedCandidateID := assignment.TCPOutbound
-			replacementApplied := false
+			transportChanged := false
 			reserve, ok, err := engine.store.AppliedReserveForFailure(
 				ctx, clientID, store.RouteTransportTCP, failedCandidateID,
 			)
@@ -218,7 +218,7 @@ func (engine *Engine) hardFailureCycle(
 				route.TCPOutbound = route.TCPReserveOutbound
 				route.DNSOutbound = reserveDNS
 				route.BlockTCP = false
-				replacementApplied = true
+				transportChanged = true
 			} else {
 				fallback := engine.scheduler.SelectEmergency(
 					now, clientID, "tcp", failedCandidateID,
@@ -255,10 +255,19 @@ func (engine *Engine) hardFailureCycle(
 					route.TCPOutbound = fallbackHandler
 					route.DNSOutbound = dnsOutbound.ID
 					route.BlockTCP = false
-					replacementApplied = true
+					transportChanged = true
 				}
 			}
-			if replacementApplied {
+			if !transportChanged && engine.mobileReserves > 0 {
+				assignment.TCPOutbound = ""
+				assignment.TCPSince = now
+				route.TCPOutbound = ""
+				route.DNSOutbound = ""
+				route.BlockTCP = true
+				blockedMobileRoute = true
+				transportChanged = true
+			}
+			if transportChanged {
 				route.TCPReserveOutbound = ""
 				clientChanged = true
 				changed = true
@@ -267,7 +276,7 @@ func (engine *Engine) hardFailureCycle(
 		if assignment.UDPOutbound != "" &&
 			(candidateStates[assignment.UDPOutbound].hardFailed || debtByRoute[clientID+":udp"]) {
 			failedCandidateID := assignment.UDPOutbound
-			replacementApplied := false
+			transportChanged := false
 			reserve, ok, err := engine.store.AppliedReserveForFailure(
 				ctx, clientID, store.RouteTransportUDP, failedCandidateID,
 			)
@@ -295,7 +304,7 @@ func (engine *Engine) hardFailureCycle(
 				assignment.UDPSince = now
 				route.UDPOutbound = route.UDPReserveOutbound
 				route.BlockUDP = false
-				replacementApplied = true
+				transportChanged = true
 			} else {
 				fallback := engine.scheduler.SelectEmergency(
 					now, clientID, "udp", failedCandidateID,
@@ -316,10 +325,18 @@ func (engine *Engine) hardFailureCycle(
 					assignment.UDPSince = now
 					route.UDPOutbound = fallbackHandler
 					route.BlockUDP = false
-					replacementApplied = true
+					transportChanged = true
 				}
 			}
-			if replacementApplied {
+			if !transportChanged && engine.mobileReserves > 0 {
+				assignment.UDPOutbound = ""
+				assignment.UDPSince = now
+				route.UDPOutbound = ""
+				route.BlockUDP = true
+				blockedMobileRoute = true
+				transportChanged = true
+			}
+			if transportChanged {
 				route.UDPReserveOutbound = ""
 				clientChanged = true
 				changed = true
@@ -351,7 +368,7 @@ func (engine *Engine) hardFailureCycle(
 	}
 	// Do not retain obsolete onion handlers while an ordinary capacity gate is
 	// pending: otherwise they pin retired Tor candidates through plan references.
-	prunePrivateHandlers(&plan, appliedClients, planOutbounds)
+	pruneObsoleteHandlers(&plan, appliedClients, planOutbounds, blockedMobileRoute)
 	plan.Outbounds = appendNewPlanOutbounds(plan.Outbounds, planOutbounds)
 	plan.Generation = max(
 		state.DesiredGeneration, state.InvalidatedGeneration,
@@ -895,19 +912,7 @@ func uniqueCandidateReferences(outbounds []dataplane.Outbound) []string {
 }
 
 func candidateIDFromHandler(handlerID, clientID string) string {
-	if handlerID == "" {
-		return ""
-	}
-	candidateID, suffix, tor := strings.Cut(handlerID, "-profile-")
-	if !tor {
-		return sources.CandidateIDFromVLESSHandler(handlerID)
-	}
-	_, boundClientID, valid := strings.Cut(suffix, "-client-")
-	if candidateID == "" || !valid || boundClientID == "" ||
-		(clientID != "" && boundClientID != clientID) {
-		return ""
-	}
-	return candidateID
+	return sources.CandidateIDFromHandler(handlerID, clientID)
 }
 
 func dnsHandlerForClientTarget(

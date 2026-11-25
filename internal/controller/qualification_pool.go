@@ -70,8 +70,11 @@ func (service QualificationService) updateWorkingPool(
 		}
 		assignedIDs := make(map[string]bool)
 		for _, assignment := range assignments {
-			assignedIDs[assignment.TCPOutbound] = true
-			assignedIDs[assignment.UDPOutbound] = true
+			for _, id := range []string{assignment.TCPOutbound, assignment.UDPOutbound} {
+				if id != "" {
+					assignedIDs[id] = true
+				}
+			}
 		}
 		currentByFingerprint := make(map[string]store.Candidate, len(candidates))
 		for _, candidate := range candidates {
@@ -82,6 +85,15 @@ func (service QualificationService) updateWorkingPool(
 		for _, state := range states {
 			current, exists := currentByFingerprint[state.Fingerprint]
 			if !exists || current.ID != state.CandidateID || current.SourceID != state.SourceID {
+				continue
+			}
+			if service.MobileReserves > 0 && current.Kind == sources.KindVLESS &&
+				state.ConservativeScore < service.MinVLESSScore {
+				continue
+			}
+			if service.MobileReserves > 0 && !state.InWorkingPool &&
+				(state.LastErrorCode != "" || state.LastFullProbeAt.Before(now.Add(-mobileSavedRouteMaxAge)) ||
+					state.LastSuccessAt.Before(now.Add(-mobileSavedRouteMaxAge))) {
 				continue
 			}
 			if service.DisallowRUEgress {
@@ -100,15 +112,27 @@ func (service QualificationService) updateWorkingPool(
 				FullSuccessStreak: state.FullSuccessStreak,
 				ConservativeScore: state.ConservativeScore,
 				InWorkingPool:     state.InWorkingPool, Draining: state.Draining,
-				Assigned: assignedIDs[state.CandidateID], BannedUntil: state.BannedUntil,
+				Assigned: assignedIDs[state.CandidateID], BannedUntil: state.BannedUntil, Stale: state.Stale,
 			})
+		}
+		poolSize := service.PoolSize
+		if service.MobileReserves > 0 {
+			poolSize = max(1, len(assignedIDs)) + service.MobileReserves
+			selectionCandidates = distinctMobilePoolRoutes(selectionCandidates, currentByFingerprint)
 		}
 		selection := tournament.SelectWorkingPool(
 			selectionCandidates,
 			tournament.SelectionPolicy{
-				PoolSize: service.PoolSize, PromotionRatio: service.PromotionRatio, Now: now,
+				PoolSize: poolSize, PromotionRatio: service.PromotionRatio, Now: now,
 			},
 		)
+		if service.MobileReserves > 0 {
+			health, err := service.Store.ListCandidateHealth(ctx)
+			if err != nil {
+				return nil, err
+			}
+			keepMobileUDPCoverage(&selection, selectionCandidates, currentByFingerprint, health, service.MinVLESSScore, now)
+		}
 		requestedActive := poolCandidates(selection.Active, currentByFingerprint)
 		requestedDraining := poolCandidates(selection.Draining, currentByFingerprint)
 		if service.Tor == nil {

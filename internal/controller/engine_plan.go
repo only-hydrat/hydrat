@@ -388,6 +388,9 @@ func (engine *Engine) applyPlan(
 	if err := engine.store.MarkAppliedPlan(ctx, plan.Generation, encoded); err != nil {
 		return err
 	}
+	if engine.localDevice {
+		engine.localPlanInstalled = true
+	}
 	return nil
 }
 

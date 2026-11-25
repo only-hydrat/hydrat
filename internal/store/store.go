@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/only-hydrat/hydrat/internal/secretbox"
 	"github.com/only-hydrat/hydrat/internal/sources"
@@ -35,6 +36,7 @@ type Source struct {
 	LastRefreshAt    *int64       `json:"last_refresh_at,omitempty"`
 	LastRefreshError string       `json:"last_refresh_error,omitempty"`
 	CandidateCount   int          `json:"candidate_count"`
+	CustomHWID       bool         `json:"-"`
 }
 
 type CandidateInput struct {
@@ -118,10 +120,21 @@ func Open(path string, box *secretbox.Box) (*Store, error) {
 }
 
 func sqliteConnectionDSN(path string) string {
+	if runtime.GOOS == "windows" {
+		path = filepath.ToSlash(path)
+		if volume := filepath.VolumeName(path); len(volume) == 2 && filepath.IsAbs(path) {
+			// SQLite expects a drive letter inside the URI path, e.g. /C:/data.
+			path = "/" + path
+		}
+	}
 	uri := &url.URL{Scheme: "file", Path: path}
 	query := uri.Query()
 	query.Add("_pragma", "foreign_keys=on")
 	query.Add("_pragma", "busy_timeout=5000")
+	if runtime.GOOS == "android" {
+		// SQLite cannot assume a writable Unix temporary directory inside the app sandbox.
+		query.Add("_pragma", "temp_store=memory")
+	}
 	uri.RawQuery = query.Encode()
 	return uri.String()
 }

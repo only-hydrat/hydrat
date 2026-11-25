@@ -100,8 +100,8 @@ func (monitor *ActiveMonitor) applyReservedObservations(
 			continue
 		}
 		proofFreshAfter := reserved.proofFreshAfter
-		if monitor.ProofFreshness > 0 {
-			proofFreshAfter = completedAt.Add(-monitor.ProofFreshness)
+		if cutoff := completedAt.Add(-monitor.ProofFreshness); monitor.ProofFreshness > 0 && cutoff.After(proofFreshAfter) {
+			proofFreshAfter = cutoff
 		}
 		tracker := monitor.trackers[candidateID]
 		if tracker != nil && !row.Available {

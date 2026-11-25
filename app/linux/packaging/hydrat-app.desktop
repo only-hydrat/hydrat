@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Hydrat
+Comment=System VPN with automatic route selection
+Comment[ru]=Системный VPN с автоматическим выбором маршрута
+Exec=/usr/bin/hydrat-app
+Icon=/usr/lib/hydrat-app/icon.png
+Terminal=false
+Categories=Network;
+StartupNotify=true

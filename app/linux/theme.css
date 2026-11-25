@@ -1,0 +1,39 @@
+@define-color bg #0b1210;
+@define-color panel #111c18;
+@define-color raised #192820;
+@define-color field #0d1712;
+@define-color line #2a3c32;
+@define-color text #ecf2ee;
+@define-color muted #a2b4a8;
+@define-color mint #7de2ad;
+
+window.hydrat, .hydrat viewport { background-color: @bg; color: @text; }
+.hydrat { font-family: "Segoe UI", "Cantarell", sans-serif; font-size: 14px; }
+.hydrat .brand { font-size: 21px; font-weight: bold; }
+.hydrat .headline { font-size: 24px; font-weight: bold; }
+.hydrat .section { font-size: 17px; font-weight: bold; }
+.hydrat .muted { color: @muted; }
+.hydrat .accent { color: @mint; }
+.hydrat .warning { color: #edcc88; }
+.hydrat .error, .hydrat .danger { color: #ff9a9a; }
+.hydrat .panel { padding: 15px; border-radius: 14px; background-color: @panel; border: 1px solid @line; }
+.hydrat button {
+    min-height: 31px; padding: 2px 12px; background-image: none; background-color: @raised;
+    color: @text; border: 1px solid @line; border-radius: 8px; box-shadow: none; text-shadow: none;
+}
+.hydrat button:hover { background-color: #22392b; }
+.hydrat button:focus, .hydrat entry:focus { outline: 1px solid @mint; outline-offset: -2px; }
+.hydrat button:disabled { color: @muted; opacity: 0.55; }
+.hydrat button.primary { background-color: @mint; border-color: @mint; color: #102719; font-weight: bold; }
+.hydrat button.primary:hover { background-color: #9aeac0; }
+.hydrat stackswitcher button { background-color: @bg; border-color: transparent; color: @muted; }
+.hydrat stackswitcher button:checked { background-color: @raised; border-color: @line; color: @mint; }
+.hydrat entry, .hydrat textview, .hydrat textview text, .hydrat spinbutton, .hydrat list {
+    background-image: none; background-color: @field; color: @text;
+}
+.hydrat entry, .hydrat spinbutton, .hydrat list { border: 1px solid @line; border-radius: 8px; }
+.hydrat treeview, .hydrat row { padding: 7px 9px; }
+.hydrat row:selected, .hydrat textview text selection { background-color: #233d31; color: @mint; }
+.hydrat checkbutton check:checked { background-image: none; background-color: @mint; color: #102719; }
+.hydrat scrollbar { background-color: @bg; }
+.hydrat scrollbar slider { background-color: #455f50; }

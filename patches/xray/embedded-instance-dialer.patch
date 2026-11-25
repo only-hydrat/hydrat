@@ -1,0 +1,182 @@
+diff --git a/app/proxyman/outbound/handler.go b/app/proxyman/outbound/handler.go
+index 4c3b16a..044a196 100644
+--- a/app/proxyman/outbound/handler.go
++++ b/app/proxyman/outbound/handler.go
+@@ -184,7 +184,7 @@ func (h *Handler) Dispatch(ctx context.Context, link *transport.Link) {
+ 		if ob.Target.Network == net.Network_UDP && ob.OriginalTarget.Address != nil {
+ 			strategy = strategy.GetDynamicStrategy(ob.OriginalTarget.Address.Family())
+ 		}
+-		ips, err := internet.LookupForIP(ob.Target.Address.Domain(), strategy, nil)
++		ips, err := internet.LookupForIP(ctx, ob.Target.Address.Domain(), strategy, nil)
+ 		if err != nil {
+ 			errors.LogInfoInner(ctx, err, "failed to resolve ip for target ", ob.Target.Address.Domain())
+ 			if h.senderSettings.TargetStrategy.ForceIP() {
+diff --git a/core/context.go b/core/context.go
+index 5042796..48f6870 100644
+--- a/core/context.go
++++ b/core/context.go
+@@ -2,6 +2,8 @@ package core
+ 
+ import (
+ 	"context"
++
++	"github.com/xtls/xray-core/transport/internet"
+ )
+ 
+ // XrayKey is the key type of Instance in Context, exported for test.
+@@ -39,6 +41,7 @@ and may break at any time.
+ func toContext(ctx context.Context, v *Instance) context.Context {
+ 	if FromContext(ctx) != v {
+ 		ctx = context.WithValue(ctx, xrayKey, v)
++		ctx = internet.WithDialerScope(ctx, internet.ScopeFromContext(v.ctx))
+ 	}
+ 	return ctx
+ }
+diff --git a/core/xray.go b/core/xray.go
+index 794ce8f..cf407ae 100644
+--- a/core/xray.go
++++ b/core/xray.go
+@@ -192,6 +192,8 @@ func initInstanceWithConfig(config *Config, server *Instance) (bool, error) {
+ 	if err := platform.ReloadEnvSettings(); err != nil {
+ 		return true, errors.New("failed to reload environment settings").Base(err)
+ 	}
++	dialerScope := &internet.DialerScope{}
++	server.ctx = internet.WithDialerScope(server.ctx, dialerScope)
+ 	server.ctx = context.WithValue(server.ctx, "cone",
+ 		platform.NewEnvFlag(platform.UseCone).GetValue(func() string { return "" }) != "true")
+ 
+@@ -229,13 +231,8 @@ func initInstanceWithConfig(config *Config, server *Instance) (bool, error) {
+ 		}
+ 	}
+ 
+-	internet.InitSystemDialer(
+-		server.GetFeature(dns.ClientType()).(dns.Client),
+-		func() outbound.Manager {
+-			obm, _ := server.GetFeature(outbound.ManagerType()).(outbound.Manager)
+-			return obm
+-		}(),
+-	)
++	dialerScope.DNS = server.GetFeature(dns.ClientType()).(dns.Client)
++	dialerScope.Outbounds, _ = server.GetFeature(outbound.ManagerType()).(outbound.Manager)
+ 
+ 	server.resolveLock.Lock()
+ 	if server.pendingResolutions != nil {
+diff --git a/proxy/freedom/freedom.go b/proxy/freedom/freedom.go
+index 6215647..ef44e40 100644
+--- a/proxy/freedom/freedom.go
++++ b/proxy/freedom/freedom.go
+@@ -321,7 +321,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+ 		if destination.Address.Family().IsDomain() {
+ 			if defaultRule != nil || len(h.finalRules) > 0 {
+ 				if strategy := h.resolveStrategy; strategy.HasStrategy() {
+-					ips, err := internet.LookupForIP(destination.Address.Domain(), strategy, outGateway)
++					ips, err := internet.LookupForIP(ctx, destination.Address.Domain(), strategy, outGateway)
+ 					if err != nil { // non-force may still dial with system DNS
+ 						errors.LogInfoInner(ctx, err, "failed to get IP address for domain ", destination.Address.Domain())
+ 						if strategy.ForceIP() {
+@@ -430,7 +430,7 @@ func (h *Handler) Process(ctx context.Context, link *transport.Link, dialer inte
+ 				writer = buf.NewWriter(conn)
+ 			}
+ 		} else {
+-			writer = NewPacketWriter(conn, h, defaultRule, UDPOverride, destination, outGateway)
++			writer = NewPacketWriter(ctx, conn, h, defaultRule, UDPOverride, destination, outGateway)
+ 			if h.config.Noises != nil {
+ 				errors.LogDebug(ctx, "NOISE", h.config.Noises)
+ 				writer = &NoisePacketWriter{
+@@ -559,7 +559,7 @@ func (r *PacketReader) ReadMultiBuffer() (buf.MultiBuffer, error) {
+ }
+ 
+ // DialDest means the dial target used in the dialer when creating conn
+-func NewPacketWriter(conn net.Conn, h *Handler, defaultRule *FinalRule, UDPOverride net.Destination, DialDest net.Destination, outGateway net.Address) buf.Writer {
++func NewPacketWriter(ctx context.Context, conn net.Conn, h *Handler, defaultRule *FinalRule, UDPOverride net.Destination, DialDest net.Destination, outGateway net.Address) buf.Writer {
+ 	iConn := conn
+ 	statConn, ok := iConn.(*stat.CounterConnection)
+ 	if ok {
+@@ -578,6 +578,7 @@ func NewPacketWriter(conn net.Conn, h *Handler, defaultRule *FinalRule, UDPOverr
+ 		}
+ 		return &PacketWriter{
+ 			PacketConnWrapper: c,
++			ctx:               ctx,
+ 			Counter:           counter,
+ 			Handler:           h,
+ 			DefaultRule:       defaultRule,
+@@ -590,6 +591,7 @@ func NewPacketWriter(conn net.Conn, h *Handler, defaultRule *FinalRule, UDPOverr
+ }
+ 
+ type PacketWriter struct {
++	ctx context.Context
+ 	*net.PacketConnWrapper
+ 	stats.Counter
+ 	*Handler
+@@ -626,7 +628,7 @@ func (w *PacketWriter) WriteMultiBuffer(mb buf.MultiBuffer) error {
+ 				} else {
+ 					shouldUseSystemResolver := true
+ 					if strategy := w.Handler.resolveStrategy; strategy.HasStrategy() {
+-						ips, err := internet.LookupForIP(b.UDP.Address.Domain(), strategy, w.OutGateway)
++						ips, err := internet.LookupForIP(w.ctx, b.UDP.Address.Domain(), strategy, w.OutGateway)
+ 						if err != nil {
+ 							// drop packet if resolve failed when forceIP
+ 							if strategy.ForceIP() {
+diff --git a/transport/internet/dialer.go b/transport/internet/dialer.go
+index 6d7b905..b55dd77 100644
+--- a/transport/internet/dialer.go
++++ b/transport/internet/dialer.go
+@@ -79,12 +79,27 @@ func DestIpAddress() net.IP {
+ 	return effectiveSystemDialer.DestIpAddress()
+ }
+ 
+-var (
+-	dnsClient dns.Client
+-	obm       outbound.Manager
+-)
++// DialerScope keeps DNS and proxy-chain lookups owned by a core instance.
++type DialerScope struct {
++	DNS       dns.Client
++	Outbounds outbound.Manager
++}
++
++type dialerScopeKey struct{}
++
++func WithDialerScope(ctx context.Context, scope *DialerScope) context.Context {
++	return context.WithValue(ctx, dialerScopeKey{}, scope)
++}
+ 
+-func LookupForIP(domain string, strategy DomainStrategy, localAddr net.Address) ([]net.IP, error) {
++func ScopeFromContext(ctx context.Context) *DialerScope {
++	if scope, ok := ctx.Value(dialerScopeKey{}).(*DialerScope); ok {
++		return scope
++	}
++	return &DialerScope{}
++}
++
++func LookupForIP(ctx context.Context, domain string, strategy DomainStrategy, localAddr net.Address) ([]net.IP, error) {
++	dnsClient := ScopeFromContext(ctx).DNS
+ 	if dnsClient == nil {
+ 		return nil, errors.New("DNS client not initialized")
+ 	}
+@@ -253,7 +268,7 @@ func DialSystem(ctx context.Context, dest net.Destination, sockopt *SocketConfig
+ 		if outboundName == "freedom" && dest.Network == net.Network_UDP && origTargetAddr != nil && src == nil {
+ 			finalStrategy = finalStrategy.GetDynamicStrategy(origTargetAddr.Family())
+ 		}
+-		ips, err := LookupForIP(dest.Address.Domain(), finalStrategy, src)
++		ips, err := LookupForIP(ctx, dest.Address.Domain(), finalStrategy, src)
+ 		if err != nil {
+ 			errors.LogErrorInner(ctx, err, "failed to resolve ip")
+ 			if sockopt.DomainStrategy.ForceIP() {
+@@ -268,6 +283,7 @@ func DialSystem(ctx context.Context, dest net.Destination, sockopt *SocketConfig
+ 	}
+ 
+ 	if len(sockopt.DialerProxy) > 0 {
++		obm := ScopeFromContext(ctx).Outbounds
+ 		if obm == nil {
+ 			return nil, errors.New("there is no outbound manager for dialerProxy")
+ 		}
+@@ -280,8 +296,3 @@ func DialSystem(ctx context.Context, dest net.Destination, sockopt *SocketConfig
+ 
+ 	return effectiveSystemDialer.Dial(ctx, src, dest, sockopt)
+ }
+-
+-func InitSystemDialer(dc dns.Client, om outbound.Manager) {
+-	dnsClient = dc
+-	obm = om
+-}

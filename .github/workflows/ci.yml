@@ -48,3 +48,61 @@ jobs:
             -e HYDRAT_I2PD_BINARY=/usr/local/bin/i2pd \
             --entrypoint /i2p-test hydrat-i2p:ci \
             -test.run '^TestRealI2PProcessIsClientOnlyAndStops$' -test.v -test.timeout 40s
+
+  android:
+    name: Android Build & Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: app/native/go.mod
+          cache-dependency-path: |
+            go.sum
+            app/native/go.sum
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+      - name: Install Android SDK and NDK
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;28.2.13676358'
+      - name: Prepare and build Android
+        env:
+          HYDRAT_BUILD_JOBS: '4'
+        run: |
+          export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/28.2.13676358"
+          mkdir -p "$RUNNER_TEMP/hydrat-geo" "$RUNNER_TEMP/hydrat-transports"
+          for asset in geoip geosite; do
+            url=$(sed -n "s/^[[:space:]]*${asset}_url: \"\([^\"]*\)\"/\1/p" config/config.yml)
+            curl -fsSL --retry 3 --max-time 120 "$url" -o "$RUNNER_TEMP/hydrat-geo/$asset.dat"
+          done
+          ./scripts/build-app-android-transports.sh "$RUNNER_TEMP/hydrat-transports"
+          ./scripts/build-app-android.sh "$RUNNER_TEMP/hydrat-geo" "$RUNNER_TEMP/hydrat-transports"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify app/android/build/outputs/apk/debug/HydratApp-debug.apk
+      - name: Verify Android code and embedded Xray
+        run: |
+          gradle -p app/android lintDebug testDebugUnitTest assembleQaAndroidTest
+          go -C app/native test ./xraycore -count=1
+
+  desktop:
+    name: Linux & Windows Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: app/native/go.mod
+          cache-dependency-path: |
+            go.sum
+            app/native/go.sum
+      - run: ./scripts/prepare-app-xray.sh
+      - run: go -C app/native test ./cmd/linux ./xraycore -count=1
+      - name: Compile Windows and check GTK client
+        run: |
+          GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go -C app/native test -c -o "$RUNNER_TEMP/hydrat-windows.test.exe" ./cmd/windows
+          python3 -m py_compile app/linux/hydrat.py

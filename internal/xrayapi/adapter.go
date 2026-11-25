@@ -32,6 +32,9 @@ type Adapter struct {
 	runner         Runner
 	flowControl    *xrayflow.Client
 	i2pRange       bool
+	deviceTunnel   bool
+	deviceGeo      *DeviceGeoRules
+	deviceUnderlay *DeviceUnderlay
 }
 
 func NewAdapter(binary, server, dnsResolver string, runner Runner) *Adapter {
@@ -129,9 +132,13 @@ func (adapter *Adapter) effectiveDirectMatchers() []string {
 	}
 
 	if adapter.useGeoRules && adapter.geoAssetsPresent() {
-		addMatcher("geosite:category-ru")
-		addMatcher("geosite:ru-available-only-inside")
-		addMatcher("geoip:ru")
+		geo := adapter.effectiveDeviceGeo()
+		for _, matcher := range geo.DirectSite {
+			addMatcher(matcher)
+		}
+		for _, matcher := range geo.DirectIP {
+			addMatcher(matcher)
+		}
 	}
 
 	return matchers
@@ -344,6 +351,9 @@ func (adapter *Adapter) ReplaceRoutesStaged(
 }
 
 func (adapter *Adapter) routeDocument(routes []dataplane.ClientRoute) (string, error) {
+	if adapter.deviceTunnel && len(routes) > 1 {
+		return "", errors.New("device tunnel accepts only one routing profile")
+	}
 	clientRules, err := adapter.buildClientRuleLayers(routes)
 	if err != nil {
 		return "", err
@@ -352,6 +362,13 @@ func (adapter *Adapter) routeDocument(routes []dataplane.ClientRoute) (string, e
 	rules = append(rules, map[string]any{
 		"type": "field", "ruleTag": "hydrat-api", "inboundTag": []string{"api"}, "outboundTag": "api",
 	})
+	if adapter.deviceTunnel {
+		rules = append(rules, deviceInfrastructureRules()...)
+		if adapter.deviceUnderlay != nil {
+			rules = append(rules, map[string]any{"type": "field", "ruleTag": "hydrat-underlay",
+				"inboundTag": []string{deviceUnderlayTag}, "outboundTag": "direct"})
+		}
+	}
 	onionPool := "198.18.0.0/15"
 	if adapter.i2pRange {
 		onionPool = "198.18.0.0/16"
@@ -368,7 +385,9 @@ func (adapter *Adapter) routeDocument(routes []dataplane.ClientRoute) (string, e
 
 	rules = append(rules, clientRules.beforeDirect...)
 
-	if adapter.useGeoRules && adapter.geoAssetsPresent() {
+	if adapter.useGeoRules && adapter.geoAssetsPresent() && adapter.deviceTunnel {
+		rules = append(rules, deviceBlockedGeoRules(routes, adapter.effectiveDeviceGeo())...)
+	} else if adapter.useGeoRules && adapter.geoAssetsPresent() {
 		for _, route := range sortedRoutesByClientAndSource(routes) {
 			tcpOutbound := route.TCPOutbound
 			if route.BlockTCP || tcpOutbound == "" {
@@ -394,7 +413,7 @@ func (adapter *Adapter) routeDocument(routes []dataplane.ClientRoute) (string, e
 	directMatchers := adapter.effectiveDirectMatchers()
 	var domainMatchers, ipMatchers []string
 	for _, m := range directMatchers {
-		if strings.HasPrefix(m, "geoip:") {
+		if strings.HasPrefix(m, "geoip:") || strings.HasPrefix(m, "ext-ip:") {
 			ipMatchers = append(ipMatchers, m)
 		} else {
 			domainMatchers = append(domainMatchers, m)
@@ -416,6 +435,14 @@ func (adapter *Adapter) routeDocument(routes []dataplane.ClientRoute) (string, e
 	rules = append(rules, map[string]any{
 		"type": "field", "ruleTag": "hydrat-fail-closed", "network": "tcp,udp", "outboundTag": "block",
 	})
+	if adapter.deviceTunnel {
+		for _, rule := range rules {
+			if _, scoped := rule["source"]; scoped {
+				delete(rule, "source")
+				rule["inboundTag"] = []string{DeviceInboundTag}
+			}
+		}
+	}
 	body, err := json.Marshal(map[string]any{
 		"routing": map[string]any{"domainStrategy": "AsIs", "rules": rules},
 	})
@@ -444,11 +471,13 @@ func (adapter *Adapter) buildClientRuleLayers(routes []dataplane.ClientRoute) (c
 		if route.BlockTCP || dnsOutbound == "" {
 			dnsOutbound = "block"
 		}
-		layers.beforeDirect = append(layers.beforeDirect, map[string]any{
-			"type": "field", "ruleTag": "hydrat-client-" + route.ClientID + "-dns",
-			"source": []string{route.SourceCIDR}, "network": "tcp,udp",
-			"port": "53", "outboundTag": dnsOutbound,
-		})
+		if !adapter.deviceTunnel {
+			layers.beforeDirect = append(layers.beforeDirect, map[string]any{
+				"type": "field", "ruleTag": "hydrat-client-" + route.ClientID + "-dns",
+				"source": []string{route.SourceCIDR}, "network": "tcp,udp",
+				"port": "53", "outboundTag": dnsOutbound,
+			})
+		}
 		if route.BlockUDP {
 			layers.beforeDirect = append(layers.beforeDirect, map[string]any{
 				"type": "field", "ruleTag": "hydrat-client-" + route.ClientID + "-udp",

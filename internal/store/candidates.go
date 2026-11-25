@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -85,26 +86,20 @@ func (store *Store) ReplaceCandidates(
 			return fmt.Errorf("insert candidate: %w", err)
 		}
 	}
-	drainArguments := make([]any, 0, len(candidateIDs)+3)
-	drainArguments = append(
-		drainArguments,
-		now+int64(grace/time.Second),
-		now,
-		sourceID,
-	)
-	for _, candidateID := range candidateIDs {
-		drainArguments = append(drainArguments, candidateID)
+	// Large subscription feeds can exceed SQLite's bind parameter limit.
+	encodedIDs, err := json.Marshal(candidateIDs)
+	if err != nil {
+		return err
 	}
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(candidateIDs)), ",")
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE candidates
 		SET lifecycle='draining',
 		    drain_after=COALESCE(drain_after, ?),
 		    retired_at=NULL,
 		    updated_at=?
-		WHERE source_id=? AND id NOT IN (`+placeholders+`)
+		WHERE source_id=? AND id NOT IN (SELECT value FROM json_each(?))
 		  AND lifecycle='active'
-	`, drainArguments...); err != nil {
+	`, now+int64(grace/time.Second), now, sourceID, string(encodedIDs)); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -352,4 +347,3 @@ func requireAffected(result sql.Result, resource string) error {
 	}
 	return nil
 }
-

@@ -22,3 +22,18 @@ func VLESSHandlerID(candidateID, payload string) string {
 func CandidateIDFromVLESSHandler(handlerID string) string {
 	return strings.TrimSuffix(strings.TrimSuffix(handlerID, visionUDP443HandlerSuffix), visionStandardHandlerSuffix)
 }
+
+// CandidateIDFromHandler resolves both versioned VLESS handlers and
+// client-bound Tor handlers.
+func CandidateIDFromHandler(handlerID, clientID string) string {
+	candidateID, suffix, tor := strings.Cut(handlerID, "-profile-")
+	if !tor {
+		return CandidateIDFromVLESSHandler(handlerID)
+	}
+	_, boundClientID, valid := strings.Cut(suffix, "-client-")
+	if candidateID == "" || !valid || boundClientID == "" ||
+		(clientID != "" && boundClientID != clientID) {
+		return ""
+	}
+	return candidateID
+}
