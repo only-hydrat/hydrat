@@ -598,3 +598,96 @@ func refreshStore(t *testing.T) *store.Store {
 	t.Cleanup(func() { _ = database.Close() })
 	return database
 }
+
+func TestFullPublicInventoryExpandsSavedCatalogAndPreservesOtherImports(t *testing.T) {
+	ctx := context.Background()
+	database := refreshStore(t)
+	feeds := sources.SuggestedPublicSubscriptions()
+	publicBodies := make(map[string]string)
+	for index, feed := range feeds {
+		var body strings.Builder
+		for node := range 90 {
+			fmt.Fprintf(&body, "vless://fixture@source-%d-node-%d.example.org:443?security=tls\n", index, node)
+		}
+		body.WriteString("vless://fixture@bad.example.org:443?type=ws&security=reality&pbk=fixture\n")
+		publicBodies[feed.Payload] = body.String()
+	}
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if body, ok := publicBodies[request.URL.String()]; ok {
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body))}, nil
+		}
+		return nil, fmt.Errorf("unexpected fetch")
+	})}
+	if _, err := database.ImportSources(ctx, feeds); err != nil {
+		t.Fatal(err)
+	}
+	refreshAll := func(refresher *Refresher) {
+		t.Helper()
+		for _, feed := range feeds {
+			if err := refresher.Source(ctx, "src_"+feed.Fingerprint); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	refreshAll(New(database, client, 1<<20, 240))
+	before, err := database.ListCandidates(ctx, "")
+	if err != nil || len(before) != 24 {
+		t.Fatalf("legacy inventory = %d, %v", len(before), err)
+	}
+	mobile := New(database, client, 1<<20, 240).WithFullPublicInventory()
+	refreshAll(mobile)
+	rows, err := database.ListCandidates(ctx, "")
+	if err != nil || len(rows) != 90*len(feeds) {
+		t.Fatalf("full public inventory = %d, %v", len(rows), err)
+	}
+	ids := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		ids[row.ID] = true
+	}
+	for _, row := range before {
+		if !ids[row.ID] {
+			t.Fatal("expanding the catalog replaced an existing candidate ID")
+		}
+	}
+	manual := sources.PreviewInput("vless://manual@manual.example.org:443?security=tls")
+	if _, err := database.ImportSources(ctx, manual.Items); err != nil {
+		t.Fatal(err)
+	}
+	if err := mobile.Source(ctx, "src_"+manual.Items[0].Fingerprint); err != nil {
+		t.Fatalf("public inventory blocked a manual import: %v", err)
+	}
+}
+
+func TestCustomHWIDStaysOnOriginalHTTPSOrigin(t *testing.T) {
+	for _, tc := range []struct {
+		name, start, dest  string
+		wantStart, wantEnd bool
+	}{
+		{"same origin", "https://one.example/source", "https://one.example:443/final", true, true},
+		{"cross origin", "https://one.example/source", "https://two.example/final", true, false},
+		{"cleartext", "http://one.example/source", "https://one.example/final", false, false},
+		{"downgrade", "https://one.example/source", "http://one.example/final", true, false},
+		{"different port", "https://one.example/source", "https://one.example:8443/final", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				first := req.URL.String() == tc.start
+				want := tc.wantEnd
+				if first {
+					want = tc.wantStart
+				}
+				if got := req.Header.Get("X-HWID") != ""; got != want {
+					t.Errorf("HWID present=%t, want %t for %s", got, want, req.URL)
+				}
+				if first {
+					return &http.Response{StatusCode: http.StatusFound, Header: http.Header{"Location": {tc.dest}}, Body: http.NoBody}, nil
+				}
+				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("vless://one@example.net:443"))}, nil
+			})}
+			r := New(nil, client, 4096).WithHWID("custom-hwid-12345")
+			if _, err := r.resolve(context.Background(), sources.KindVLESSSubscription, tc.start, ""); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}

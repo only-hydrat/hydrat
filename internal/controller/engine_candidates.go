@@ -153,7 +153,9 @@ func (engine *Engine) routeCandidateSnapshot(ctx context.Context, now time.Time,
 			probe.Status == store.CandidateQualified &&
 			probe.InWorkingPool && !probe.Stale && !probe.Draining &&
 			candidate.Lifecycle == store.CandidateLifecycleActive
-		if engine.disallowRUEgress && sources.IsRussianEgress(candidate.Label, result.payloadByCandidate[candidate.ID]) {
+		belowMobileScore := engine.mobileReserves > 0 && protocol == scheduler.ProtocolVLESS &&
+			health.Score < engine.mobileMinVLESSScore
+		if belowMobileScore || engine.disallowRUEgress && sources.IsRussianEgress(candidate.Label, result.payloadByCandidate[candidate.ID]) {
 			tcpQualified = false
 			udpQualified = false
 			reserveEligible = false
@@ -318,6 +320,9 @@ func (engine *Engine) ordinaryActiveTargets(
 	)
 	if err != nil {
 		return nil, err
+	}
+	if engine.mobileReserves > 0 {
+		return engine.mobileActiveTargets(now, snapshot, activeIDs, appliedMappings), nil
 	}
 	if engine.activeCriticalRouteLimit > 0 &&
 		len(references) > engine.activeCriticalRouteLimit {

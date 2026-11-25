@@ -3,6 +3,7 @@ package refresh
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"regexp"
 	"runtime"
@@ -11,13 +12,30 @@ import (
 
 var validHWIDRegexp = regexp.MustCompile(`^[a-zA-Z0-9=-]{10,64}$`)
 
+var ErrInvalidHWID = errors.New("invalid subscription HWID")
+
 // WithHWID configures an explicit hardware identifier (HWID) for subscription requests.
 func (refresher *Refresher) WithHWID(hwid string) *Refresher {
-	trimmed := strings.TrimSpace(hwid)
-	if validHWIDRegexp.MatchString(trimmed) {
-		refresher.hwid = trimmed
-	}
+	_ = refresher.SetHWID(hwid)
 	return refresher
+}
+
+// SetHWID replaces a custom identifier. An empty value restores auto-detection.
+func (refresher *Refresher) SetHWID(hwid string) error {
+	trimmed, err := NormalizeHWID(hwid)
+	if err != nil {
+		return err
+	}
+	refresher.hwid = trimmed
+	return nil
+}
+
+func NormalizeHWID(hwid string) (string, error) {
+	trimmed := strings.TrimSpace(hwid)
+	if trimmed != "" && !validHWIDRegexp.MatchString(trimmed) {
+		return "", ErrInvalidHWID
+	}
+	return trimmed, nil
 }
 
 // HWID returns the configured or auto-detected hardware identifier.

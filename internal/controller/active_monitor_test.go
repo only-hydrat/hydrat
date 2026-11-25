@@ -1352,16 +1352,19 @@ func TestRuntimeGivesBootstrapPlanningAndCriticalProbesSeparateFreshBudgets(t *t
 	}
 	var providerCalls atomic.Int32
 	var probeCalls atomic.Int32
-	var minimumProbeBudget atomic.Int64
-	minimumProbeBudget.Store(int64(time.Hour))
+	const planningBudget = 800 * time.Millisecond
+	const probeBudget = 1500 * time.Millisecond
+	var planningDeadline time.Time
+	probeDeadlines := make(chan time.Time, len(candidates))
 	monitor := &ActiveMonitor{
 		Store: database, Slots: 2, CriticalLimit: 16,
-		PlanningDeadline: 450 * time.Millisecond,
-		ProbeDeadline:    1500 * time.Millisecond,
+		PlanningDeadline: planningBudget,
+		ProbeDeadline:    probeBudget,
 		Targets: activeTargetProviderFunc(func(
 			ctx context.Context, _ time.Time,
 		) ([]ActiveTarget, error) {
 			providerCalls.Add(1)
+			planningDeadline, _ = ctx.Deadline()
 			select {
 			case <-time.After(350 * time.Millisecond):
 			case <-ctx.Done():
@@ -1376,15 +1379,8 @@ func TestRuntimeGivesBootstrapPlanningAndCriticalProbesSeparateFreshBudgets(t *t
 			ctx context.Context, _ agentapi.ProbeRequest,
 		) (agentapi.ProbeResponse, error) {
 			probeCalls.Add(1)
-			if deadline, ok := ctx.Deadline(); ok {
-				remaining := int64(time.Until(deadline))
-				for {
-					current := minimumProbeBudget.Load()
-					if remaining >= current || minimumProbeBudget.CompareAndSwap(current, remaining) {
-						break
-					}
-				}
-			}
+			deadline, _ := ctx.Deadline()
+			probeDeadlines <- deadline
 			select {
 			case <-time.After(525 * time.Millisecond):
 				return agentapi.ProbeResponse{Observation: health.Observation{
@@ -1402,8 +1398,8 @@ func TestRuntimeGivesBootstrapPlanningAndCriticalProbesSeparateFreshBudgets(t *t
 			cancel()
 			return err
 		},
-		ActiveDeadline:         1500 * time.Millisecond,
-		ActivePlanningDeadline: 450 * time.Millisecond,
+		ActiveDeadline:         probeBudget,
+		ActivePlanningDeadline: planningBudget,
 		SourceRefreshInterval:  time.Hour,
 		QualificationInterval:  time.Hour,
 		PlacementInterval:      time.Hour,
@@ -1415,8 +1411,16 @@ func TestRuntimeGivesBootstrapPlanningAndCriticalProbesSeparateFreshBudgets(t *t
 	if providerCalls.Load() != 1 || probeCalls.Load() != 2 {
 		t.Fatalf("provider calls=%d probe calls=%d", providerCalls.Load(), probeCalls.Load())
 	}
-	if budget := time.Duration(minimumProbeBudget.Load()); budget < 1250*time.Millisecond {
-		t.Fatalf("critical probes inherited spent planning budget: %s", budget)
+	// Compare the absolute deadlines. SQLite may delay admission to the
+	// agent after the fresh probe budget has already started.
+	minimumDeadline := planningDeadline.Add(probeBudget - planningBudget + 200*time.Millisecond)
+	if planningDeadline.IsZero() {
+		t.Fatal("target planning has no deadline")
+	}
+	for range candidates {
+		if deadline := <-probeDeadlines; deadline.Before(minimumDeadline) {
+			t.Fatalf("critical probe deadline=%s, want at least %s", deadline, minimumDeadline)
+		}
 	}
 	rows := mustCandidateHealth(t, database)
 	for _, row := range rows {

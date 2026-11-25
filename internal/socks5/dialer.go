@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -23,6 +24,23 @@ type Dialer struct {
 	Username         string
 	Password         string
 	Dial             DialContextFunc
+}
+
+type localPasswordKey struct{}
+
+// WithLocalPassword protects app-owned probe ports on a shared loopback.
+func WithLocalPassword(ctx context.Context, password string) context.Context {
+	if password == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, localPasswordKey{}, password)
+}
+
+func Endpoint(address string) (network, target string) {
+	if path, ok := strings.CutPrefix(address, "unix:"); ok {
+		return "unix", path
+	}
+	return "tcp", address
 }
 
 func (dialer Dialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
@@ -84,7 +102,8 @@ func (dialer Dialer) open(ctx context.Context) (net.Conn, error) {
 		netDialer := &net.Dialer{Timeout: 3 * time.Second, KeepAlive: 30 * time.Second}
 		dial = netDialer.DialContext
 	}
-	connection, err := dial(ctx, "tcp", dialer.ProxyAddress)
+	network, target := Endpoint(dialer.ProxyAddress)
+	connection, err := dial(ctx, network, target)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +125,11 @@ func (dialer Dialer) open(ctx context.Context) (net.Conn, error) {
 	}
 	_ = connection.SetDeadline(deadline)
 	methods := []byte{0}
-	if dialer.Username != "" || dialer.Password != "" {
+	password, local := ctx.Value(localPasswordKey{}).(string)
+	if local {
+		dialer.Username, dialer.Password = "hydrat-probe", password
+		methods = []byte{2}
+	} else if dialer.Username != "" || dialer.Password != "" {
 		methods = []byte{0, 2}
 	}
 	hello := append([]byte{5, byte(len(methods))}, methods...)
@@ -117,7 +140,7 @@ func (dialer Dialer) open(ctx context.Context) (net.Conn, error) {
 	if _, err := io.ReadFull(connection, response[:]); err != nil {
 		return nil, err
 	}
-	if response[0] != 5 || response[1] == 0xff {
+	if response[0] != 5 || response[1] == 0xff || (local && response[1] != 2) {
 		return nil, errors.New("SOCKS5 proxy rejected authentication methods")
 	}
 	if response[1] == 2 {
@@ -160,7 +183,23 @@ func (dialer Dialer) ListenPacket(ctx context.Context) (net.PacketConn, error) {
 			_ = control.Close()
 		}
 	}()
-	request, err := appendAddress([]byte{5, 3, 0}, "0.0.0.0", 0)
+	var packet *net.UDPConn
+	var relay *net.UDPAddr
+	defer func() {
+		if failed && packet != nil {
+			_ = packet.Close()
+		}
+	}()
+	host, port := "0.0.0.0", 0
+	if _, local := ctx.Value(localPasswordKey{}).(string); local {
+		host = "127.0.0.1"
+		packet, err = net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+		if err != nil {
+			return nil, err
+		}
+		port = packet.LocalAddr().(*net.UDPAddr).Port
+	}
+	request, err := appendAddress([]byte{5, 3, 0}, host, port)
 	if err != nil {
 		return nil, err
 	}
@@ -185,33 +224,50 @@ func (dialer Dialer) ListenPacket(ctx context.Context) (net.PacketConn, error) {
 	if relayHost == "0.0.0.0" || relayHost == "::" {
 		relayHost = proxyHost
 	}
-	relay, err := net.ResolveUDPAddr("udp", net.JoinHostPort(relayHost, strconv.Itoa(relayPort)))
+	relay, err = net.ResolveUDPAddr("udp", net.JoinHostPort(relayHost, strconv.Itoa(relayPort)))
 	if err != nil {
 		return nil, err
 	}
-	packet, err := net.DialUDP("udp", nil, relay)
-	if err != nil {
-		return nil, err
+	if packet == nil {
+		packet, err = net.DialUDP("udp", nil, relay)
+		if err != nil {
+			return nil, err
+		}
+		relay = nil
+	} else if !relay.IP.IsLoopback() || relay.Port == 0 {
+		return nil, errors.New("invalid local SOCKS UDP relay")
 	}
 	if !stopClose() {
-		_ = packet.Close()
 		return nil, ctx.Err()
 	}
 	_ = control.SetDeadline(time.Time{})
 	failed = false
-	return &udpPacketConn{packet: packet, control: control}, nil
+	return &udpPacketConn{packet: packet, control: control, relay: relay}, nil
 }
 
 type udpPacketConn struct {
 	packet  *net.UDPConn
 	control net.Conn
+	relay   *net.UDPAddr
 	once    sync.Once
 	err     error
 }
 
 func (connection *udpPacketConn) ReadFrom(payload []byte) (int, net.Addr, error) {
 	framed := make([]byte, len(payload)+262)
-	count, err := connection.packet.Read(framed)
+	var count int
+	var err error
+	if connection.relay == nil {
+		count, err = connection.packet.Read(framed)
+	} else {
+		for {
+			var peer *net.UDPAddr
+			count, peer, err = connection.packet.ReadFromUDP(framed)
+			if err != nil || (peer.Port == connection.relay.Port && peer.IP.Equal(connection.relay.IP)) {
+				break
+			}
+		}
+	}
 	if err != nil {
 		return 0, nil, err
 	}
@@ -246,7 +302,12 @@ func (connection *udpPacketConn) WriteTo(payload []byte, target net.Addr) (int, 
 		return 0, err
 	}
 	framed = append(framed, payload...)
-	if _, err := connection.packet.Write(framed); err != nil {
+	if connection.relay == nil {
+		_, err = connection.packet.Write(framed)
+	} else {
+		_, err = connection.packet.WriteToUDP(framed, connection.relay)
+	}
+	if err != nil {
 		return 0, err
 	}
 	return len(payload), nil

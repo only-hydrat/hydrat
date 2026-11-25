@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+home=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+export LD_LIBRARY_PATH="$home/tor"
+exec "$home/tor/tor" -f /dev/null --GeoIPFile "$home/data/geoip" --GeoIPv6File "$home/data/geoip6" "$@"

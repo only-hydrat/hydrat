@@ -67,6 +67,9 @@ func VLESSOutbound(link, tag string) (map[string]any, error) {
 	serverName := first(query, "sni", parsed.Hostname())
 	switch security {
 	case "reality":
+		if transport == "ws" {
+			return nil, errors.New("VLESS REALITY does not support WebSocket")
+		}
 		publicKey := first(query, "pbk", "")
 		if publicKey == "" {
 			return nil, errors.New("Reality public key is required")
@@ -111,7 +114,9 @@ func xhttpExtra(value string) (mode, padding string, raw json.RawMessage) {
 
 func TorOutbound(socksAddress, tag, clientID string, secret []byte) map[string]any {
 	host, portText, err := net.SplitHostPort(socksAddress)
-	if err != nil {
+	if strings.HasPrefix(socksAddress, "unix:/") {
+		host, portText = socksAddress, "1"
+	} else if err != nil {
 		host, portText = "127.0.0.1", "9050"
 	}
 	port, _ := strconv.Atoi(portText)

@@ -6,12 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -23,6 +21,10 @@ type Config struct {
 	SocksPortBase    int
 	WarmProfiles     int
 	ExplorerProfiles int
+	PrivateSocks     bool
+	UpstreamSOCKS    string
+	UpstreamUser     string
+	UpstreamPassword string
 }
 
 type Candidate struct {
@@ -375,10 +377,17 @@ func (manager *Manager) replaceProfile(
 	}
 	bridge := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(candidate.Bridge), "Bridge "))
 	socksAddr := fmt.Sprintf("127.0.0.1:%d", manager.config.SocksPortBase+slot)
+	if manager.config.PrivateSocks {
+		socksAddr = "unix:" + filepath.Join(dataDir, "s")
+	}
 	args := []string{
 		"--ClientOnly", "1", "--UseBridges", "1", "--DataDirectory", dataDir,
 		"--SocksPort", socksAddr + " IsolateSOCKSAuth", "--Bridge", bridge,
 		"--Log", "notice stdout", "--AvoidDiskWrites", "1",
+	}
+	if manager.config.UpstreamSOCKS != "" {
+		args = append(args, "--Socks5Proxy", manager.config.UpstreamSOCKS,
+			"--Socks5ProxyUsername", manager.config.UpstreamUser, "--Socks5ProxyPassword", manager.config.UpstreamPassword)
 	}
 	if manager.config.PrepareOnion != nil {
 		args = append(args, "--ControlSocket", filepath.Join(dataDir, "control.sock"), "--CookieAuthentication", "1", "--CookieAuthFile", filepath.Join(dataDir, "control_auth_cookie"), "--VirtualAddrNetworkIPv4", "198.18.0.0/15")
@@ -388,7 +397,7 @@ func (manager *Manager) replaceProfile(
 		if manager.config.LyrebirdBinary == "" {
 			return fmt.Errorf("bridge %s requires a pluggable transport", candidate.ID)
 		}
-		args = append(args, "--ClientTransportPlugin", transport+" exec "+manager.config.LyrebirdBinary)
+		args = append(args, "--ClientTransportPlugin", transport+" exec "+transportPath(manager.config.Binary, manager.config.LyrebirdBinary))
 	}
 	var randomInstance [16]byte
 	if _, err := rand.Read(randomInstance[:]); err != nil {
@@ -496,100 +505,4 @@ func (manager *Manager) profileList() []Profile {
 type ExecRunner struct {
 	GracePeriod time.Duration
 	KillWait    time.Duration
-}
-
-func (runner ExecRunner) Start(ctx context.Context, name string, args ...string) (Process, error) {
-	command := exec.CommandContext(ctx, name, args...)
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	if err := command.Start(); err != nil {
-		return nil, err
-	}
-	gracePeriod := runner.GracePeriod
-	if gracePeriod <= 0 {
-		gracePeriod = 2 * time.Second
-	}
-	killWait := runner.KillWait
-	if killWait <= 0 {
-		killWait = 2 * time.Second
-	}
-	process := &execProcess{
-		command: command, done: make(chan struct{}),
-		gracePeriod: gracePeriod, killWait: killWait, processGroup: true,
-	}
-	go func() {
-		_ = command.Wait()
-		close(process.done)
-	}()
-	return process, nil
-}
-
-type execProcess struct {
-	command      *exec.Cmd
-	done         chan struct{}
-	gracePeriod  time.Duration
-	killWait     time.Duration
-	processGroup bool
-	stopMu       sync.Mutex
-}
-
-func (process *execProcess) Exited() bool {
-	select {
-	case <-process.done:
-		return true
-	default:
-		return false
-	}
-}
-
-func (process *execProcess) Stop() error {
-	process.stopMu.Lock()
-	defer process.stopMu.Unlock()
-	if process.command.Process == nil {
-		return nil
-	}
-	if process.Exited() {
-		return nil
-	}
-	if err := process.signal(syscall.SIGTERM); err != nil {
-		if process.Exited() {
-			return nil
-		}
-		if !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {
-			return err
-		}
-	}
-	gracePeriod := process.gracePeriod
-	if gracePeriod <= 0 {
-		gracePeriod = 2 * time.Second
-	}
-	select {
-	case <-process.done:
-		return nil
-	case <-time.After(gracePeriod):
-	}
-	if err := process.signal(syscall.SIGKILL); err != nil {
-		if process.Exited() {
-			return nil
-		}
-		if !errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {
-			return err
-		}
-	}
-	killWait := process.killWait
-	if killWait <= 0 {
-		killWait = 2 * time.Second
-	}
-	select {
-	case <-process.done:
-		return nil
-	case <-time.After(killWait):
-		return errors.New("timed out waiting for forced Tor process exit")
-	}
-}
-
-func (process *execProcess) signal(signal syscall.Signal) error {
-	if process.processGroup {
-		return syscall.Kill(-process.command.Process.Pid, signal)
-	}
-	return process.command.Process.Signal(signal)
 }

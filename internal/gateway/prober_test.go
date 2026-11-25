@@ -901,7 +901,7 @@ func TestFullProbeResponseReportsQualificationFailure(t *testing.T) {
 	metrics := healthyProbeMetrics()
 	metrics.OpenAI401 = false
 
-	response := fullProbeResponse("candidate", metrics, health.ProtocolVLESS)
+	response := (&Prober{}).fullProbeResponse("candidate", metrics, health.ProtocolVLESS)
 
 	if response.Success || response.FailureClass != agentapi.FailureCandidate || response.ErrorCode != "openai_api_failed" {
 		t.Fatalf("response=%+v", response)
@@ -918,7 +918,7 @@ func TestQoEProbeResponsePreservesSafeGateDetails(t *testing.T) {
 }
 
 func TestFullProbeResponseSucceedsWithoutFailureMetadata(t *testing.T) {
-	response := fullProbeResponse("candidate", healthyProbeMetrics(), health.ProtocolVLESS)
+	response := (&Prober{}).fullProbeResponse("candidate", healthyProbeMetrics(), health.ProtocolVLESS)
 
 	if !response.Success || response.FailureClass != agentapi.FailureNone || response.ErrorCode != "" {
 		t.Fatalf("response=%+v", response)
@@ -1318,3 +1318,21 @@ func vlessProbeRequest() agentapi.ProbeRequest {
 }
 
 var _ qoeMeasurer = (*probe.QoEMeasurer)(nil)
+
+func TestFullProbeUsesConfiguredVLESSMinimum(t *testing.T) {
+	metrics := healthyProbeMetrics()
+	metrics.Latency = 800 * time.Millisecond
+	metrics.ThroughputMbps = 0
+	defaultProber := &Prober{}
+	mobile := &Prober{minVLESSScore: 75}
+	if got := defaultProber.fullProbeResponse("candidate", metrics, health.ProtocolVLESS); got.Success || got.ErrorCode != "score_too_low" {
+		t.Fatalf("default threshold admitted a score of 75: %+v", got)
+	}
+	if got := mobile.fullProbeResponse("candidate", metrics, health.ProtocolVLESS); !got.Success || !got.Evaluation.UDPQualified {
+		t.Fatalf("mobile threshold with all gates passed: %+v", got)
+	}
+	metrics.OpenAI401 = false
+	if got := mobile.fullProbeResponse("candidate", metrics, health.ProtocolVLESS); got.Success || got.ErrorCode != "openai_api_failed" {
+		t.Fatalf("mobile threshold bypassed an application gate: %+v", got)
+	}
+}

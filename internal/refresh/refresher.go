@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -24,13 +25,15 @@ import (
 )
 
 type Refresher struct {
-	store           *store.Store
-	client          *http.Client
-	maxBody         int64
-	inventoryLimit  int
-	retirementGrace time.Duration
-	hwid            string
-	userAgent       string
+	store               *store.Store
+	client              *http.Client
+	maxBody             int64
+	inventoryLimit      int
+	fullPublicInventory bool
+	retirementGrace     time.Duration
+	hwid                string
+	userAgent           string
+	inventoryMu         sync.Mutex
 }
 
 const defaultUserAgent = "linuxmint_22.3"
@@ -71,6 +74,13 @@ func New(database *store.Store, client *http.Client, maxBody int64, inventoryLim
 	}
 }
 
+// WithFullPublicInventory allows the bundled public feeds to use a separate
+// inventory from manually added sources. The response size limit still applies.
+func (refresher *Refresher) WithFullPublicInventory() *Refresher {
+	refresher.fullPublicInventory = true
+	return refresher
+}
+
 func (refresher *Refresher) WithRetirementGrace(grace time.Duration) *Refresher {
 	if grace > 0 {
 		refresher.retirementGrace = grace
@@ -79,64 +89,17 @@ func (refresher *Refresher) WithRetirementGrace(grace time.Duration) *Refresher 
 }
 
 func (refresher *Refresher) Source(ctx context.Context, sourceID string) error {
-	payload, err := refresher.store.SourcePayload(ctx, sourceID)
+	kind, payload, hwid, err := refresher.store.SourceForRefresh(ctx, sourceID)
 	if err != nil {
 		return err
-	}
-	listed, err := refresher.store.ListSources(ctx)
-	if err != nil {
-		return err
-	}
-	var kind sources.Kind
-	for _, item := range listed {
-		if item.ID == sourceID {
-			kind = item.Kind
-			break
-		}
-	}
-	if kind == "" {
-		return errors.New("source not found")
 	}
 
-	input, err := refresher.resolve(ctx, kind, payload)
+	input, err := refresher.resolve(ctx, kind, payload, hwid)
 	if err == nil {
-		parsed := sources.PreviewInput(input)
-		candidates := make([]store.CandidateInput, 0, parsed.ValidCount)
-		for _, item := range parsed.Items {
-			if item.Error != "" || item.Duplicate || (item.Kind != sources.KindVLESS && item.Kind != sources.KindTorBridge) {
-				continue
-			}
-			if isDummyUnsupportedCandidate(item) {
-				continue
-			}
-			candidate := store.CandidateInput{
-				Kind: item.Kind, Label: item.Display, Fingerprint: item.Fingerprint, Payload: item.Payload,
-			}
-			if item.Kind == sources.KindVLESS {
-				identity, identityErr := xrayconfig.VLESSIdentity(item.Payload)
-				if identityErr != nil {
-					if kind == sources.KindRemoteAuto {
-						continue
-					}
-					err = identityErr
-					break
-				}
-				candidate.RouteKey = identity.RouteKey
-				candidate.FailureDomain = identity.FailureDomain
-			}
-			candidates = append(candidates, candidate)
-		}
+		var candidates []store.CandidateInput
+		candidates, err = parseSourceCandidates(kind, input)
 		if err == nil {
-			if len(candidates) == 0 {
-				err = errors.New("subscription contains no valid VLESS or Tor candidates")
-			} else {
-				err = refresher.validateInventoryLimit(ctx, sourceID, candidates)
-				if err == nil {
-					err = refresher.store.ReplaceCandidates(
-						ctx, sourceID, candidates, refresher.retirementGrace,
-					)
-				}
-			}
+			err = refresher.saveCandidates(ctx, sourceID, kind, candidates)
 		}
 	}
 	if err != nil {
@@ -147,12 +110,52 @@ func (refresher *Refresher) Source(ctx context.Context, sourceID string) error {
 	return nil
 }
 
+func parseSourceCandidates(kind sources.Kind, input string) ([]store.CandidateInput, error) {
+	parsed := sources.PreviewInput(input)
+	candidates := make([]store.CandidateInput, 0, parsed.ValidCount)
+	public := isPublicSource(kind)
+	for _, item := range parsed.Items {
+		if item.Error != "" || item.Duplicate || (item.Kind != sources.KindVLESS && item.Kind != sources.KindTorBridge) ||
+			isDummyUnsupportedCandidate(item) {
+			continue
+		}
+		if public {
+			if item.Kind != sources.KindVLESS || !publicRepositoryEndpoint(item.Payload) {
+				continue
+			}
+			if _, err := xrayconfig.VLESSOutbound(item.Payload, ""); err != nil {
+				continue
+			}
+		}
+		candidate := store.CandidateInput{
+			Kind: item.Kind, Label: item.Display, Fingerprint: item.Fingerprint, Payload: item.Payload,
+		}
+		if item.Kind == sources.KindVLESS {
+			identity, err := xrayconfig.VLESSIdentity(item.Payload)
+			if err != nil {
+				if kind == sources.KindRemoteAuto || public {
+					continue
+				}
+				return nil, err
+			}
+			candidate.RouteKey = identity.RouteKey
+			candidate.FailureDomain = identity.FailureDomain
+		}
+		candidates = append(candidates, candidate)
+	}
+	if len(candidates) == 0 {
+		return nil, errors.New("subscription contains no valid VLESS or Tor candidates")
+	}
+	return candidates, nil
+}
+
 func safeRefreshError(err error) error {
 	var dnsError *net.DNSError
 	var tlsError *tls.CertificateVerificationError
 	var recordError tls.RecordHeaderError
 	var certError x509.UnknownAuthorityError
 	var netError net.Error
+	var sqliteError interface{ Code() int }
 	switch {
 	case errors.Is(err, context.Canceled):
 		return errors.New("fetch subscription failed: canceled")
@@ -164,6 +167,8 @@ func safeRefreshError(err error) error {
 		return errors.New("fetch subscription failed: tls")
 	case errors.As(err, &netError) && netError.Timeout():
 		return errors.New("fetch subscription failed: timeout")
+	case errors.As(err, &sqliteError):
+		return fmt.Errorf("save subscription failed: SQLite %d", sqliteError.Code())
 	}
 	message := err.Error()
 	switch {
@@ -171,6 +176,10 @@ func safeRefreshError(err error) error {
 		return errors.New("subscription device/application not supported (x-hwid-not-supported)")
 	case strings.Contains(message, "x-hwid-max-devices-reached"):
 		return errors.New("subscription device limit reached (x-hwid-max-devices-reached)")
+	case errors.Is(err, errPublicInventoryLimit):
+		return err
+	case strings.Contains(message, "duplicate candidate fingerprint"):
+		return errors.New("source refresh failed: duplicate candidate fingerprint")
 	case strings.Contains(message, "inventory limit"):
 		var count, limit int
 		if _, scanErr := fmt.Sscanf(message, "inventory limit exceeded: %d candidates (limit %d)", &count, &limit); scanErr == nil && message == fmt.Sprintf("inventory limit exceeded: %d candidates (limit %d)", count, limit) {
@@ -197,15 +206,37 @@ func safeRefreshError(err error) error {
 	}
 }
 
-func (refresher *Refresher) validateInventoryLimit(ctx context.Context, sourceID string, incoming []store.CandidateInput) error {
+func (refresher *Refresher) saveCandidates(ctx context.Context, sourceID string, kind sources.Kind, incoming []store.CandidateInput) error {
+	refresher.inventoryMu.Lock()
+	defer refresher.inventoryMu.Unlock()
+	if refresher.fullPublicInventory && isPublicSource(kind) {
+		return refresher.store.ReplaceCandidates(ctx, sourceID, incoming, refresher.retirementGrace)
+	}
+
 	existing, err := refresher.store.ListCandidates(ctx, "")
 	if err != nil {
 		return err
 	}
+	publicSources := make(map[string]bool)
+	if refresher.fullPublicInventory {
+		listed, err := refresher.store.ListSources(ctx)
+		if err != nil {
+			return err
+		}
+		for _, source := range listed {
+			publicSources[source.ID] = isPublicSource(source.Kind)
+		}
+	}
 	fingerprints := make(map[string]bool, len(existing)+len(incoming))
 	for _, candidate := range existing {
-		if candidate.SourceID != sourceID {
+		if candidate.SourceID != sourceID && !publicSources[candidate.SourceID] {
 			fingerprints[candidate.Fingerprint] = true
+		}
+	}
+	if isPublicSource(kind) {
+		incoming, err = refresher.limitPublicCandidates(ctx, sourceID, incoming, existing, fingerprints)
+		if err != nil {
+			return err
 		}
 	}
 	for _, candidate := range incoming {
@@ -214,24 +245,35 @@ func (refresher *Refresher) validateInventoryLimit(ctx context.Context, sourceID
 	if len(fingerprints) > refresher.inventoryLimit {
 		return fmt.Errorf("inventory limit exceeded: %d candidates (limit %d)", len(fingerprints), refresher.inventoryLimit)
 	}
-	return nil
+	return refresher.store.ReplaceCandidates(ctx, sourceID, incoming, refresher.retirementGrace)
 }
 
-func (refresher *Refresher) resolve(ctx context.Context, kind sources.Kind, payload string) (string, error) {
+func (refresher *Refresher) resolve(ctx context.Context, kind sources.Kind, payload, sourceHWID string) (string, error) {
 	switch kind {
 	case sources.KindVLESS, sources.KindTorBridge:
 		return payload, nil
+	case sources.KindPublicSubscription:
+		return refresher.readPublicSubscription(ctx, payload)
 	case sources.KindVLESSSubscription, sources.KindTorSubscription, sources.KindRemoteAuto:
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, payload, nil)
 		if err != nil {
 			return "", err
 		}
 		request.Header.Set("User-Agent", refresher.UserAgent())
-		if hwid := refresher.HWID(); hwid != "" {
+		client := refresher.client
+		explicit := sourceHWID != "" || refresher.hwid != ""
+		hwid := sourceHWID
+		if hwid == "" {
+			hwid = refresher.HWID()
+		}
+		if explicit && request.URL.Scheme == "https" {
+			client = subscriptionOriginClient(client, request.URL)
+		}
+		if hwid != "" && (!explicit || request.URL.Scheme == "https") {
 			request.Header.Set("x-hwid", hwid)
 			request.Header.Set("x-device-os", runtimeOS())
 		}
-		response, err := refresher.client.Do(request)
+		response, err := client.Do(request)
 		if err != nil {
 			return "", fmt.Errorf("fetch subscription: %w", err)
 		}
@@ -581,4 +623,31 @@ func normalizeSubscriptionPayload(input string) string {
 		return strings.TrimSpace(normalized[len("base64:"):])
 	}
 	return normalized
+}
+
+// net/http copies custom headers through redirects. Limit an explicit device
+// identifier to the subscription's original HTTPS origin.
+func subscriptionOriginClient(client *http.Client, origin *url.URL) *http.Client {
+	scoped := *client
+	port := func(location *url.URL) string {
+		if value := location.Port(); value != "" {
+			return value
+		}
+		return "443"
+	}
+	scoped.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if client.CheckRedirect != nil {
+			if err := client.CheckRedirect(req, via); err != nil {
+				return err
+			}
+		} else if len(via) >= 10 {
+			return errors.New("stopped after 10 redirects")
+		}
+		if req.URL.Scheme != "https" || !strings.EqualFold(req.URL.Hostname(), origin.Hostname()) || port(req.URL) != port(origin) {
+			req.Header.Del("X-HWID")
+			req.Header.Del("X-Device-OS")
+		}
+		return nil
+	}
+	return &scoped
 }

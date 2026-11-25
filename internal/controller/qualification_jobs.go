@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"sort"
 	"sync"
@@ -20,6 +21,7 @@ type qualificationJob struct {
 	priority                tournament.Priority
 	nextProbeAt             time.Time
 	oneSuccess              bool
+	savedReserve            bool
 	recoveringActiveFailure bool
 	retryInfrastructure     bool
 }
@@ -107,14 +109,32 @@ func (service QualificationService) discoveryJobs(
 	sort.Slice(canaries, func(i, j int) bool {
 		return canaries[i].ID < canaries[j].ID
 	})
+	var scoreRetries map[string]bool
+	if stage == tournament.ProbeFull {
+		scoreRetries, err = service.mobileScoreRetries(ctx, now, states)
+		if err != nil {
+			return nil, err
+		}
+	}
+	var scoreRetryJobs []qualificationJob
 	queueCandidates := make([]tournament.Candidate, 0, len(candidates))
 	candidateByFingerprint := make(map[string]store.Candidate, len(candidates))
 	for _, candidate := range candidates {
 		if _, open := openDomains[candidate.FailureDomain]; candidate.FailureDomain != "" && open {
 			continue
 		}
+		if scoreRetries[candidate.ID] {
+			scoreRetryJobs = append(scoreRetryJobs, qualificationJob{
+				candidate: candidate, priority: tournament.PriorityOneSuccess,
+			})
+			continue
+		}
 		state := stateByFingerprint[candidate.Fingerprint]
 		entry := discoveryCandidate(candidate, state)
+		if service.hasSavedMobileReserve(state) {
+			// Older proven candidates need fresh full checks before recovery.
+			entry.WindowStartedAt = time.Time{}
+		}
 		entry.Assigned = assignedIDs[candidate.ID]
 		queueCandidates = append(queueCandidates, entry)
 		candidateByFingerprint[candidate.Fingerprint] = candidate
@@ -129,7 +149,7 @@ func (service QualificationService) discoveryJobs(
 			continue
 		}
 		candidate := candidateByFingerprint[queuedJob.Fingerprint]
-		payload, err := service.Store.CandidatePayload(ctx, candidate.ID)
+		payload, err := service.discoveryPayload(ctx, candidate)
 		if err != nil {
 			return nil, err
 		}
@@ -151,14 +171,15 @@ func (service QualificationService) discoveryJobs(
 		jobs = append(jobs, qualificationJob{
 			candidate: candidate, payload: payload, priority: queuedJob.Priority,
 			nextProbeAt:             nextProbeAt,
-			oneSuccess:              stateByFingerprint[candidate.Fingerprint].FullSuccessStreak == 1,
+			oneSuccess:              state.FullSuccessStreak == 1,
+			savedReserve:            service.hasSavedMobileReserve(state),
 			recoveringActiveFailure: stateByFingerprint[candidate.Fingerprint].LastErrorCode == "active_hard_failure",
 		})
 	}
 	if stage == tournament.ProbeFull {
-		jobs = interleaveFullProbeJobsByFailureDomain(jobs)
+		jobs = interleaveProbeJobsByFailureDomain(jobs)
 		for _, candidate := range canaries {
-			payload, err := service.Store.CandidatePayload(ctx, candidate.ID)
+			payload, err := service.discoveryPayload(ctx, candidate)
 			if err != nil {
 				return nil, err
 			}
@@ -168,7 +189,15 @@ func (service QualificationService) discoveryJobs(
 			jobs = append(jobs, qualificationJob{candidate: candidate, payload: payload})
 		}
 	}
-	return interleaveProbeSources(jobs), nil
+	return append(interleaveProbeSources(scoreRetryJobs), interleaveProbeSources(jobs)...), nil
+}
+
+func (service QualificationService) discoveryPayload(ctx context.Context, candidate store.Candidate) (string, error) {
+	if service.MobileReserves > 0 {
+		// Open only the payloads that are actually selected for a probe.
+		return "", nil
+	}
+	return service.Store.CandidatePayload(ctx, candidate.ID)
 }
 
 func interleaveProbeSources(jobs []qualificationJob) []qualificationJob {
@@ -204,7 +233,7 @@ func interleaveProbeSources(jobs []qualificationJob) []qualificationJob {
 	return result
 }
 
-func interleaveFullProbeJobsByFailureDomain(
+func interleaveProbeJobsByFailureDomain(
 	jobs []qualificationJob,
 ) []qualificationJob {
 	if len(jobs) < 2 {
@@ -216,13 +245,13 @@ func interleaveFullProbeJobsByFailureDomain(
 		for end < len(jobs) && jobs[end].priority == jobs[start].priority {
 			end++
 		}
-		ordered = append(ordered, interleaveFullProbePriorityGroup(jobs[start:end])...)
+		ordered = append(ordered, interleaveProbePriorityGroup(jobs[start:end])...)
 		start = end
 	}
 	return ordered
 }
 
-func interleaveFullProbePriorityGroup(jobs []qualificationJob) []qualificationJob {
+func interleaveProbePriorityGroup(jobs []qualificationJob) []qualificationJob {
 	type domainBucket struct {
 		jobs []qualificationJob
 		next int
@@ -312,6 +341,21 @@ func (service QualificationService) runProbeJobs(
 	stage tournament.ProbeStage,
 	workerCount int,
 ) error {
+	return service.runProbeJobsObserved(ctx, now, pending, stage, workerCount, nil)
+}
+
+func (service QualificationService) runProbeJobsObserved(
+	ctx context.Context,
+	now time.Time,
+	pending []qualificationJob,
+	stage tournament.ProbeStage,
+	workerCount int,
+	observe func(qualificationResult, store.CandidateProbeState, time.Time) error,
+) error {
+	if len(pending) == 0 {
+		return ctx.Err()
+	}
+	started := time.Now()
 	probeCtx, cancelProbes := context.WithCancel(ctx)
 	defer cancelProbes()
 	observationStage := store.ObservationFull
@@ -333,8 +377,20 @@ func (service QualificationService) runProbeJobs(
 		pending[index].reservation = reservations[index]
 	}
 	jobs := make(chan qualificationJob)
-	results := make(chan qualificationResult, len(pending))
+	resultCapacity := len(pending)
+	if observe != nil {
+		resultCapacity = min(resultCapacity, workerCount)
+	}
+	results := make(chan qualificationResult, resultCapacity)
+	stopResults := make(chan struct{})
 	var workers sync.WaitGroup
+	defer func() {
+		close(stopResults)
+		cancelProbes()
+		if observe != nil {
+			workers.Wait()
+		}
+	}()
 	for index := 0; index < workerCount; index++ {
 		workers.Add(1)
 		go func() {
@@ -358,7 +414,11 @@ func (service QualificationService) runProbeJobs(
 						timer.Stop()
 					}
 				}
-				results <- result
+				select {
+				case results <- result:
+				case <-stopResults:
+					return
+				}
 			}
 		}()
 	}
@@ -381,17 +441,31 @@ func (service QualificationService) runProbeJobs(
 		if errors.Is(result.err, context.Canceled) {
 			continue
 		}
-		state, err := service.recordProbeResult(ctx, now, result, stage)
+		at := now
+		if observe != nil {
+			at = snapshotDecisionTime(now, started)
+		}
+		state, err := service.recordProbeResult(ctx, at, result, stage)
 		if err != nil {
 			if errors.Is(err, store.ErrCandidateNoLongerCurrent) {
 				continue
 			}
 			return err
 		}
+		if observe != nil {
+			if err := observe(result, state, at); err != nil {
+				return err
+			}
+		}
+		justQualified := state.FullSuccessStreak == 2
+		if service.MobileReserves > 0 {
+			justQualified = result.err == nil && result.response.Success &&
+				state.LastErrorCode == "" && state.FullSuccessStreak >= 2
+		}
 		if stage == tournament.ProbeFull &&
 			result.job.candidate.Kind == sources.KindVLESS &&
 			state.Status == store.CandidateQualified &&
-			state.FullSuccessStreak == 2 && !state.InWorkingPool {
+			justQualified && !state.InWorkingPool {
 			if err := service.promoteQualifiedVLESS(
 				ctx, result.job.candidate, now,
 			); err != nil {
@@ -441,6 +515,21 @@ func (service QualificationService) executeProbe(
 			return qualificationResult{job: job, reserveErr: err}
 		}
 		job.reservation = reservation
+	}
+	if job.payload == "" && service.MobileReserves > 0 {
+		payload, err := service.Store.CandidatePayload(ctx, job.candidate.ID)
+		if errors.Is(err, sql.ErrNoRows) {
+			err = store.ErrCandidateNoLongerCurrent
+		}
+		if err != nil {
+			return qualificationResult{job: job, reserveErr: err}
+		}
+		job.payload = payload
+		if service.DisallowRUEgress && sources.IsRussianEgress(job.candidate.Label, payload) {
+			return qualificationResult{job: job, reservation: job.reservation, response: agentapi.ProbeResponse{
+				CandidateID: job.candidate.ID, FailureClass: agentapi.FailureCandidate, ErrorCode: "ru_egress_forbidden",
+			}}
+		}
 	}
 	request := agentapi.ProbeRequest{
 		CandidateID: job.candidate.ID,
@@ -499,6 +588,9 @@ func (service QualificationService) recordProbeResult(
 	}
 	transition.Success = result.response.Success
 	transition.ErrorCode = result.response.ErrorCode
+	if transition.ErrorCode == "liveness_failed" {
+		transition.SafeErrorMessage = safeLivenessFailureSummary(result.response.Observation)
+	}
 	if stage == tournament.ProbeFast {
 		if service.DisallowRUEgress && sources.IsRussianEgress(result.job.candidate.Label, result.job.payload) {
 			transition.Success = false

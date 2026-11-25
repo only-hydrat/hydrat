@@ -1,0 +1,25 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = configure ]; then
+    if ! getent group hydrat-users >/dev/null; then
+        addgroup --quiet --system hydrat-users
+    fi
+    if ! getent passwd hydrat-app >/dev/null; then
+        adduser --quiet --system --ingroup hydrat-users --no-create-home --home /var/lib/hydrat-app hydrat-app
+    fi
+    deb-systemd-helper unmask hydrat-app.service >/dev/null || true
+    if deb-systemd-helper --quiet was-enabled hydrat-app.service; then
+        deb-systemd-helper enable hydrat-app.service >/dev/null || true
+    else
+        deb-systemd-helper update-state hydrat-app.service >/dev/null || true
+    fi
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload
+        if [ -n "${2:-}" ]; then
+            deb-systemd-invoke restart hydrat-app.service >/dev/null || true
+        else
+            deb-systemd-invoke start hydrat-app.service >/dev/null || true
+        fi
+    fi
+fi

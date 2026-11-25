@@ -36,6 +36,10 @@ func (store *Store) initialize(ctx context.Context) error {
             last_refresh_error TEXT NOT NULL DEFAULT '',
             candidate_count INTEGER NOT NULL DEFAULT 0
         )`,
+		`CREATE TABLE IF NOT EXISTS source_hwids (
+            source_id TEXT PRIMARY KEY REFERENCES sources(id) ON DELETE CASCADE,
+            encrypted_value BLOB NOT NULL
+        )`,
 		`CREATE TABLE IF NOT EXISTS candidates (
             id TEXT PRIMARY KEY,
             source_id TEXT NOT NULL REFERENCES sources(id) ON DELETE CASCADE,

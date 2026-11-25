@@ -17,11 +17,19 @@
 
 Hydrat 是一个自托管 VPN 网关。添加 VLESS 订阅和 Tor 网桥后，网关会检查节点、为客户端分配路由，并在故障时选择替代路由。手机、电脑或路由器只需使用普通的 WireGuard 客户端。
 
-本项目不提供 VPN 服务器或订阅。你需要自己的 Linux 服务器和路由来源。
+网关部署在你自己的 Linux 服务器上。如果只需要为一台设备使用 VPN，[Hydrat App](#应用) 可以直接在设备上检查订阅并切换路由。
 
 <p align="center">
-  <a href="#功能">功能</a> · <a href="#快速开始">安装</a> · <a href="#配置">配置</a> · <a href="#界面">截图</a> · <a href="#文档">文档</a>
+  <a href="#应用">应用</a> · <a href="#功能">网关功能</a> · <a href="#快速开始">安装网关</a> · <a href="#界面">截图</a> · <a href="#文档">文档</a>
 </p>
+
+## 应用
+
+Hydrat App 提供系统 VPN，支持导入 VLESS 订阅和 Tor 网桥，自动选择路由并在故障时切换到备用路由。每个 HTTPS 订阅均可设置独立的 HWID。
+
+[下载适用于 Android、Windows 或 Linux 的 Hydrat App](https://github.com/only-hydrat/hydrat/releases/tag/app-v0.1.2)
+
+应用版本使用 `app-v…` 标签。你可以在应用设置中检查更新。
 
 ## 功能
 

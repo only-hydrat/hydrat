@@ -58,8 +58,7 @@ func Track(ctx context.Context, tag, source, network string, interrupt func()) (
 // Listen never exposes a TCP port. A private parent also prevents a transient
 // permissive socket umask from admitting another user before chmod0600.
 func Listen(path string, r *Registry) (*http.Server, error) {
-	parent, err := os.Stat(filepath.Dir(path))
-	if err != nil || !parent.IsDir() || parent.Mode().Perm()&0077 != 0 {
+	if !privateSocketDirectory(filepath.Dir(path)) {
 		return nil, errors.New("flow control requires a private parent directory")
 	}
 	if info, err := os.Lstat(path); err == nil {
@@ -84,7 +83,7 @@ func Listen(path string, r *Registry) (*http.Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.Chmod(path, 0600); err != nil {
+	if err := secureSocket(path); err != nil {
 		_ = listener.Close()
 		return nil, err
 	}

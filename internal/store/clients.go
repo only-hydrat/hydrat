@@ -67,6 +67,23 @@ func (store *Store) PutClient(ctx context.Context, client ClientRecord, wireGuar
 	return err
 }
 
+// EnsureLocalDevice creates a routing profile without provisioning a peer.
+// The local application calls this on its own database.
+func (store *Store) EnsureLocalDevice(ctx context.Context, id, name, cidr string) error {
+	now := time.Now().Unix()
+	result, err := store.db.ExecContext(ctx, `
+		INSERT INTO clients(id, name, address, public_key, encrypted_config, created_at, updated_at)
+		SELECT ?, ?, ?, '', X'', ?, ?
+		WHERE NOT EXISTS (SELECT 1 FROM clients WHERE id <> ?)
+		ON CONFLICT(id) DO UPDATE SET name=excluded.name, address=excluded.address
+		WHERE clients.public_key='' AND length(clients.encrypted_config)=0
+	`, id, name, cidr, now, now, id)
+	if err != nil {
+		return err
+	}
+	return requireAffected(result, "local device")
+}
+
 func (store *Store) ListClients(ctx context.Context) ([]ClientRecord, error) {
 	rows, err := store.db.QueryContext(ctx, `
         SELECT id, name, address, public_key, paused, created_at, updated_at, last_traffic_at, rx_bytes, tx_bytes, latest_handshake, onion_enabled, i2p_enabled
@@ -90,7 +107,7 @@ func (store *Store) ListClients(ctx context.Context) ([]ClientRecord, error) {
 
 func (store *Store) ClientConfig(ctx context.Context, id string) (string, error) {
 	var encrypted []byte
-	if err := store.db.QueryRowContext(ctx, `SELECT encrypted_config FROM clients WHERE id=?`, id).Scan(&encrypted); err != nil {
+	if err := store.db.QueryRowContext(ctx, `SELECT encrypted_config FROM clients WHERE id=? AND length(encrypted_config)>0`, id).Scan(&encrypted); err != nil {
 		return "", err
 	}
 	plain, err := store.box.Open("client:"+id, encrypted)

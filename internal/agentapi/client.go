@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"time"
@@ -86,6 +87,24 @@ func NewClient(socketPath string, options ...ClientOption) *Client {
 		IdleConnTimeout:    90 * time.Second,
 	}
 	return newClientWithHTTP(&http.Client{Transport: transport, Timeout: 25 * time.Second}, options...)
+}
+
+// NewLocalClient applies the same validation, deadlines and probe limits as
+// the gateway API without listening on a socket in the device process.
+func NewLocalClient(handler http.Handler, options ...ClientOption) *Client {
+	transport := localTransport{handler: handler}
+	return newClientWithHTTP(&http.Client{Transport: transport, Timeout: 25 * time.Second}, options...)
+}
+
+type localTransport struct{ handler http.Handler }
+
+func (transport localTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	if request.Body != nil {
+		defer request.Body.Close()
+	}
+	response := httptest.NewRecorder()
+	transport.handler.ServeHTTP(response, request)
+	return response.Result(), nil
 }
 
 func newClientWithHTTP(httpClient *http.Client, options ...ClientOption) *Client {

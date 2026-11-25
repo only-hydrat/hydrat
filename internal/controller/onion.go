@@ -164,7 +164,7 @@ func (e *Engine) hasPrivateAccessPolicy(ctx context.Context) (bool, error) {
 	return false, nil
 }
 
-func prunePrivateHandlers(plan *dataplane.DesiredPlan, previous map[string]dataplane.ClientRoute, outbounds map[string]dataplane.Outbound) {
+func pruneObsoleteHandlers(plan *dataplane.DesiredPlan, previous map[string]dataplane.ClientRoute, outbounds map[string]dataplane.Outbound, includeOrdinary bool) {
 	used := map[string]bool{}
 	for _, r := range plan.Clients {
 		for _, id := range []string{r.I2POutbound, r.OnionOutbound, r.OnionReserveOutbound, r.TCPOutbound, r.UDPOutbound, r.TCPReserveOutbound, r.UDPReserveOutbound, r.DNSOutbound} {
@@ -173,7 +173,11 @@ func prunePrivateHandlers(plan *dataplane.DesiredPlan, previous map[string]datap
 	}
 	obsolete := map[string]bool{}
 	for _, r := range previous {
-		for _, id := range []string{r.I2POutbound, r.OnionOutbound, r.OnionReserveOutbound} {
+		ids := []string{r.I2POutbound, r.OnionOutbound, r.OnionReserveOutbound}
+		if includeOrdinary {
+			ids = append(ids, r.TCPOutbound, r.UDPOutbound, r.TCPReserveOutbound, r.UDPReserveOutbound, r.DNSOutbound)
+		}
+		for _, id := range ids {
 			if id != "" && !used[id] {
 				obsolete[id] = true
 				delete(outbounds, id)

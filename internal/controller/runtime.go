@@ -46,13 +46,17 @@ type Runtime struct {
 	ProfileRepair       func(context.Context, time.Time) (bool, error)
 	Refresh             func(context.Context) error
 	Qualify             func(context.Context, time.Time) error
-	Active              func(context.Context, time.Time) error
-	QoE                 func(context.Context, time.Time) error
-	Place               func(context.Context, time.Time, PlacementReason) error
-	StartupHardFailure  func(context.Context, time.Time) (bool, error)
-	StartupNormalize    func(context.Context, time.Time) error
-	RecoveryReady       func(context.Context, time.Time) error
-	CapacityReady       func(context.Context, time.Time) error
+	// Devices can probe persisted inventory while sources refresh in parallel.
+	QualifyCachedInventoryOnStart bool
+	// InterruptQualification releases background probe workers for recovery.
+	InterruptQualification func()
+	Active                 func(context.Context, time.Time) error
+	QoE                    func(context.Context, time.Time) error
+	Place                  func(context.Context, time.Time, PlacementReason) error
+	StartupHardFailure     func(context.Context, time.Time) (bool, error)
+	StartupNormalize       func(context.Context, time.Time) error
+	RecoveryReady          func(context.Context, time.Time) error
+	CapacityReady          func(context.Context, time.Time) error
 
 	HardFailures      <-chan struct{}
 	HardFailureEvents *HardFailureMailbox
@@ -869,6 +873,9 @@ func (runtime Runtime) Start(ctx context.Context) error {
 		enqueue(PlacementStartupNormalization)
 	}
 	signal(sourceSignal)
+	if runtime.QualifyCachedInventoryOnStart {
+		signal(qualificationSignal)
+	}
 	signal(activeSignal)
 	select {
 	case <-rootCtx.Done():

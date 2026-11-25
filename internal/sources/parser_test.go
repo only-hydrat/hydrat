@@ -105,3 +105,12 @@ func TestPreviewNeverIncludesSecretsInSafeItem(t *testing.T) {
 		t.Fatalf("safe item lost identity: %+v", safe)
 	}
 }
+
+func TestVLESSSubscriptionHTMLSeparatorsNormalizeBeforeFingerprinting(t *testing.T) {
+	const normal = "vless://11111111-1111-1111-1111-111111111111@example.org:443?security=tls&type=ws&path=%2Fsocket"
+	const escaped = "vless://11111111-1111-1111-1111-111111111111@example.org:443?security=tls&amp;type=ws&amp;path=%2Fsocket"
+	preview := PreviewInput(normal + "\n" + escaped)
+	if preview.ValidCount != 1 || preview.DuplicateCount != 1 || preview.Items[1].Payload != normal {
+		t.Fatalf("HTML-escaped source was not normalized: %d valid, %d duplicate", preview.ValidCount, preview.DuplicateCount)
+	}
+}

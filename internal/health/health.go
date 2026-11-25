@@ -2,6 +2,8 @@ package health
 
 import "time"
 
+const DefaultMinVLESSScore = 80
+
 type Protocol string
 
 const (
@@ -32,6 +34,13 @@ type Evaluation struct {
 }
 
 func Evaluate(metrics Metrics, protocol Protocol) Evaluation {
+	return EvaluateWithMinVLESSScore(metrics, protocol, DefaultMinVLESSScore)
+}
+
+func EvaluateWithMinVLESSScore(metrics Metrics, protocol Protocol, minScore float64) Evaluation {
+	if !(minScore > 0 && minScore <= 100) {
+		minScore = DefaultMinVLESSScore
+	}
 	stability := clamp(metrics.SuccessRatio) * (1 - clamp(metrics.PacketDropRatio))
 	latency := 1 - clamp(float64(metrics.Latency)/(float64(2)*float64(time.Second)))
 	throughput := clamp(metrics.ThroughputMbps / 50)
@@ -39,7 +48,7 @@ func Evaluate(metrics Metrics, protocol Protocol) Evaluation {
 	score := 100 * (0.50*stability + 0.25*latency + 0.15*throughput + 0.10*load)
 	gates := metrics.ChatGPTWeb && metrics.OpenAI401 && metrics.TelegramWeb &&
 		metrics.TelegramMTProto && metrics.YouTubeWeb && metrics.InstagramWeb
-	tcp := gates && (protocol == ProtocolTor || score >= 80)
+	tcp := gates && (protocol == ProtocolTor || score >= minScore)
 	udp := tcp && protocol == ProtocolVLESS && metrics.UDP
 	return Evaluation{Score: score, TCPQualified: tcp, UDPQualified: udp}
 }

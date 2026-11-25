@@ -17,6 +17,7 @@ import (
 	"github.com/only-hydrat/hydrat/internal/proberuntime"
 	"github.com/only-hydrat/hydrat/internal/probexray"
 	"github.com/only-hydrat/hydrat/internal/qoe"
+	"github.com/only-hydrat/hydrat/internal/socks5"
 	"github.com/only-hydrat/hydrat/internal/sources"
 	"github.com/only-hydrat/hydrat/internal/torpool"
 	"github.com/only-hydrat/hydrat/internal/xrayconfig"
@@ -77,6 +78,8 @@ type Prober struct {
 	qoe              qoeMeasurer
 	tor              TorProbeManager
 	portBase         int
+	localPassword    string
+	minVLESSScore    float64
 	fullSlots        chan int
 	fastSlots        chan int
 	activeSlots      chan int
@@ -85,6 +88,16 @@ type Prober struct {
 	qoeSlots         chan int
 	torProbeLease    chan struct{}
 	torRetryInterval time.Duration
+}
+
+// RequireLocalPassword configures an app-owned probe before serving requests.
+func (prober *Prober) RequireLocalPassword(password string) {
+	prober.localPassword = password
+}
+
+// SetMinVLESSScore configures qualification before the probe agent starts.
+func (prober *Prober) SetMinVLESSScore(score float64) {
+	prober.minVLESSScore = score
 }
 
 func NewProber(
@@ -231,10 +244,11 @@ func (prober *Prober) probeCriticalActiveVLESS(
 	}
 	defer release()
 	address := fmt.Sprintf("127.0.0.1:%d", prober.portBase+slot)
+	probeCtx := socks5.WithLocalPassword(lease.Context, prober.localPassword)
 	availability := prober.startAvailabilityCheck(
-		lease.Context, request.CandidateID, address,
+		probeCtx, request.CandidateID, address,
 	)
-	observation := prober.liveness.Observe(lease.Context, address)
+	observation := prober.liveness.Observe(probeCtx, address)
 	availabilityObservation := awaitAvailabilityCheck(availability)
 	if err := lease.Context.Err(); err != nil {
 		return agentapi.ProbeResponse{}, err
@@ -315,6 +329,7 @@ func (prober *Prober) measureVLESS(
 		return agentapi.ProbeResponse{}, &agentapi.ProbeError{Code: "probe_setup_failed", Phase: "configure", Cause: err}
 	}
 	address := fmt.Sprintf("127.0.0.1:%d", prober.portBase+slot)
+	ctx = socks5.WithLocalPassword(ctx, prober.localPassword)
 	if mode == agentapi.ProbeModeQoE {
 		if prober.qoe == nil {
 			return agentapi.ProbeResponse{}, errors.New("QoE measurer is unavailable")
@@ -337,7 +352,7 @@ func (prober *Prober) measureVLESS(
 		if err != nil {
 			return candidateProbeFailure(request.CandidateID, "full_probe_failed"), nil
 		}
-		return fullProbeResponse(request.CandidateID, metrics, health.ProtocolVLESS), nil
+		return prober.fullProbeResponse(request.CandidateID, metrics, health.ProtocolVLESS), nil
 	}
 	availability := prober.startAvailabilityCheck(ctx, request.CandidateID, address)
 	observation := prober.liveness.Observe(ctx, address)
@@ -433,7 +448,7 @@ func (prober *Prober) probeTor(ctx context.Context, mode agentapi.ProbeMode, req
 		if err != nil {
 			return candidateProbeFailure(request.CandidateID, "full_probe_failed"), nil
 		}
-		return fullProbeResponse(request.CandidateID, metrics, health.ProtocolTor), nil
+		return prober.fullProbeResponse(request.CandidateID, metrics, health.ProtocolTor), nil
 	}
 	if mode == agentapi.ProbeModeActive || mode == agentapi.ProbeModeActiveCritical {
 		availability := prober.startAvailabilityCheck(
@@ -806,8 +821,8 @@ func infrastructureProbeFailure(candidateID, code string) agentapi.ProbeResponse
 	}
 }
 
-func fullProbeResponse(candidateID string, metrics health.Metrics, protocol health.Protocol) agentapi.ProbeResponse {
-	evaluation := health.Evaluate(metrics, protocol)
+func (prober *Prober) fullProbeResponse(candidateID string, metrics health.Metrics, protocol health.Protocol) agentapi.ProbeResponse {
+	evaluation := health.EvaluateWithMinVLESSScore(metrics, protocol, prober.minVLESSScore)
 	response := agentapi.ProbeResponse{
 		CandidateID: candidateID,
 		Success:     evaluation.TCPQualified,

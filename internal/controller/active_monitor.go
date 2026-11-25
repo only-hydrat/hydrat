@@ -81,25 +81,27 @@ type ActiveMonitor struct {
 	Promotions                   chan<- struct{}
 	CapacityChanges              chan<- struct{}
 	Targets                      ActiveTargetProvider
-	Clock                        ActiveMonitorClock
-	stateOnce                    sync.Once
-	criticalSlots                chan struct{}
-	targetsMu                    sync.Mutex
-	targetsReady                 bool
-	targetsSnapshot              activeTargetSnapshot
-	targetsPlanning              bool
-	targetsPlanDone              chan struct{}
-	targetsPlanErr               error
-	prospectiveMu                sync.Mutex
-	cursorMu                     sync.Mutex
-	trackerMu                    sync.Mutex
-	trackers                     map[string]*health.Tracker
-	hardFailureSuspects          map[string]time.Time
-	availabilityFailures         map[string]availabilityFailureState
-	vlessNext                    int
-	singleNext                   ActiveTargetRole
-	criticalNext                 int
-	prospectiveNext              int
+	// Lightweight target selection can use the current snapshot every cycle.
+	SynchronousTargets   bool
+	Clock                ActiveMonitorClock
+	stateOnce            sync.Once
+	criticalSlots        chan struct{}
+	targetsMu            sync.Mutex
+	targetsReady         bool
+	targetsSnapshot      activeTargetSnapshot
+	targetsPlanning      bool
+	targetsPlanDone      chan struct{}
+	targetsPlanErr       error
+	prospectiveMu        sync.Mutex
+	cursorMu             sync.Mutex
+	trackerMu            sync.Mutex
+	trackers             map[string]*health.Tracker
+	hardFailureSuspects  map[string]time.Time
+	availabilityFailures map[string]availabilityFailureState
+	vlessNext            int
+	singleNext           ActiveTargetRole
+	criticalNext         int
+	prospectiveNext      int
 }
 
 type availabilityFailureState struct {
@@ -107,7 +109,6 @@ type availabilityFailureState struct {
 	lastSequence    int64
 	lastCompletedAt time.Time
 }
-
 
 func (monitor *ActiveMonitor) completionTime() time.Time {
 	if monitor.Clock != nil {
@@ -662,4 +663,3 @@ func (monitor *ActiveMonitor) advanceRoleCursor(role ActiveTargetRole) {
 	}
 	monitor.criticalNext++
 }
-

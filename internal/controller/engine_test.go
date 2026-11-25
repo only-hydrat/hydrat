@@ -7867,3 +7867,141 @@ func TestEngineExcludesRussianEgressWhenDisallowed(t *testing.T) {
 		t.Fatalf("CIDR-Yandex candidate should not be qualified/reserve eligible: %+v", yandexCand)
 	}
 }
+
+func TestEngineMobileClearsFailedTransportUntilFreshReplacement(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(1_900_000_000, 0)
+	database, candidates := newEngineQoEFixture(t, now, []engineQoECandidateSpec{
+		{name: "primary", kind: sources.KindVLESS, score: 95, tcp: true, udp: true, failureDomain: "domain-a"},
+		{name: "replacement", kind: sources.KindVLESS, score: 95, tcp: true, udp: true, failureDomain: "domain-b"},
+	})
+	primary, replacement := candidates["primary"], candidates["replacement"]
+	qualifyEngineReserveCandidates(t, database, now, map[string]store.Candidate{"primary": primary})
+	putEngineQoEClient(t, database, "phone", "10.44.0.2/32", now, false, primary.ID, primary.ID)
+	agent := &engineAgent{}
+	engine := NewEngine(database, agent, nil, nil, []byte("secret"),
+		WithLocalDevice(), WithMobileRoutes(now.Add(-time.Second), 3, []string{primary.ID}),
+		WithQoEEnabled(false), WithActiveProbeInterval(time.Minute))
+	if err := engine.Cycle(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	if got := engineQoEAssignment(t, database, "phone"); got.TCPOutbound != primary.ID || got.UDPOutbound != primary.ID {
+		t.Fatalf("failed to install the initial route: %+v", got)
+	}
+	reservation, err := database.ReserveCandidateObservation(ctx, primary, store.ObservationActive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, commit, err := database.CommitCandidateActiveHardFailureObservation(ctx, primary, reservation, now.Add(time.Second)); err != nil || !commit.Accepted {
+		t.Fatalf("record hard failure: %+v, %v", commit, err)
+	}
+	if err := engine.CycleForReason(ctx, now.Add(2*time.Second), PlacementHardFailure); err != nil {
+		t.Fatal(err)
+	}
+	blocked := agent.plans[len(agent.plans)-1]
+	if route := blocked.Clients[0]; !route.BlockTCP || !route.BlockUDP ||
+		route.TCPOutbound != "" || route.UDPOutbound != "" || route.DNSOutbound != "" || len(blocked.Outbounds) != 0 {
+		t.Fatalf("mobile plan still targets the failed route: %+v", route)
+	}
+	if got := engineQoEAssignment(t, database, "phone"); got.TCPOutbound != "" || got.UDPOutbound != "" {
+		t.Fatalf("mobile assignment still refers to the failed route: %+v", got)
+	}
+	qualifyEngineReserveCandidates(t, database, now.Add(3*time.Second), map[string]store.Candidate{"replacement": replacement})
+	if err := engine.CycleForReason(ctx, now.Add(5*time.Second), PlacementPromotion); err != nil {
+		t.Fatal(err)
+	}
+	if got := engineQoEAssignment(t, database, "phone"); got.TCPOutbound != replacement.ID || got.UDPOutbound != replacement.ID {
+		t.Fatalf("fresh replacement did not reopen the mobile tunnel: %+v", got)
+	}
+}
+
+func TestEngineMobileDropsRoutesFromDeletedSource(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Second)
+	database, candidates := newEngineQoEFixture(t, now, []engineQoECandidateSpec{
+		{name: "primary", kind: sources.KindVLESS, score: 95, tcp: true, udp: true},
+	})
+	qualifyEngineReserveCandidates(t, database, now, candidates)
+	primary := candidates["primary"]
+	putEngineQoEClient(t, database, "phone", "10.44.0.2/32", now, false, primary.ID, primary.ID)
+	agent := &engineAgent{}
+	engine := NewEngine(database, agent, nil, nil, []byte("secret"),
+		WithLocalDevice(), WithMobileRoutes(now.Add(-time.Second), 3, nil),
+		WithQoEEnabled(false), WithActiveProbeInterval(time.Minute))
+	if err := engine.Cycle(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.DeleteSource(ctx, primary.SourceID); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.CycleForReason(ctx, now.Add(time.Second), PlacementClientLifecycle); err != nil {
+		t.Fatal(err)
+	}
+	plan := agent.plans[len(agent.plans)-1]
+	if route := plan.Clients[0]; !route.BlockTCP || !route.BlockUDP || len(plan.Outbounds) != 0 {
+		t.Fatalf("removed source remains in the dataplane: %+v", route)
+	}
+}
+
+func TestEngineMobileAppliesHigherMinimumToCachedRoutes(t *testing.T) {
+	ctx := context.Background()
+	now := time.Now().Truncate(time.Second)
+	database, candidates := newEngineQoEFixture(t, now, []engineQoECandidateSpec{
+		{name: "cached", kind: sources.KindVLESS, score: 79, tcp: true, udp: true},
+	})
+	qualifyEngineReserveCandidates(t, database, now, candidates)
+	cached := candidates["cached"]
+	putEngineQoEClient(t, database, "phone", "10.44.0.2/32", now, false, cached.ID, cached.ID)
+	agent := &engineAgent{}
+	engine := NewEngine(database, agent, nil, nil, []byte("secret"),
+		WithLocalDevice(), WithMobileRoutes(now.Add(-time.Second), 3, []string{cached.ID}),
+		WithMobileMinimumVLESSScore(80), WithQoEEnabled(false), WithActiveProbeInterval(time.Minute))
+	if err := engine.Cycle(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	plan := agent.plans[len(agent.plans)-1]
+	if route := plan.Clients[0]; !route.BlockTCP || !route.BlockUDP {
+		t.Fatalf("cached route below the selected minimum was installed: %+v", route)
+	}
+}
+
+func TestEngineMobileTCPAndUDPReservesConvergeIndependently(t *testing.T) {
+	ctx := context.Background()
+	now := time.Unix(1_900_000_000, 0)
+	database, candidates := newEngineQoEFixture(t, now, []engineQoECandidateSpec{
+		{name: "primary", kind: sources.KindVLESS, score: 99, tcp: true, udp: true, failureDomain: "a"},
+		{name: "tcp", kind: sources.KindVLESS, score: 95, tcp: true, failureDomain: "b"},
+		{name: "udp", kind: sources.KindVLESS, score: 85, tcp: true, udp: true, failureDomain: "c"},
+	})
+	primary, tcp, udp := candidates["primary"], candidates["tcp"], candidates["udp"]
+	putEngineQoEClient(t, database, "phone", "10.44.0.2/32", now, false, primary.ID, primary.ID)
+	agent := &engineAgent{}
+	engine := NewEngine(database, agent, nil, nil, []byte("secret"),
+		WithLocalDevice(), WithMobileRoutes(now.Add(-time.Second), 3, []string{primary.ID}),
+		WithQoEEnabled(false), WithActiveProbeInterval(time.Minute))
+	check := func(at time.Time, wantTCP, wantUDP string) {
+		t.Helper()
+		if err := engine.CycleForReason(ctx, at, PlacementPromotion); err != nil {
+			t.Fatal(err)
+		}
+		_, mappings, err := database.ListAppliedReserveMappings(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var gotTCP, gotUDP string
+		for _, mapping := range mappings {
+			if mapping.ClientID == "phone" {
+				gotTCP, gotUDP = mapping.TCPReserveCandidateID, mapping.UDPReserveCandidateID
+			}
+		}
+		if gotTCP != wantTCP || gotUDP != wantUDP {
+			t.Fatalf("wanted reserves TCP=%q UDP=%q, got TCP=%q UDP=%q", wantTCP, wantUDP, gotTCP, gotUDP)
+		}
+	}
+	qualifyEngineReserveCandidates(t, database, now, map[string]store.Candidate{"primary": primary})
+	check(now, "", "")
+	qualifyEngineReserveCandidates(t, database, now.Add(time.Second), map[string]store.Candidate{"tcp": tcp})
+	check(now.Add(time.Second), tcp.ID, "")
+	qualifyEngineReserveCandidates(t, database, now.Add(2*time.Second), map[string]store.Candidate{"udp": udp})
+	check(now.Add(2*time.Second), udp.ID, udp.ID)
+}

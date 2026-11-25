@@ -47,6 +47,12 @@ type planProfileFence struct {
 
 type EngineOption func(*Engine)
 
+// WithLocalDevice allows a single-device session to come up one transport at
+// a time while the active monitor verifies its reserves.
+func WithLocalDevice() EngineOption {
+	return func(engine *Engine) { engine.localDevice = true }
+}
+
 func WithQoEEnabled(enabled bool) EngineOption {
 	return func(engine *Engine) {
 		engine.qoeEnabled = enabled
@@ -172,8 +178,14 @@ func (err *ActiveCriticalRouteLimitError) Unwrap() error {
 }
 
 type Engine struct {
-	clientReservations bool
-	activityGate       chan struct{}
+	clientReservations  bool
+	localDevice         bool
+	localPlanInstalled  bool
+	mobileStartedAt     time.Time
+	mobileReserves      int
+	mobileMinVLESSScore float64
+	mobilePreferred     []string
+	activityGate        chan struct{}
 	// cycleGate makes one Engine the controller's single-writer boundary across
 	// activity collection, desired-plan persistence, agent apply, assignments,
 	// and the applied-generation mark while allowing deadline-bound emergency
@@ -214,7 +226,8 @@ type Engine struct {
 func (engine *Engine) reserveActiveObservationFresh(
 	now, observedAt time.Time,
 ) bool {
-	return activeObservationFresh(now, observedAt, engine.reserveActiveFreshness)
+	return !observedAt.Before(engine.mobileStartedAt) &&
+		activeObservationFresh(now, observedAt, engine.reserveActiveFreshness)
 }
 
 func (engine *Engine) activeHardFailureObservationFresh(
@@ -282,9 +295,13 @@ func (engine *Engine) CycleForReason(
 	if err != nil {
 		return err
 	}
-	// Ordinary quality placement must never consume an unresolved emergency:
-	// the persisted hard-failure reason preserves scoped TCP reset on retries.
-	if len(debt) > 0 {
+	// A new mobile tunnel has no flows to recover. Rebuild the plan
+	// from current proofs even if the prior tunnel stopped with recovery debt.
+	mobileStartup := engine.mobileReserves > 0 && !engine.localPlanInstalled
+	if mobileStartup && reason == PlacementHardFailure {
+		reason = PlacementPromotion
+	} else if !mobileStartup && len(debt) > 0 {
+		// Preserve scoped TCP resets during ongoing recovery.
 		reason = PlacementHardFailure
 	}
 	profiles, profileFence := engine.capturePlanProfiles()
@@ -331,7 +348,7 @@ func (engine *Engine) CycleForReason(
 		if err != nil {
 			return err
 		}
-		if len(pending) > 0 && !reconcileRecovery {
+		if len(pending) > 0 && !reconcileRecovery && !mobileStartup {
 			return engine.recoverHardFailure(ctx, now, profiles, profileFence, true)
 		}
 		preview := engine.scheduler.BeginPreview()
@@ -409,6 +426,9 @@ func (engine *Engine) cycleOnce(
 	clients, err := engine.store.ListClients(ctx)
 	if err != nil {
 		return err
+	}
+	if engine.localDevice && len(clients) != 1 {
+		return errors.New("local-device engine requires exactly one profile")
 	}
 	clientByID := make(map[string]store.ClientRecord, len(clients))
 	for _, client := range clients {
@@ -514,6 +534,32 @@ func (engine *Engine) cycleOnce(
 			},
 		})
 	}
+	if engine.mobileReserves > 0 {
+		// An explicitly removed source has no routable inventory row, even
+		// when an older applied plan still references it.
+		for index := range scheduleClients {
+			client := &scheduleClients[index]
+			if _, present := rowByID[client.Assignment.TCP]; !present {
+				client.Assignment.TCP = ""
+			}
+			if _, present := rowByID[client.Assignment.UDP]; !present {
+				client.Assignment.UDP = ""
+			}
+		}
+	}
+	if engine.mobileReserves > 0 && !engine.localPlanInstalled {
+		// Persisted assignments are preferences until proven on this tunnel.
+		appliedAssignments = nil
+		for i := range scheduleClients {
+			client := &scheduleClients[i]
+			if candidate := candidateSnapshot.allByID[client.Assignment.TCP]; !candidate.ActiveEligible || !candidate.ActiveFresh {
+				client.Assignment.TCP = ""
+			}
+			if candidate := candidateSnapshot.allByID[client.Assignment.UDP]; !candidate.ActiveEligible || !candidate.ActiveFresh {
+				client.Assignment.UDP = ""
+			}
+		}
+	}
 	aliases := map[string]string{}
 	bootstrapRecovery := false
 	if engine.clientReservations {
@@ -535,10 +581,13 @@ func (engine *Engine) cycleOnce(
 	if err != nil {
 		return err
 	}
+	if engine.mobileReserves > 0 {
+		scheduleCandidates = engine.mobilePlacementCandidates(scheduleClients, scheduleCandidates)
+	}
 	allScheduleCandidates := scheduleCandidates
 	// Missing bootstrap coverage must publish a bounded fail-closed plan,
 	// not leave an unverified cached path applied when an idle device returns.
-	degradedAvailabilityRecovery := bootstrapRecovery || canRecoverStaticallyBlockedAppliedTransport(
+	degradedAvailabilityRecovery := engine.localDevice || bootstrapRecovery || canRecoverStaticallyBlockedAppliedTransport(
 		state, scheduleClients, allScheduleCandidates,
 		engine.activeCriticalRouteLimit,
 	) || canRecoverDegradedAssignedTransport(scheduleClients, allScheduleCandidates) ||
@@ -556,6 +605,15 @@ func (engine *Engine) cycleOnce(
 		// reason to black out a transport that still has a usable primary.
 		// Keep the degraded plan within the same active-probe cardinality cap;
 		// CapacityReady continues to expose the missing coverage.
+		if engine.localDevice {
+			verified := make([]scheduler.Candidate, 0, len(allScheduleCandidates))
+			for _, candidate := range allScheduleCandidates {
+				if candidate.ServingOnly || candidate.ActiveEligible && candidate.ActiveFresh {
+					verified = append(verified, candidate)
+				}
+			}
+			allScheduleCandidates = verified
+		}
 		scheduleCandidates = boundedDegradedAvailabilityCandidates(
 			scheduleClients, allScheduleCandidates,
 			engine.activeCriticalRouteLimit,
@@ -769,7 +827,10 @@ func (engine *Engine) cycleOnce(
 	if err != nil {
 		return err
 	}
-	sameSemantic := hasDesired && candidateDigest == persistedDigest
+	// A local VPN session starts with a new dataplane even when the controller
+	// database already records this plan. Publish the freshly rendered routes.
+	sameSemantic := hasDesired && candidateDigest == persistedDigest &&
+		(!engine.localDevice || engine.localPlanInstalled)
 	if engine.beforeDesiredPlanSave != nil {
 		engine.beforeDesiredPlanSave()
 	}

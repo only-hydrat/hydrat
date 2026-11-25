@@ -242,6 +242,10 @@ func (monitor *ActiveMonitor) activeTargets(
 	ctx context.Context,
 	now time.Time,
 ) (activeTargetSnapshot, func() error, error) {
+	if monitor.SynchronousTargets {
+		snapshot, err := monitor.planActiveTargets(ctx, now)
+		return snapshot, nil, err
+	}
 	for {
 		monitor.targetsMu.Lock()
 		if monitor.targetsReady {

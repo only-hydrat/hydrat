@@ -1,0 +1,69 @@
+--- a/proxy/tun/handler.go
++++ b/proxy/tun/handler.go
+@@ -4,6 +4,7 @@
+ 	"context"
+ 	"net/netip"
+ 	"strings"
++	"sync"
+ 	"syscall"
+ 
+ 	"github.com/xtls/xray-core/common"
+@@ -23,6 +24,8 @@
+ 	"github.com/xtls/xray-core/transport/internet/stat"
+ )
+ 
++var installOutboundBinding sync.Once
++
+ // Handler is managing object that tie together tun interface, ip stack and dispatch connections to the routing
+ type Handler struct {
+ 	ctx             context.Context
+@@ -138,28 +141,30 @@
+ 		}
+ 		updater = &InterfaceUpdater{tunIndex: tunIndex, fixedName: t.config.AutoOutboundsInterface}
+ 		updater.Update()
+-		internet.RegisterDialerController(func(network, address string, c syscall.RawConn) error {
+-			iface := updater.Get()
+-			if iface == nil {
+-				errors.LogInfo(context.Background(), "[tun] falied to set interface > iface == nil")
+-				return errors.New("iface not found")
+-			}
+-			var controlErr, sockErr error
+-			controlErr = c.Control(func(fd uintptr) {
+-				addrPort, _ := netip.ParseAddrPort(address)
+-				// skip loopback
+-				if addrPort.Addr().IsLoopback() || strings.HasPrefix(strings.ToLower(address), "localhost:") {
+-					return
++		installOutboundBinding.Do(func() {
++			internet.RegisterDialerController(func(network, address string, c syscall.RawConn) error {
++				iface := updater.Get()
++				if iface == nil {
++					errors.LogInfo(context.Background(), "[tun] falied to set interface > iface == nil")
++					return errors.New("iface not found")
+ 				}
+-				err := setinterface(network, address, fd, iface)
+-				if err != nil {
+-					sockErr = errors.New("[tun] falied to set interface").Base(err)
++				var controlErr, sockErr error
++				controlErr = c.Control(func(fd uintptr) {
++					addrPort, _ := netip.ParseAddrPort(address)
++					// skip loopback
++					if addrPort.Addr().IsLoopback() || strings.HasPrefix(strings.ToLower(address), "localhost:") {
++						return
++					}
++					err := setinterface(network, address, fd, iface)
++					if err != nil {
++						sockErr = errors.New("[tun] falied to set interface").Base(err)
++					}
++				})
++				if sockErr != nil {
++					return sockErr
+ 				}
++				return controlErr
+ 			})
+-			if sockErr != nil {
+-				return sockErr
+-			}
+-			return controlErr
+ 		})
+ 	}
+ 

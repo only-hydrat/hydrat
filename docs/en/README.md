@@ -17,11 +17,19 @@
 
 Hydrat is a self-hosted VPN gateway. Add VLESS subscriptions and Tor bridges; the gateway tests them, assigns routes to clients, and selects a replacement when a route fails. Your phone, computer, or router only needs a regular WireGuard client.
 
-The project does not provide VPN servers or subscriptions. You need your own Linux server and route sources.
+The gateway runs on your own Linux server. For a single device, [Hydrat App](#apps) checks subscriptions and switches routes on the device itself.
 
 <p align="center">
-  <a href="#features">Features</a> · <a href="#quick-start">Installation</a> · <a href="#configuration">Configuration</a> · <a href="#interface">Screenshots</a> · <a href="#documentation">Documentation</a>
+  <a href="#apps">Apps</a> · <a href="#features">Gateway features</a> · <a href="#quick-start">Gateway installation</a> · <a href="#interface">Screenshots</a> · <a href="#documentation">Documentation</a>
 </p>
+
+## Apps
+
+Hydrat App provides a system VPN, imports VLESS subscriptions and Tor bridges, selects a route and switches to a backup if it fails. Each HTTPS subscription can have its own HWID.
+
+[Download Hydrat App for Android, Windows or Linux](https://github.com/only-hydrat/hydrat/releases/tag/app-v0.1.2)
+
+App releases use `app-v…` tags. You can check for a new version in the app settings.
 
 ## Features
 
